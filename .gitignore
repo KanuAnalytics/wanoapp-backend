@@ -14,7 +14,7 @@ env/
 
 # Environment
 .env
-.env.local
+.env.*
 
 # Testing
 .coverage
