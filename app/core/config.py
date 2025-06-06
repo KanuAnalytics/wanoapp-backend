@@ -17,6 +17,13 @@ class Settings(BaseSettings):
     DO_SPACES_BUCKET_NAME:    str
     DO_SPACES_ENDPOINT:       str
 
+
+    #Doppler
+    DOPPLER_CONFIG: str
+    OPPLER_ENVIRONMENT: str
+    DOPPLER_PROJECT: str
+
+
     # Database
     MONGODB_URI: str
     # App

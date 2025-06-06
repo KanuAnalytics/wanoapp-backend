@@ -33,15 +33,6 @@ jobs:
       - name: Fetch secrets from Doppler
         run: doppler secrets download --no-file --format env > .env.stage.dev
 
-      - name: Append deployment variables to env file
-        run: |
-          cat <<EOF >> .env.stage.dev
-          STAGE=dev
-          IMAGE_NAME=${IMAGE_NAME}
-          CONTAINER_NAME=${CONTAINER_NAME}
-          DOCKER_TAG=${DOCKER_TAG}
-          EOF
-
       - name: Copy .env to Remote Directory
         run: |
           cp .env.stage.dev ./.env
