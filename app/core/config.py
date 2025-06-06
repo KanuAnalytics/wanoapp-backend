@@ -10,6 +10,15 @@ from typing import List
 import os
 
 class Settings(BaseSettings):
+
+    # DigitalOcean Spaces
+    DO_SPACES_ACCESS_KEY_ID: str
+    DO_SPACES_SECRET_KEY:     str
+    DO_SPACES_BUCKET_NAME:    str
+    DO_SPACES_ENDPOINT:       str
+
+    # Database
+    MONGODB_URI: str
     # App
     APP_NAME: str = "WanoApp"
     DEBUG: bool = True
