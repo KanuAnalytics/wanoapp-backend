@@ -20,7 +20,7 @@ class Settings(BaseSettings):
 
     #Doppler
     DOPPLER_CONFIG: str
-    OPPLER_ENVIRONMENT: str
+    DOPPLER_ENVIRONMENT: str
     DOPPLER_PROJECT: str
 
 
