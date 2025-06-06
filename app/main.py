@@ -8,6 +8,7 @@ from app.core.database import connect_to_mongo, close_mongo_connection
 from app.api.v1 import api_router  # This imports the router
 from app.graphql.schema import graphql_app
 from app.services.metrics_service import metrics_buffer
+from app.routes import upload_video
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -41,6 +42,8 @@ app.add_middleware(
 
 # Include the API router - THIS IS WHAT'S MISSING!
 app.include_router(api_router, prefix="/api/v1")
+
+app.include_router(upload_video.router)
 
 # Include GraphQL endpoint
 app.include_router(graphql_app, prefix="/graphql")
