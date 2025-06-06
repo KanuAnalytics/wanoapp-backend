@@ -1,0 +1,78 @@
+name: Deploy Doppler
+
+env:
+  IMAGE_NAME: wano-africa-be
+  CONTAINER_NAME: wano-africa-be
+  REMOTE_DIR: /wano-africa-be
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - dev  
+
+jobs:
+  build-and-deploy:
+    runs-on: [self-hosted, server]
+    env:
+      # Doppler configuration
+      DOPPLER_PROJECT: wano-app
+      DOPPLER_CONFIG: dev
+      DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN_DEV }}
+      # Docker image tag
+      DOCKER_TAG: ${{ github.sha }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+
+      - name: Install Doppler CLI via GitHub Action
+        uses: dopplerhq/cli-action@v3
+
+      - name: Fetch secrets from Doppler
+        run: doppler secrets download --no-file --format env > .env.stage.dev
+
+      - name: Append deployment variables to env file
+        run: |
+          cat <<EOF >> .env.stage.dev
+          STAGE=dev
+          IMAGE_NAME=${IMAGE_NAME}
+          CONTAINER_NAME=${CONTAINER_NAME}
+          DOCKER_TAG=${DOCKER_TAG}
+          EOF
+
+      - name: Copy .env to Remote Directory
+        run: |
+          cp .env.stage.dev ./.env
+
+      - name: Set up Docker
+        uses: docker/setup-buildx-action@v1
+
+      - name: Build Docker Image with Tag
+        run: |
+          export DOCKER_BUILDKIT=1
+          docker compose build
+
+      - name: Stop and Remove Existing Container (if it exists)
+        run: |
+          if [ "$(docker ps -aq -f name=${{ env.CONTAINER_NAME }})" ]; then
+            echo "Stopping existing container..."
+            docker stop ${{ env.CONTAINER_NAME }} || true
+            docker rm ${{ env.CONTAINER_NAME }} || true
+          fi
+
+      - name: Remove Old Docker Images (Cleanup)
+        run: |
+          LATEST_IMAGE_ID=$(docker images --filter="reference=${{ env.IMAGE_NAME }}:*" --format "{{.ID}}" | head -n 1)
+          docker images --filter="reference=${{ env.IMAGE_NAME }}:*" --format "{{.ID}}" | grep -v "$LATEST_IMAGE_ID" | xargs --no-run-if-empty docker rmi -f || true
+
+      - name: Run Docker Container with New Image
+        run: |
+          docker compose up -d --force-recreate
+
+      - name: Remove dangling images & build cache
+        run: |
+          docker image prune -f
+          docker builder prune -f
+          docker system prune -a --volumes -f
