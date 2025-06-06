@@ -45,6 +45,17 @@ class Settings(BaseSettings):
     FRONTEND_URL: str = "http://localhost:3000"  # For verification link
     EMAIL_VERIFICATION_TOKEN_EXPIRE_HOURS: int = 24
     
+    # Doppler settings
+    DOPPLER_CONFIG: str
+    DOPPLER_ENVIRONMENT: str
+    DOPPLER_PROJECT: str
+
+    # DigitalOcean Spaces
+    DO_SPACES_ACCESS_KEY_ID: str
+    DO_SPACES_BUCKET_NAME: str
+    DO_SPACES_ENDPOINT: str
+    DO_SPACES_SECRET_KEY: str
+    
     class Config:
         env_file = ".env"
         case_sensitive = True
