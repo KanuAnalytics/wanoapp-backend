@@ -16,6 +16,7 @@ from app.graphql.types import (
     LocalizationType
 )
 from app.core.security import verify_password, get_password_hash, create_access_token
+from app.graphql.mutations_folder.video_editor import VideoEditorMutation
 
 
 @strawberry.input
@@ -67,7 +68,7 @@ class CreateCommentInput:
 
 
 @strawberry.type
-class Mutation:
+class Mutation(VideoEditorMutation):
     @strawberry.mutation
     async def register(self, input: RegisterInput) -> AuthPayload:
         """Register a new user"""

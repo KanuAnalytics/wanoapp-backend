@@ -67,6 +67,11 @@ class VideoType:
     buffered_views: int = 0
     buffered_likes: int = 0
     buffered_comments: int = 0
+
+    FEid: Optional[str] = None
+    start: float = 0.0
+    end: float = 0.0
+    remoteUrl: Optional[str] = None
     
 @strawberry.type
 class CommentType:
