@@ -92,8 +92,8 @@ class VideoEditorMutation:
             
             # Get user info and check verification
             user = await db.users.find_one({"_id": ObjectId(user_id)})
-            if not user.get("is_verified", False):
-                raise Exception("Please verify your email before uploading videos")
+            # if not user.get("is_verified", False):
+            #     raise Exception("Please verify your email before uploading videos")
             
             # Download all videos/photos locally and map by index
             local_paths = {}
@@ -174,7 +174,9 @@ class VideoEditorMutation:
                 "FEid": None,
                 "start": 0,
                 "end": total_duration,
+                "duration": total_duration,
                 "remoteUrl": result,
+                "type": 'video',
                 # Standard fields
                 "hashtags": [],
                 "categories": [],
@@ -219,6 +221,11 @@ class VideoEditorMutation:
                 id=str(result_insert.inserted_id),
                 creator_id=str(video_doc["creator_id"]),
                 title=video_doc.get("title"),
+                remoteUrl=result,
+                type= video_doc["type"],
+                duration=video_doc["duration"],
+                start=video_doc["start"],
+                end=video_doc["end"],
                 description=video_doc.get("description"),
                 video_type=VideoTypeEnum(video_doc["video_type"]),
                 privacy=VideoPrivacyEnum(video_doc["privacy"]),
