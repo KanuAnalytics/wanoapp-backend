@@ -51,6 +51,11 @@ class VideoResponse(BaseModel):
     buffered_views: int = 0
     buffered_likes: int = 0
     buffered_comments: int = 0
+
+    FEid: Optional[str] = None
+    start: float = 0.0
+    end: Optional[float] = None
+    remoteUrl: Optional[str] = None
     
     class Config:
         populate_by_name = True
