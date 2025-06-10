@@ -27,7 +27,7 @@ class Settings(BaseSettings):
             # Add any other origins you need
         ]    
     # Auth
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 259200
     ALGORITHM: str = "HS256"
     
     # File Upload

@@ -28,6 +28,9 @@ class RegisterInput:
     country: str
     languages: List[str] = strawberry.field(default_factory=lambda: ["en"])
     user_type: UserTypeEnum = UserTypeEnum.STANDARD
+    gender: Optional[str] = None
+    date_of_birth: Optional[datetime] = None
+    tags: Optional[List[str]] = None
 
 @strawberry.input
 class LoginInput:
@@ -39,6 +42,9 @@ class UpdateUserInput:
     display_name: Optional[str] = None
     bio: Optional[str] = None
     profile_picture: Optional[str] = None
+    gender: Optional[str] = None
+    date_of_birth: Optional[datetime] = None
+    tags: Optional[List[str]] = None
 
 @strawberry.input
 class CreateVideoInput:
@@ -106,6 +112,9 @@ class Mutation(VideoEditorMutation):
                 "languages": input.languages,
                 "tribes": []
             },
+            "gender": input.gender,
+            "date_of_birth": input.date_of_birth,
+            "tags": input.tags if input.tags else [],
             "created_at": datetime.utcnow(),
             "updated_at": datetime.utcnow(),
             "is_active": True,
@@ -132,6 +141,9 @@ class Mutation(VideoEditorMutation):
             display_name=user_doc["display_name"],
             user_type=UserTypeEnum(user_doc["user_type"]),
             localization=LocalizationType(**user_doc["localization"]),
+            gender=user_doc.get("gender"),
+            date_of_birth=user_doc.get("date_of_birth"),
+            tags=user_doc.get("tags", []),
             followers_count=0,
             following_count=0,
             videos_count=0,

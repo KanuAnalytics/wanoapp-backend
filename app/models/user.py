@@ -27,6 +27,11 @@ class UserBase(BaseModel):
     localization: LocalizationPreferences
     theme: Optional[ThemeCustomization] = None
     
+    # New fields
+    gender: Optional[str] = Field(None, description="User's gender")
+    date_of_birth: Optional[datetime] = Field(None, description="User's date of birth")
+    tags: List[str] = Field(default_factory=list, description="User's interest tags")
+    
     # Verification fields
     is_verified: bool = Field(default=False)
     verification_token: Optional[str] = None
@@ -46,6 +51,23 @@ class UserBase(BaseModel):
     following_count: int = Field(default=0, ge=0)
     videos_count: int = Field(default=0, ge=0)
     likes_count: int = Field(default=0, ge=0)
+    
+    @validator('gender')
+    def validate_gender(cls, v):
+        if v is not None:
+            # Valid gender options
+            valid_genders = ['male', 'female', 'other', 'prefer_not_to_say']
+            if v.lower() not in valid_genders:
+                raise ValueError(f'Gender must be one of: {", ".join(valid_genders)}')
+            return v.lower()
+        return v
+    
+    @validator('tags')
+    def validate_tags(cls, v):
+        # Normalize tags: lowercase and strip whitespace
+        if v:
+            return [tag.strip().lower() for tag in v if tag.strip()]
+        return []
     
     # Add the property here
     @property
