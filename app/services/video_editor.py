@@ -1,3 +1,6 @@
+#app/services/video_editor.py
+
+
 from moviepy import VideoFileClip, concatenate_videoclips, CompositeVideoClip, CompositeAudioClip, ImageClip, vfx
 import os
 import tempfile

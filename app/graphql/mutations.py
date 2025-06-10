@@ -317,67 +317,67 @@ class Mutation(VideoEditorMutation):
             remoteUrl=video_doc.get("remoteUrl")
         )
         
-        @strawberry.mutation
-        async def update_video(self, info, video_id: str, input: UpdateVideoInput) -> VideoType:
-            """Update a video"""
-            user_id = info.context.get("user_id")
-            if not user_id:
-                raise Exception("Authentication required")
-                
-            db = get_database()
+    @strawberry.mutation
+    async def update_video(self, info, video_id: str, input: UpdateVideoInput) -> VideoType:
+        """Update a video"""
+        user_id = info.context.get("user_id")
+        if not user_id:
+            raise Exception("Authentication required")
             
-            # Verify ownership
-            video = await db.videos.find_one({"_id": ObjectId(video_id)})
-            if not video:
-                raise Exception("Video not found")
-                
-            if str(video["creator_id"]) != user_id:
-                raise Exception("Can only update your own videos")
+        db = get_database()
+        
+        # Verify ownership
+        video = await db.videos.find_one({"_id": ObjectId(video_id)})
+        if not video:
+            raise Exception("Video not found")
             
-            update_data = {}
-            if input.title is not None:
-                update_data["title"] = input.title
-            if input.description is not None:
-                update_data["description"] = input.description
-            if input.privacy is not None:
-                update_data["privacy"] = input.privacy.value
-            if input.hashtags is not None:
-                update_data["hashtags"] = input.hashtags
-            if input.categories is not None:
-                update_data["categories"] = input.categories
-            if input.remix_enabled is not None:
-                update_data["remix_enabled"] = input.remix_enabled
-            if input.comments_enabled is not None:
-                update_data["comments_enabled"] = input.comments_enabled
-                
-            update_data["updated_at"] = datetime.utcnow()
+        if str(video["creator_id"]) != user_id:
+            raise Exception("Can only update your own videos")
+        
+        update_data = {}
+        if input.title is not None:
+            update_data["title"] = input.title
+        if input.description is not None:
+            update_data["description"] = input.description
+        if input.privacy is not None:
+            update_data["privacy"] = input.privacy.value
+        if input.hashtags is not None:
+            update_data["hashtags"] = input.hashtags
+        if input.categories is not None:
+            update_data["categories"] = input.categories
+        if input.remix_enabled is not None:
+            update_data["remix_enabled"] = input.remix_enabled
+        if input.comments_enabled is not None:
+            update_data["comments_enabled"] = input.comments_enabled
             
-            await db.videos.update_one(
-                {"_id": ObjectId(video_id)},
-                {"$set": update_data}
-            )
-            
-            video = await db.videos.find_one({"_id": ObjectId(video_id)})
-            buffered = await metrics_buffer.get_buffered_counts(video_id)
-            
-            return VideoType(
-                id=str(video["_id"]),
-                creator_id=str(video["creator_id"]),
-                title=video.get("title"),
-                description=video.get("description"),
-                video_type=VideoTypeEnum(video["video_type"]),
-                privacy=VideoPrivacyEnum(video["privacy"]),
-                views_count=video.get("views_count", 0),
-                likes_count=video.get("likes_count", 0),
-                comments_count=video.get("comments_count", 0),
-                shares_count=video.get("shares_count", 0),
-                hashtags=video.get("hashtags", []),
-                categories=video.get("categories", []),
-                created_at=video["created_at"],
-                buffered_views=buffered["views"],
-                buffered_likes=buffered["likes"],
-                buffered_comments=buffered["comments"]
-            )
+        update_data["updated_at"] = datetime.utcnow()
+        
+        await db.videos.update_one(
+            {"_id": ObjectId(video_id)},
+            {"$set": update_data}
+        )
+        
+        video = await db.videos.find_one({"_id": ObjectId(video_id)})
+        buffered = await metrics_buffer.get_buffered_counts(video_id)
+        
+        return VideoType(
+            id=str(video["_id"]),
+            creator_id=str(video["creator_id"]),
+            title=video.get("title"),
+            description=video.get("description"),
+            video_type=VideoTypeEnum(video["video_type"]),
+            privacy=VideoPrivacyEnum(video["privacy"]),
+            views_count=video.get("views_count", 0),
+            likes_count=video.get("likes_count", 0),
+            comments_count=video.get("comments_count", 0),
+            shares_count=video.get("shares_count", 0),
+            hashtags=video.get("hashtags", []),
+            categories=video.get("categories", []),
+            created_at=video["created_at"],
+            buffered_views=buffered["views"],
+            buffered_likes=buffered["likes"],
+            buffered_comments=buffered["comments"]
+        )
     
     @strawberry.mutation
     async def delete_video(self, info, video_id: str) -> bool:
