@@ -12,7 +12,8 @@ RUN apk update && apk add --no-cache \
     linux-headers \
     libffi-dev \
     openssl-dev \
-    build-base
+    build-base \
+    ffmpeg
 
 # Create and set working directory
 WORKDIR /app
