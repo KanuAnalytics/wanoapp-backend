@@ -28,6 +28,9 @@ class RegisterInput:
     country: str
     languages: List[str] = strawberry.field(default_factory=lambda: ["en"])
     user_type: UserTypeEnum = UserTypeEnum.STANDARD
+    gender: Optional[str] = None
+    date_of_birth: Optional[datetime] = None
+    tags: Optional[List[str]] = None
 
 @strawberry.input
 class LoginInput:
@@ -39,17 +42,29 @@ class UpdateUserInput:
     display_name: Optional[str] = None
     bio: Optional[str] = None
     profile_picture: Optional[str] = None
+    gender: Optional[str] = None
+    date_of_birth: Optional[datetime] = None
+    tags: Optional[List[str]] = None
 
 @strawberry.input
 class CreateVideoInput:
     title: Optional[str] = None
     description: Optional[str] = None
-    video_type: VideoTypeEnum
+    video_type: VideoTypeEnum = VideoTypeEnum.REGULAR
     privacy: VideoPrivacyEnum = VideoPrivacyEnum.PUBLIC
     hashtags: List[str] = strawberry.field(default_factory=list)
     categories: List[str] = strawberry.field(default_factory=list)
     remix_enabled: bool = True
     comments_enabled: bool = True
+    
+    # Add these new fields:
+    video_url: str  # Required - the uploaded video URL
+    thumbnail_url: Optional[str] = None  # Optional thumbnail
+    duration: float = 0.0  # Video duration in seconds
+    width: int = 1920
+    height: int = 1080
+    fps: float = 30.0
+    file_size: int = 0
 
 @strawberry.input
 class UpdateVideoInput:
@@ -97,6 +112,9 @@ class Mutation(VideoEditorMutation):
                 "languages": input.languages,
                 "tribes": []
             },
+            "gender": input.gender,
+            "date_of_birth": input.date_of_birth,
+            "tags": input.tags if input.tags else [],
             "created_at": datetime.utcnow(),
             "updated_at": datetime.utcnow(),
             "is_active": True,
@@ -123,6 +141,9 @@ class Mutation(VideoEditorMutation):
             display_name=user_doc["display_name"],
             user_type=UserTypeEnum(user_doc["user_type"]),
             localization=LocalizationType(**user_doc["localization"]),
+            gender=user_doc.get("gender"),
+            date_of_birth=user_doc.get("date_of_birth"),
+            tags=user_doc.get("tags", []),
             followers_count=0,
             following_count=0,
             videos_count=0,
@@ -218,8 +239,12 @@ class Mutation(VideoEditorMutation):
         
         if not user.get("is_verified", False):
             raise Exception("Please verify your email before uploading videos")
-    
-    # Rest of the function remains the same...
+        
+        # Validate video type against duration
+        if input.video_type == VideoTypeEnum.BITS and input.duration > 15:
+            raise Exception("Bits videos must be 15 seconds or less")
+        elif input.video_type == VideoTypeEnum.REGULAR and (input.duration < 15 or input.duration > 90):
+            raise Exception("Regular videos must be between 15 and 90 seconds")
         
         video_doc = {
             "creator_id": ObjectId(user_id),
@@ -246,19 +271,29 @@ class Mutation(VideoEditorMutation):
             "remix_count": 0,
             "country": user.get("localization", {}).get("country", "NG"),
             "language": user.get("localization", {}).get("languages", ["en"])[0],
-            # Placeholder URLs
+            
+            # Use actual URLs from input
             "urls": {
-                "original": "https://storage.wano.com/video.mp4",
-                "hls_playlist": "https://storage.wano.com/video.m3u8",
-                "thumbnail": "https://storage.wano.com/thumb.jpg"
+                "original": input.video_url,
+                "hls_playlist": input.video_url,  # In production, generate HLS version
+                "thumbnail": input.thumbnail_url or input.video_url,  # Use video URL as fallback
+                "download": input.video_url
             },
+            
+            # Use actual metadata from input
             "metadata": {
-                "duration": 30.0,
-                "width": 1080,
-                "height": 1920,
-                "fps": 30.0,
-                "file_size": 10000000
-            }
+                "duration": input.duration,
+                "width": input.width,
+                "height": input.height,
+                "fps": input.fps,
+                "file_size": input.file_size
+            },
+            
+            # Add the new fields for video editor compatibility
+            "FEid": None,
+            "start": 0.0,
+            "end": input.duration,
+            "remoteUrl": input.video_url
         }
         
         result = await db.videos.insert_one(video_doc)
@@ -284,9 +319,16 @@ class Mutation(VideoEditorMutation):
             shares_count=0,
             hashtags=video_doc.get("hashtags", []),
             categories=video_doc.get("categories", []),
-            created_at=video_doc["created_at"]
+            created_at=video_doc["created_at"],
+            buffered_views=0,
+            buffered_likes=0,
+            buffered_comments=0,
+            FEid=video_doc.get("FEid"),
+            start=video_doc.get("start", 0.0),
+            end=video_doc.get("end", input.duration),
+            remoteUrl=video_doc.get("remoteUrl")
         )
-    
+        
     @strawberry.mutation
     async def update_video(self, info, video_id: str, input: UpdateVideoInput) -> VideoType:
         """Update a video"""

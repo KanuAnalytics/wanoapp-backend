@@ -1,3 +1,9 @@
+"""
+app/graphql/inputs/video_editor.py
+
+"""
+
+
 import strawberry
 from typing import Optional
 

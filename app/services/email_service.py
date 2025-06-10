@@ -22,33 +22,49 @@ class EmailService:
     
     async def send_verification_email(self, to_email: str, username: str, verification_token: str):
         """Send verification email to user"""
-        # Frontend link (for production)
-        frontend_verification_link = f"{settings.FRONTEND_URL}/verify-email?token={verification_token}"
+        # Direct backend API link for verification
+        backend_url = getattr(settings, 'BACKEND_URL', 'https://devbe.wanoafrica.com')
+        verification_link = f"{backend_url}/api/v1/auth/verify-email?token={verification_token}"
         
-        # Direct API link (for testing)
-        api_verification_link = f"http://localhost:8000/api/v1/auth/verify-email?token={verification_token}"
-        
-        # For development, log both links
-        logger.info(f"=== Verification Links for {username} ===")
-        logger.info(f"Frontend link: {frontend_verification_link}")
-        logger.info(f"API link (for testing): {api_verification_link}")
+        # Log for debugging
+        logger.info(f"=== Verification Link for {username} ===")
+        logger.info(f"Verification link: {verification_link}")
         logger.info(f"Token: {verification_token}")
         logger.info("=====================================")
         
         if not self.is_configured:
-            logger.warning("SendGrid not configured. Use links above for testing.")
+            logger.warning("SendGrid not configured. Use link above for testing.")
             return True
         
         subject = "Verify your WanoApp account"
         html_content = f"""
         <html>
-            <body>
-                <h2>Welcome to WanoApp, {username}!</h2>
-                <p>Please click the link below to verify your email address:</p>
-                <p><a href="{frontend_verification_link}" style="background-color: #4CAF50; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">Verify Email</a></p>
+            <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                <h2 style="color: #333;">Welcome to WanoApp, {username}!</h2>
+                <p>Thank you for signing up. Please verify your email address to start uploading videos.</p>
+                <div style="text-align: center; margin: 30px 0;">
+                    <a href="{verification_link}" 
+                       style="background-color: #4CAF50; 
+                              color: white; 
+                              padding: 12px 30px; 
+                              text-decoration: none; 
+                              border-radius: 5px;
+                              display: inline-block;
+                              font-weight: bold;">
+                        Verify Email
+                    </a>
+                </div>
                 <p>Or copy and paste this link in your browser:</p>
-                <p>{frontend_verification_link}</p>
-                <p>This link will expire in 24 hours.</p>
+                <p style="word-break: break-all; color: #666;">
+                    {verification_link}
+                </p>
+                <p style="color: #999; font-size: 14px;">
+                    This link will expire in 24 hours.
+                </p>
+                <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
+                <p style="color: #999; font-size: 12px;">
+                    If you didn't create an account with WanoApp, please ignore this email.
+                </p>
                 <p>Best regards,<br>The WanoApp Team</p>
             </body>
         </html>

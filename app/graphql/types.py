@@ -46,6 +46,9 @@ class UserType:
     following_count: int = 0
     videos_count: int = 0
     created_at: datetime
+    gender: Optional[str] = None
+    date_of_birth: Optional[datetime] = None
+    tags: List[str] = strawberry.field(default_factory=list)
     
 @strawberry.type
 class VideoType:

@@ -186,7 +186,6 @@ async def verify_email_get(token: str = Query(..., description="Verification tok
     })
     
     if not user:
-        # In production, you might want to redirect to frontend with error
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid or expired verification token"
@@ -197,8 +196,7 @@ async def verify_email_get(token: str = Query(..., description="Verification tok
         return {
             "message": "Email already verified",
             "username": user["username"],
-            "already_verified": True,
-            "redirect_url": f"{settings.FRONTEND_URL}/login?verified=true"
+            "already_verified": True
         }
     
     # Update user verification status
@@ -215,12 +213,10 @@ async def verify_email_get(token: str = Query(..., description="Verification tok
         }
     )
     
-    # In production, redirect to frontend
     return {
-        "message": "Email verified successfully! You can now close this window and login to upload videos.",
+        "message": "Email verified successfully",
         "username": user["username"],
-        "user_id": str(user["_id"]),
-        "redirect_url": f"{settings.FRONTEND_URL}/login?verified=true"
+        "user_id": str(user["_id"])
     }
 
 @router.post("/resend-verification")
