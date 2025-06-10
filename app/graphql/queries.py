@@ -148,7 +148,12 @@ class Query:
             created_at=video["created_at"],
             buffered_views=buffered["views"],
             buffered_likes=buffered["likes"],
-            buffered_comments=buffered["comments"]
+            buffered_comments=buffered["comments"],
+            # Add the new fields:
+            FEid=video.get("FEid"),
+            start=video.get("start", 0.0),
+            end=video.get("end", video.get("metadata", {}).get("duration", 0.0)),
+            remoteUrl=video.get("remoteUrl")
         )
     
     @strawberry.field

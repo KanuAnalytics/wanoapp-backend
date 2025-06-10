@@ -82,6 +82,12 @@ class Video(BaseDocument):
     is_approved: bool = Field(default=True)
     is_flagged: bool = Field(default=False)
     report_count: int = Field(default=0, ge=0)
+
+
+    FEid: Optional[str] = None
+    start: float = Field(default=0.0)
+    end: Optional[float] = None  # Will be set to duration if not specified
+    remoteUrl: Optional[str] = None
     
     # Music used (if any)
     music_id: Optional[PyObjectId] = None
@@ -91,6 +97,9 @@ class Video(BaseDocument):
         """Validate video type against duration"""
         if self.metadata:
             duration = self.metadata.duration
+            # Set end to duration if not specified
+            if self.end is None:
+                self.end = duration
             if self.video_type == VideoType.BITS and duration > 15:
                 raise ValueError("Bits videos must be 15 seconds or less")
             elif self.video_type == VideoType.REGULAR and (duration < 15 or duration > 90):

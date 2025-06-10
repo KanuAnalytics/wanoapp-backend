@@ -46,6 +46,9 @@ class UserType:
     following_count: int = 0
     videos_count: int = 0
     created_at: datetime
+    gender: Optional[str] = None
+    date_of_birth: Optional[datetime] = None
+    tags: List[str] = strawberry.field(default_factory=list)
     
 @strawberry.type
 class VideoType:
@@ -67,6 +70,13 @@ class VideoType:
     buffered_views: int = 0
     buffered_likes: int = 0
     buffered_comments: int = 0
+
+    FEid: Optional[str] = None
+    start: float = 0.0
+    end: float = 0.0
+    remoteUrl: Optional[str] = None
+    duration: float=0.0
+    type: str
     
 @strawberry.type
 class CommentType:

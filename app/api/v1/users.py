@@ -28,12 +28,18 @@ class UserCreate(BaseModel):
     display_name: str
     user_type: UserType = UserType.STANDARD
     localization: dict
+    gender: Optional[str] = None
+    date_of_birth: Optional[datetime] = None
+    tags: Optional[List[str]] = Field(default_factory=list)
 
 class UserUpdate(BaseModel):
     display_name: Optional[str] = None
     bio: Optional[str] = None
     profile_picture: Optional[str] = None
     localization: Optional[dict] = None
+    gender: Optional[str] = None
+    date_of_birth: Optional[datetime] = None
+    tags: Optional[List[str]] = None
 
 class UserResponse(BaseModel):
     id: str = Field(alias="_id")
@@ -46,9 +52,15 @@ class UserResponse(BaseModel):
     followers_count: int = 0
     following_count: int = 0
     videos_count: int = 0
+    gender: Optional[str] = None
+    date_of_birth: Optional[datetime] = None
+    tags: List[str] = Field(default_factory=list)
     
     class Config:
         populate_by_name = True
+
+class TagsUpdate(BaseModel):
+    tags: List[str] = Field(..., description="List of user interest tags")
 
 @router.post("/", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 async def create_user(user: UserCreate):
@@ -86,7 +98,10 @@ async def create_user(user: UserCreate):
         "followers_count": 0,
         "following_count": 0,
         "videos_count": 0,
-        "likes_count": 0
+        "likes_count": 0,
+        "gender": user.gender,
+        "date_of_birth": user.date_of_birth,
+        "tags": user.tags if user.tags else []
     }
     
     # Add type-specific fields
@@ -319,5 +334,89 @@ async def get_my_profile(current_user: str = Depends(get_current_active_user)):
             detail="User not found"
         )
     
+    user["_id"] = str(user["_id"])
+    return UserResponse(**user)
+
+@router.put("/me/tags", response_model=UserResponse)
+async def update_user_tags(
+    tags_update: TagsUpdate,
+    current_user: str = Depends(get_current_active_user)
+):
+    """Update user's interest tags (replaces all existing tags)"""
+    db = get_database()
+    
+    # Normalize tags
+    normalized_tags = []
+    for tag in tags_update.tags:
+        normalized_tag = tag.strip().lower()
+        if normalized_tag and normalized_tag not in normalized_tags:
+            normalized_tags.append(normalized_tag)
+    
+    # Update user tags
+    result = await db.users.update_one(
+        {"_id": ObjectId(current_user)},
+        {
+            "$set": {
+                "tags": normalized_tags,
+                "updated_at": datetime.utcnow()
+            }
+        }
+    )
+    
+    if result.matched_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    user = await db.users.find_one({"_id": ObjectId(current_user)})
+    user["_id"] = str(user["_id"])
+    return UserResponse(**user)
+
+@router.post("/me/tags/add", response_model=UserResponse)
+async def add_user_tags(
+    tags_update: TagsUpdate,
+    current_user: str = Depends(get_current_active_user)
+):
+    """Add tags to user's interests without replacing existing ones"""
+    db = get_database()
+    
+    # Normalize new tags
+    new_tags = [tag.strip().lower() for tag in tags_update.tags if tag.strip()]
+    
+    # Add tags using $addToSet to avoid duplicates
+    result = await db.users.update_one(
+        {"_id": ObjectId(current_user)},
+        {
+            "$addToSet": {"tags": {"$each": new_tags}},
+            "$set": {"updated_at": datetime.utcnow()}
+        }
+    )
+    
+    user = await db.users.find_one({"_id": ObjectId(current_user)})
+    user["_id"] = str(user["_id"])
+    return UserResponse(**user)
+
+@router.delete("/me/tags", response_model=UserResponse)
+async def remove_user_tags(
+    tags_update: TagsUpdate,
+    current_user: str = Depends(get_current_active_user)
+):
+    """Remove specific tags from user's interests"""
+    db = get_database()
+    
+    # Normalize tags to remove
+    tags_to_remove = [tag.strip().lower() for tag in tags_update.tags if tag.strip()]
+    
+    # Remove tags using $pull
+    result = await db.users.update_one(
+        {"_id": ObjectId(current_user)},
+        {
+            "$pull": {"tags": {"$in": tags_to_remove}},
+            "$set": {"updated_at": datetime.utcnow()}
+        }
+    )
+    
+    user = await db.users.find_one({"_id": ObjectId(current_user)})
     user["_id"] = str(user["_id"])
     return UserResponse(**user)

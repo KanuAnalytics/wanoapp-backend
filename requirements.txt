@@ -43,3 +43,11 @@ phonenumbers==8.13.26
 # Utils
 python-dateutil==2.8.2
 pytz==2023.3
+
+
+moviepy
+requests
+urllib3
+phonenumbers==8.13.26
+python-dateutil==2.8.2
+pytz==2023.3
