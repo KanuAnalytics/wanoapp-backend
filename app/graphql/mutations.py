@@ -17,6 +17,8 @@ from app.graphql.types import (
 )
 from app.core.security import verify_password, get_password_hash, create_access_token
 from app.graphql.mutations_folder.video_editor import VideoEditorMutation
+from strawberry.types import Info
+
 
 
 @strawberry.input
@@ -88,7 +90,7 @@ class CommentMutations:
     async def create_comment(
         self, 
         input: CreateCommentInput,
-        info: strawberry.Info
+        info: Info
     ) -> CommentType:
         """Create a new comment"""
         db = get_database()
@@ -158,7 +160,7 @@ class CommentMutations:
         self,
         comment_id: str,
         content: str,
-        info: strawberry.Info
+        info: Info
     ) -> CommentType:
         """Update a comment"""
         db = get_database()

@@ -9,6 +9,8 @@ import strawberry
 from typing import List, Optional
 from datetime import datetime
 from enum import Enum
+from strawberry.types import Info
+
 
 from app.core.database import get_database
 
@@ -209,7 +211,7 @@ class CommentType:
 @strawberry.field
 async def comments(
     self, 
-    info: strawberry.Info,
+    info: Info,
     limit: int = 20, 
     skip: int = 0
 ) -> List[CommentType]:
