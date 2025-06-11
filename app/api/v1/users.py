@@ -4,8 +4,9 @@ User CRUD operations
 app/api/v1/users.py
 
 """
-from typing import List, Optional
-from fastapi import APIRouter, HTTPException, Depends, status
+import asyncio
+from typing import Any, Dict, List, Optional
+from fastapi import APIRouter, Body, HTTPException, Depends, status
 from bson import ObjectId
 from datetime import datetime
 from app.models.base import PyObjectId
@@ -13,7 +14,7 @@ from app.models.user import StandardUser, ArtistUser, AdvertiserUser, AdminUser,
 from app.core.database import get_database
 from app.core.security import get_password_hash, create_verification_token
 from app.api.deps import get_current_active_user
-from pydantic import BaseModel, Field, EmailStr
+from pydantic import BaseModel, Field, EmailStr, HttpUrl, validator
 from app.services.email_service import email_service
 import logging
 
@@ -31,6 +32,80 @@ class UserCreate(BaseModel):
     gender: Optional[str] = None
     date_of_birth: Optional[datetime] = None
     tags: Optional[List[str]] = Field(default_factory=list)
+
+
+class CompleteUserResponse(BaseModel):
+    """Complete user response model with ALL fields"""
+    # Basic fields
+    id: str = Field(alias="_id")
+    username: str
+    email: EmailStr
+    display_name: str
+    bio: Optional[str] = None
+    profile_picture: Optional[HttpUrl] = None
+    cover_picture: Optional[HttpUrl] = None
+    
+    # New demographic fields
+    gender: Optional[str] = None
+    date_of_birth: Optional[datetime] = None
+    tags: List[str] = Field(default_factory=list)
+    
+    # User type and status
+    user_type: str
+    is_active: bool = True
+    is_verified: bool = False
+    verification_token: Optional[str] = None
+    verification_token_expires: Optional[datetime] = None
+    verified_at: Optional[datetime] = None
+    
+    # Localization and customization
+    localization: Dict[str, Any]
+    theme: Optional[Dict[str, Any]] = None
+    features: Dict[str, Any] = Field(default_factory=dict)
+    
+    # Video preferences
+    video_upload_limit: int = 90
+    can_upload_music: bool = False
+    can_create_ads: bool = False
+    
+    # Statistics
+    followers_count: int = 0
+    following_count: int = 0
+    videos_count: int = 0
+    likes_count: int = 0
+    
+    # Arrays of IDs (complete lists)
+    bookmarked_videos: List[str] = Field(default_factory=list)
+    liked_videos: List[str] = Field(default_factory=list)
+    following: List[str] = Field(default_factory=list)
+    followers: List[str] = Field(default_factory=list)
+    
+    # Timestamps
+    created_at: datetime
+    updated_at: datetime
+    class Config:
+        populate_by_name = True
+        json_encoders = {
+            ObjectId: str,
+            datetime: lambda v: v.isoformat() if v else None
+        }
+
+
+
+class UserWithDetailsResponse(BaseModel):
+    """User response with additional computed fields"""
+    user: CompleteUserResponse
+    # Additional computed fields
+    is_following: bool = False  # If current user follows this user
+    is_followed_by: bool = False  # If this user follows current user
+    mutual_followers_count: int = 0  # Number of mutual followers
+    recent_videos: List[Dict[str, Any]] = Field(default_factory=list)  # Last 5 videos
+    
+    class Config:
+        json_encoders = {
+            ObjectId: str,
+            datetime: lambda v: v.isoformat() if v else None
+        }
 
 class UserUpdate(BaseModel):
     display_name: Optional[str] = None
@@ -61,6 +136,581 @@ class UserResponse(BaseModel):
 
 class TagsUpdate(BaseModel):
     tags: List[str] = Field(..., description="List of user interest tags")
+    
+# Patch request model with all optional fields
+class UserPatchRequest(BaseModel):
+    """Patch request for updating user details - all fields optional"""
+    display_name: Optional[str] = Field(None, min_length=1, max_length=100)
+    bio: Optional[str] = Field(None, max_length=500)
+    profile_picture: Optional[HttpUrl] = None
+    cover_picture: Optional[HttpUrl] = None
+    gender: Optional[str] = None
+    date_of_birth: Optional[datetime] = None
+    tags: Optional[List[str]] = None
+    
+    # Localization updates
+    localization: Optional[Dict[str, Any]] = None
+    
+    # Theme customization
+    theme: Optional[Dict[str, Any]] = None
+    
+    # Feature flags (admin only or specific features)
+    features: Optional[Dict[str, Any]] = None
+    
+    @validator('gender')
+    def validate_gender(cls, v):
+        if v is not None:
+            valid_genders = ['male', 'female', 'other', 'prefer_not_to_say']
+            if v.lower() not in valid_genders:
+                raise ValueError(f'Gender must be one of: {", ".join(valid_genders)}')
+            return v.lower()
+        return v
+    
+    @validator('tags')
+    def validate_tags(cls, v):
+        if v is not None:
+            # Normalize tags: lowercase, strip whitespace, remove duplicates
+            normalized_tags = []
+            for tag in v:
+                normalized_tag = tag.strip().lower()
+                if normalized_tag and normalized_tag not in normalized_tags:
+                    normalized_tags.append(normalized_tag)
+            return normalized_tags
+        return v
+    
+    @validator('display_name')
+    def validate_display_name(cls, v):
+        if v is not None:
+            # Remove extra whitespace
+            return ' '.join(v.split())
+        return v
+    
+    class Config:
+        # Allow only the fields defined in the model
+        extra = 'forbid'
+
+# Enhanced response model with all user fields
+class UserPatchResponse(BaseModel):
+    """Response model for PATCH user endpoint"""
+    id: str = Field(alias="_id")
+    username: str
+    email: EmailStr
+    display_name: str
+    bio: Optional[str] = None
+    profile_picture: Optional[str] = None
+    cover_picture: Optional[str] = None
+    gender: Optional[str] = None
+    date_of_birth: Optional[datetime] = None
+    tags: List[str] = Field(default_factory=list)
+    localization: Dict[str, Any]
+    theme: Optional[Dict[str, Any]] = None
+    features: Dict[str, Any] = Field(default_factory=dict)
+    is_verified: bool
+    verified_at: Optional[datetime] = None
+    followers_count: int = 0
+    following_count: int = 0
+    videos_count: int = 0
+    likes_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        populate_by_name = True
+
+@router.patch("/me", response_model=UserPatchResponse)
+async def patch_user_profile(
+    updates: UserPatchRequest = Body(..., example={
+        "display_name": "John Doe",
+        "bio": "Content creator and tech enthusiast",
+        "gender": "male",
+        "tags": ["technology", "gaming", "music"]
+    }),
+    current_user: str = Depends(get_current_active_user)
+):
+    """
+    Partially update current user's profile
+    
+    - Only provided fields will be updated
+    - Omitted fields remain unchanged
+    - Returns the complete updated user profile
+    """
+    db = get_database()
+    
+    # Get current user
+    user = await db.users.find_one({"_id": ObjectId(current_user)})
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    # Build update document from provided fields only
+    update_doc = {}
+    display_name_changed = False
+    
+    # Use dict to only process fields that were actually provided
+    updates_dict = updates.dict(exclude_unset=True)
+    
+    # Process each field if provided
+    if "display_name" in updates_dict:
+        update_doc["display_name"] = updates.display_name
+        if user["display_name"] != updates.display_name:
+            display_name_changed = True
+    
+    if "bio" in updates_dict:
+        update_doc["bio"] = updates.bio
+    
+    if "profile_picture" in updates_dict:
+        update_doc["profile_picture"] = str(updates.profile_picture) if updates.profile_picture else None
+    
+    if "cover_picture" in updates_dict:
+        update_doc["cover_picture"] = str(updates.cover_picture) if updates.cover_picture else None
+    
+    if "gender" in updates_dict:
+        update_doc["gender"] = updates.gender
+    
+    if "date_of_birth" in updates_dict:
+        update_doc["date_of_birth"] = updates.date_of_birth
+    
+    if "tags" in updates_dict:
+        update_doc["tags"] = updates.tags
+    
+    # Handle nested objects
+    if "localization" in updates_dict:
+        # Merge with existing localization settings
+        current_localization = user.get("localization", {})
+        updated_localization = {**current_localization, **updates.localization}
+        update_doc["localization"] = updated_localization
+    
+    if "theme" in updates_dict:
+        update_doc["theme"] = updates.theme
+    
+    if "features" in updates_dict:
+        # Merge with existing features
+        current_features = user.get("features", {})
+        updated_features = {**current_features, **updates.features}
+        update_doc["features"] = updated_features
+    
+    # Check if any updates were provided
+    if not update_doc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No valid fields provided for update"
+        )
+    
+    # Add metadata
+    update_doc["updated_at"] = datetime.utcnow()
+    
+    # Perform the update
+    result = await db.users.update_one(
+        {"_id": ObjectId(current_user)},
+        {"$set": update_doc}
+    )
+    
+    if result.modified_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Update failed"
+        )
+    
+    # If display name changed, update all user's comments in the background
+    if display_name_changed:
+        asyncio.create_task(
+            update_user_comments_display_name(
+                db,
+                current_user,
+                updates.display_name
+            )
+        )
+        logger.info(f"Initiated display name update for user {current_user}'s comments")
+    
+    # Get and return updated user
+    updated_user = await db.users.find_one({"_id": ObjectId(current_user)})
+    updated_user["_id"] = str(updated_user["_id"])
+    
+    return UserPatchResponse(**updated_user)
+
+
+@router.get("/{user_id}/complete", response_model=UserWithDetailsResponse)
+async def get_user_complete(
+    user_id: str,
+    include_videos: bool = Query(False, description="Include user's recent videos"),
+    current_user: str = Depends(get_current_active_user)
+):
+    """
+    Get complete user data with ALL fields
+    
+    - Returns all user fields including arrays (followers, following, liked videos, etc.)
+    - Includes relationship status with current user
+    - Optionally includes recent videos
+    - Sensitive fields like password_hash are excluded
+    """
+    db = get_database()
+    
+    # Validate user_id
+    if not ObjectId.is_valid(user_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid user ID format"
+        )
+    
+    # Get the requested user
+    user = await db.users.find_one({"_id": ObjectId(user_id)})
+    
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    # Convert ObjectId fields to strings
+    user_data = {
+        **user,
+        "_id": str(user["_id"]),
+        "bookmarked_videos": [str(vid) for vid in user.get("bookmarked_videos", [])],
+        "liked_videos": [str(vid) for vid in user.get("liked_videos", [])],
+        "following": [str(uid) for uid in user.get("following", [])],
+        "followers": [str(uid) for uid in user.get("followers", [])]
+    }
+    
+    # Remove sensitive fields
+    user_data.pop("password_hash", None)
+    user_data.pop("verification_token", None)
+    user_data.pop("verification_token_expires", None)
+    
+    # Create base response
+    complete_user = CompleteUserResponse(**user_data)
+    
+    # Calculate relationship status
+    current_user_oid = ObjectId(current_user)
+    is_following = current_user_oid in user.get("followers", [])
+    is_followed_by = current_user_oid in user.get("following", [])
+    
+    # Calculate mutual followers
+    if current_user != user_id:
+        current_user_data = await db.users.find_one(
+            {"_id": current_user_oid},
+            {"followers": 1}
+        )
+        if current_user_data:
+            user_followers_set = set(user.get("followers", []))
+            current_followers_set = set(current_user_data.get("followers", []))
+            mutual_followers_count = len(user_followers_set.intersection(current_followers_set))
+        else:
+            mutual_followers_count = 0
+    else:
+        mutual_followers_count = 0
+    
+    # Prepare response
+    response_data = {
+        "user": complete_user,
+        "is_following": is_following,
+        "is_followed_by": is_followed_by,
+        "mutual_followers_count": mutual_followers_count,
+        "recent_videos": []
+    }
+    
+    # Include recent videos if requested
+    if include_videos:
+        videos_cursor = db.videos.find(
+            {
+                "creator_id": ObjectId(user_id),
+                "is_active": True,
+                "privacy": "public"
+            }
+        ).sort("created_at", -1).limit(5)
+        
+        recent_videos = []
+        async for video in videos_cursor:
+            recent_videos.append({
+                "id": str(video["_id"]),
+                "title": video.get("title"),
+                "thumbnail_url": video.get("thumbnail_url"),
+                "duration": video.get("duration"),
+                "views_count": video.get("views_count", 0),
+                "likes_count": video.get("likes_count", 0),
+                "created_at": video["created_at"].isoformat()
+            })
+        
+        response_data["recent_videos"] = recent_videos
+    
+    return UserWithDetailsResponse(**response_data)
+
+@router.get("/{user_id}/raw", response_model=Dict[str, Any])
+async def get_user_raw(
+    user_id: str,
+    current_user: str = Depends(get_current_active_user)
+):
+    """
+    Get raw user data (admin endpoint or self only)
+    
+    - Returns absolutely ALL fields except password_hash
+    - Includes internal fields
+    - Restricted to user themselves or admins
+    """
+    db = get_database()
+    
+    # Check permissions - only allow user to view their own complete data
+    # or implement admin check here
+    if current_user != user_id:
+        # Check if current user is admin
+        requesting_user = await db.users.find_one({"_id": ObjectId(current_user)})
+        if not requesting_user or requesting_user.get("user_type") != "ADMIN":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You can only view your own complete data"
+            )
+    
+    # Get user with all fields
+    user = await db.users.find_one({"_id": ObjectId(user_id)})
+    
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    # Convert all ObjectIds to strings
+    def convert_objectids(obj):
+        if isinstance(obj, ObjectId):
+            return str(obj)
+        elif isinstance(obj, list):
+            return [convert_objectids(item) for item in obj]
+        elif isinstance(obj, dict):
+            return {key: convert_objectids(value) for key, value in obj.items()}
+        elif isinstance(obj, datetime):
+            return obj.isoformat()
+        return obj
+    
+    user_dict = convert_objectids(dict(user))
+    
+    # Remove only the password hash for security
+    user_dict.pop("password_hash", None)
+    
+    return user_dict
+
+@router.get("/{user_id}/stats/detailed")
+async def get_user_detailed_stats(
+    user_id: str,
+    current_user: str = Depends(get_current_active_user)
+):
+    """
+    Get detailed statistics about a user
+    
+    Includes:
+    - Total video views
+    - Total likes received
+    - Engagement rate
+    - Growth metrics
+    - Content categories
+    """
+    db = get_database()
+    
+    # Verify user exists
+    user = await db.users.find_one({"_id": ObjectId(user_id)})
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    # Aggregate video statistics
+    pipeline = [
+        {"$match": {"creator_id": ObjectId(user_id), "is_active": True}},
+        {
+            "$group": {
+                "_id": None,
+                "total_videos": {"$sum": 1},
+                "total_views": {"$sum": "$views_count"},
+                "total_likes": {"$sum": "$likes_count"},
+                "total_comments": {"$sum": "$comments_count"},
+                "total_shares": {"$sum": "$shares_count"},
+                "avg_duration": {"$avg": "$duration"},
+                "categories": {"$addToSet": "$category"},
+                "hashtags": {"$push": "$hashtags"}
+            }
+        }
+    ]
+    
+    stats_result = await db.videos.aggregate(pipeline).to_list(1)
+    video_stats = stats_result[0] if stats_result else {
+        "total_videos": 0,
+        "total_views": 0,
+        "total_likes": 0,
+        "total_comments": 0,
+        "total_shares": 0,
+        "avg_duration": 0,
+        "categories": [],
+        "hashtags": []
+    }
+    
+    # Flatten and count hashtags
+    all_hashtags = []
+    for hashtag_list in video_stats.get("hashtags", []):
+        if isinstance(hashtag_list, list):
+            all_hashtags.extend(hashtag_list)
+    
+    hashtag_counts = {}
+    for tag in all_hashtags:
+        hashtag_counts[tag] = hashtag_counts.get(tag, 0) + 1
+    
+    # Sort hashtags by frequency
+    top_hashtags = sorted(hashtag_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+    
+    # Calculate engagement rate
+    total_engagements = (
+        video_stats["total_likes"] + 
+        video_stats["total_comments"] + 
+        video_stats["total_shares"]
+    )
+    engagement_rate = (
+        (total_engagements / video_stats["total_views"] * 100) 
+        if video_stats["total_views"] > 0 else 0
+    )
+    
+    return {
+        "user_id": user_id,
+        "username": user["username"],
+        "account_stats": {
+            "followers_count": user.get("followers_count", 0),
+            "following_count": user.get("following_count", 0),
+            "videos_count": user.get("videos_count", 0),
+            "liked_videos_count": len(user.get("liked_videos", [])),
+            "bookmarked_videos_count": len(user.get("bookmarked_videos", []))
+        },
+        "content_stats": {
+            "total_videos": video_stats["total_videos"],
+            "total_views": video_stats["total_views"],
+            "total_likes": video_stats["total_likes"],
+            "total_comments": video_stats["total_comments"],
+            "total_shares": video_stats["total_shares"],
+            "average_video_duration": round(video_stats["avg_duration"], 2) if video_stats["avg_duration"] else 0,
+            "engagement_rate": round(engagement_rate, 2),
+            "categories": video_stats["categories"],
+            "top_hashtags": [{"tag": tag, "count": count} for tag, count in top_hashtags]
+        },
+        "profile_info": {
+            "is_verified": user.get("is_verified", False),
+            "created_at": user["created_at"].isoformat(),
+            "tags": user.get("tags", []),
+            "localization": user.get("localization", {})
+        }
+    }
+
+
+@router.patch("/me/localization", response_model=UserPatchResponse)
+async def patch_user_localization(
+    country: Optional[str] = None,
+    languages: Optional[List[str]] = None,
+    tribes: Optional[List[str]] = None,
+    current_user: str = Depends(get_current_active_user)
+):
+    """Update user's localization preferences"""
+    db = get_database()
+    
+    # Build update for specific localization fields
+    localization_update = {}
+    if country is not None:
+        localization_update["localization.country"] = country
+    if languages is not None:
+        localization_update["localization.languages"] = languages
+    if tribes is not None:
+        localization_update["localization.tribes"] = tribes
+    
+    if not localization_update:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No localization fields provided"
+        )
+    
+    localization_update["updated_at"] = datetime.utcnow()
+    
+    # Update user
+    result = await db.users.update_one(
+        {"_id": ObjectId(current_user)},
+        {"$set": localization_update}
+    )
+    
+    if result.modified_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found or update failed"
+        )
+    
+    # Get and return updated user
+    updated_user = await db.users.find_one({"_id": ObjectId(current_user)})
+    updated_user["_id"] = str(updated_user["_id"])
+    
+    return UserPatchResponse(**updated_user)
+
+@router.patch("/me/theme", response_model=UserPatchResponse)
+async def patch_user_theme(
+    primary_color: Optional[str] = None,
+    accent_color: Optional[str] = None,
+    font_family: Optional[str] = None,
+    dark_mode: Optional[bool] = None,
+    current_user: str = Depends(get_current_active_user)
+):
+    """Update user's theme customization"""
+    db = get_database()
+    
+    # Get current theme
+    user = await db.users.find_one(
+        {"_id": ObjectId(current_user)},
+        {"theme": 1}
+    )
+    
+    current_theme = user.get("theme", {})
+    
+    # Merge updates with current theme
+    if primary_color is not None:
+        current_theme["primary_color"] = primary_color
+    if accent_color is not None:
+        current_theme["accent_color"] = accent_color
+    if font_family is not None:
+        current_theme["font_family"] = font_family
+    if dark_mode is not None:
+        current_theme["dark_mode"] = dark_mode
+    
+    # Update user
+    result = await db.users.update_one(
+        {"_id": ObjectId(current_user)},
+        {
+            "$set": {
+                "theme": current_theme,
+                "updated_at": datetime.utcnow()
+            }
+        }
+    )
+    
+    if result.modified_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found or update failed"
+        )
+    
+    # Get and return updated user
+    updated_user = await db.users.find_one({"_id": ObjectId(current_user)})
+    updated_user["_id"] = str(updated_user["_id"])
+    
+    return UserPatchResponse(**updated_user)
+
+# Helper function (should already exist from previous updates)
+async def update_user_comments_display_name(db, user_id: str, new_display_name: str):
+    """Update display name in all user's comments"""
+    try:
+        result = await db.comments.update_many(
+            {"user_id": ObjectId(user_id)},
+            {
+                "$set": {
+                    "user_display_name": new_display_name,
+                    "updated_at": datetime.utcnow()
+                }
+            }
+        )
+        logger.info(f"Updated {result.modified_count} comments with new display name for user {user_id}")
+    except Exception as e:
+        logger.error(f"Failed to update comments display name: {e}")
 
 @router.post("/", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 async def create_user(user: UserCreate):
@@ -420,3 +1070,92 @@ async def remove_user_tags(
     user = await db.users.find_one({"_id": ObjectId(current_user)})
     user["_id"] = str(user["_id"])
     return UserResponse(**user)
+
+@router.put("/me", response_model=UserResponse)
+async def update_user(
+    user_update: UserUpdate,
+    current_user: str = Depends(get_current_active_user)
+):
+    """Update current user's profile"""
+    db = get_database()
+    
+    # Get current user data
+    user = await db.users.find_one({"_id": ObjectId(current_user)})
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    # Build update document
+    update_doc = {}
+    display_name_changed = False
+    
+    if user_update.display_name is not None:
+        update_doc["display_name"] = user_update.display_name
+        # Check if display name is changing
+        if user["display_name"] != user_update.display_name:
+            display_name_changed = True
+            
+    if user_update.bio is not None:
+        update_doc["bio"] = user_update.bio
+    if user_update.profile_picture is not None:
+        update_doc["profile_picture"] = user_update.profile_picture
+    if user_update.gender is not None:
+        update_doc["gender"] = user_update.gender
+    if user_update.date_of_birth is not None:
+        update_doc["date_of_birth"] = user_update.date_of_birth
+    if user_update.tags is not None:
+        update_doc["tags"] = user_update.tags
+    
+    if not update_doc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No fields to update"
+        )
+    
+    update_doc["updated_at"] = datetime.utcnow()
+    
+    # Update user
+    result = await db.users.update_one(
+        {"_id": ObjectId(current_user)},
+        {"$set": update_doc}
+    )
+    
+    if result.modified_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User update failed"
+        )
+    
+    # If display name changed, update all user's comments
+    if display_name_changed:
+        # Run this in the background to not block the response
+        asyncio.create_task(
+            update_user_comments_display_name(
+                db, 
+                current_user, 
+                user_update.display_name
+            )
+        )
+    
+    # Get updated user
+    user = await db.users.find_one({"_id": ObjectId(current_user)})
+    user["_id"] = str(user["_id"])
+    return UserResponse(**user)
+
+async def update_user_comments_display_name(db, user_id: str, new_display_name: str):
+    """Update display name in all user's comments"""
+    try:
+        result = await db.comments.update_many(
+            {"user_id": ObjectId(user_id)},
+            {
+                "$set": {
+                    "user_display_name": new_display_name,
+                    "updated_at": datetime.utcnow()
+                }
+            }
+        )
+        logger.info(f"Updated {result.modified_count} comments with new display name for user {user_id}")
+    except Exception as e:
+        logger.error(f"Failed to update comments display name: {e}")
