@@ -34,6 +34,15 @@ class UserCreate(BaseModel):
     tags: Optional[List[str]] = Field(default_factory=list)
 
 
+ #Video detail model for responses
+class VideoDetail(BaseModel):
+    """Video detail with id and description"""
+    id: str
+    description: Optional[str] = None
+    title: Optional[str] = None
+    thumbnail_url: Optional[str] = None
+    created_at: Optional[datetime] = None
+
 class CompleteUserResponse(BaseModel):
     """Complete user response model with ALL fields"""
     # Basic fields
@@ -75,8 +84,8 @@ class CompleteUserResponse(BaseModel):
     likes_count: int = 0
     
     # Arrays of IDs (complete lists)
-    bookmarked_videos: List[str] = Field(default_factory=list)
-    liked_videos: List[str] = Field(default_factory=list)
+    bookmarked_videos: List[VideoDetail] = Field(default_factory=list)
+    liked_videos: List[VideoDetail] = Field(default_factory=list)
     following: List[str] = Field(default_factory=list)
     followers: List[str] = Field(default_factory=list)
     
@@ -99,7 +108,7 @@ class UserWithDetailsResponse(BaseModel):
     is_following: bool = False  # If current user follows this user
     is_followed_by: bool = False  # If this user follows current user
     mutual_followers_count: int = 0  # Number of mutual followers
-    recent_videos: List[Dict[str, Any]] = Field(default_factory=list)  # Last 5 videos
+    recent_videos: List[VideoDetail] = Field(default_factory=list)  # Last 5 videos with details
     
     class Config:
         json_encoders = {
@@ -190,6 +199,7 @@ class UserPatchRequest(BaseModel):
         extra = 'forbid'
 
 # Enhanced response model with all user fields
+# Enhanced response model with all user fields
 class UserPatchResponse(BaseModel):
     """Response model for PATCH user endpoint"""
     id: str = Field(alias="_id")
@@ -216,6 +226,33 @@ class UserPatchResponse(BaseModel):
     
     class Config:
         populate_by_name = True
+
+# Helper function to get video details
+async def get_video_details(db, video_ids: List[ObjectId]) -> List[VideoDetail]:
+    """Get video details for a list of video IDs"""
+    if not video_ids:
+        return []
+    
+    # Get videos from database
+    cursor = db.videos.find({
+        "_id": {"$in": video_ids},
+        "is_active": True
+    })
+    
+    # Create a mapping to preserve order
+    video_map = {}
+    async for video in cursor:
+        video_map[video["_id"]] = VideoDetail(
+            id=str(video["_id"]),
+            description=video.get("description"),
+            title=video.get("title"),
+            thumbnail_url=video.get("urls", {}).get("thumbnail") if video.get("urls") else None,
+            created_at=video.get("created_at")
+        )
+    
+    # Return in the same order as video_ids
+    return [video_map.get(vid) for vid in video_ids if vid in video_map]
+
 
 @router.patch("/me", response_model=UserPatchResponse)
 async def patch_user_profile(
@@ -330,7 +367,6 @@ async def patch_user_profile(
     
     return UserPatchResponse(**updated_user)
 
-
 @router.get("/{user_id}/complete", response_model=UserWithDetailsResponse)
 async def get_user_complete(
     user_id: str,
@@ -340,7 +376,7 @@ async def get_user_complete(
     """
     Get complete user data with ALL fields
     
-    - Returns all user fields including arrays (followers, following, liked videos, etc.)
+    - Returns all user fields including video details (not just IDs)
     - Includes relationship status with current user
     - Optionally includes recent videos
     - Sensitive fields like password_hash are excluded
@@ -363,12 +399,22 @@ async def get_user_complete(
             detail="User not found"
         )
     
+    # Get video details for bookmarked and liked videos
+    bookmarked_video_details = await get_video_details(
+        db, 
+        user.get("bookmarked_videos", [])
+    )
+    liked_video_details = await get_video_details(
+        db, 
+        user.get("liked_videos", [])
+    )
+    
     # Convert ObjectId fields to strings
     user_data = {
         **user,
         "_id": str(user["_id"]),
-        "bookmarked_videos": [str(vid) for vid in user.get("bookmarked_videos", [])],
-        "liked_videos": [str(vid) for vid in user.get("liked_videos", [])],
+        "bookmarked_videos": bookmarked_video_details,
+        "liked_videos": liked_video_details,
         "following": [str(uid) for uid in user.get("following", [])],
         "followers": [str(uid) for uid in user.get("followers", [])]
     }
@@ -422,15 +468,13 @@ async def get_user_complete(
         
         recent_videos = []
         async for video in videos_cursor:
-            recent_videos.append({
-                "id": str(video["_id"]),
-                "title": video.get("title"),
-                "thumbnail_url": video.get("thumbnail_url"),
-                "duration": video.get("duration"),
-                "views_count": video.get("views_count", 0),
-                "likes_count": video.get("likes_count", 0),
-                "created_at": video["created_at"].isoformat()
-            })
+            recent_videos.append(VideoDetail(
+                id=str(video["_id"]),
+                description=video.get("description"),
+                title=video.get("title"),
+                thumbnail_url=video.get("urls", {}).get("thumbnail") if video.get("urls") else None,
+                created_at=video.get("created_at")
+            ))
         
         response_data["recent_videos"] = recent_videos
     
@@ -597,6 +641,55 @@ async def get_user_detailed_stats(
         }
     }
 
+@router.get("/me/liked-videos", response_model=List[VideoDetail])
+async def get_my_liked_videos(
+    skip: int = 0,
+    limit: int = 20,
+    current_user: str = Depends(get_current_active_user)
+):
+    """Get current user's liked videos with details"""
+    db = get_database()
+    
+    # Get user
+    user = await db.users.find_one({"_id": ObjectId(current_user)})
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    # Get liked video IDs with pagination
+    liked_video_ids = user.get("liked_videos", [])[skip:skip + limit]
+    
+    # Get video details
+    video_details = await get_video_details(db, liked_video_ids)
+    
+    return video_details
+
+@router.get("/me/bookmarked-videos", response_model=List[VideoDetail])
+async def get_my_bookmarked_videos(
+    skip: int = 0,
+    limit: int = 20,
+    current_user: str = Depends(get_current_active_user)
+):
+    """Get current user's bookmarked videos with details"""
+    db = get_database()
+    
+    # Get user
+    user = await db.users.find_one({"_id": ObjectId(current_user)})
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    # Get bookmarked video IDs with pagination
+    bookmarked_video_ids = user.get("bookmarked_videos", [])[skip:skip + limit]
+    
+    # Get video details
+    video_details = await get_video_details(db, bookmarked_video_ids)
+    
+    return video_details
 
 @router.patch("/me/localization", response_model=UserPatchResponse)
 async def patch_user_localization(
@@ -1072,7 +1165,7 @@ async def remove_user_tags(
     return UserResponse(**user)
 
 @router.put("/me", response_model=UserResponse)
-async def update_user(
+async def update_me(
     user_update: UserUpdate,
     current_user: str = Depends(get_current_active_user)
 ):
@@ -1143,19 +1236,3 @@ async def update_user(
     user = await db.users.find_one({"_id": ObjectId(current_user)})
     user["_id"] = str(user["_id"])
     return UserResponse(**user)
-
-async def update_user_comments_display_name(db, user_id: str, new_display_name: str):
-    """Update display name in all user's comments"""
-    try:
-        result = await db.comments.update_many(
-            {"user_id": ObjectId(user_id)},
-            {
-                "$set": {
-                    "user_display_name": new_display_name,
-                    "updated_at": datetime.utcnow()
-                }
-            }
-        )
-        logger.info(f"Updated {result.modified_count} comments with new display name for user {user_id}")
-    except Exception as e:
-        logger.error(f"Failed to update comments display name: {e}")

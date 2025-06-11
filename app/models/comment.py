@@ -41,7 +41,7 @@ class CommentResponse(BaseModel):
     id: str = Field(alias="_id")
     video_id: str
     user_id: str
-    user_display_name: str
+    user_display_name: Optional[str] = "Anonymous"
     content: str
     parent_id: Optional[str] = None
     likes_count: int = 0
