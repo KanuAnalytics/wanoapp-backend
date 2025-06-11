@@ -217,11 +217,11 @@ async def create_comment(
                 detail="Parent comment not found"
             )
     
-    # Create comment document with user display name
+    # Create comment document with user display name (fallback to Anonymous)
     comment_doc = {
         "video_id": ObjectId(comment.video_id),
         "user_id": ObjectId(current_user),
-        "user_display_name": user["display_name"],  # Cache display name
+        "user_display_name": user.get("display_name", "Anonymous"),  # Fallback to Anonymous
         "content": comment.content,
         "parent_id": ObjectId(comment.parent_id) if comment.parent_id else None,
         "likes_count": 0,
@@ -299,6 +299,9 @@ async def search_comments(
         # Check if current user liked this comment
         is_liked = ObjectId(current_user) in comment.get("liked_by", [])
         
+        # Ensure user_display_name has fallback
+        comment["user_display_name"] = comment.get("user_display_name", "Anonymous")
+        
         response_doc = {
             **comment,
             "_id": str(comment["_id"]),
@@ -341,6 +344,9 @@ async def get_user_comments(
         # Check if current user liked this comment
         is_liked = ObjectId(current_user) in comment.get("liked_by", [])
         
+        # Ensure user_display_name has fallback
+        comment["user_display_name"] = comment.get("user_display_name", "Anonymous")
+        
         response_doc = {
             **comment,
             "_id": str(comment["_id"]),
@@ -378,6 +384,9 @@ async def get_video_comments(
     async for comment in cursor:
         # Check if current user liked this comment
         is_liked = ObjectId(current_user) in comment.get("liked_by", [])
+        
+        # Ensure user_display_name has fallback
+        comment["user_display_name"] = comment.get("user_display_name", "Anonymous")
         
         response_doc = {
             **comment,
@@ -420,6 +429,9 @@ async def get_comment_replies(
     async for reply in cursor:
         # Check if current user liked this reply
         is_liked = ObjectId(current_user) in reply.get("liked_by", [])
+        
+        # Ensure user_display_name has fallback
+        reply["user_display_name"] = reply.get("user_display_name", "Anonymous")
         
         response_doc = {
             **reply,
@@ -478,6 +490,9 @@ async def update_comment(
     # Get updated comment
     comment = await db.comments.find_one({"_id": ObjectId(comment_id)})
     is_liked = ObjectId(current_user) in comment.get("liked_by", [])
+    
+    # Ensure user_display_name has fallback
+    comment["user_display_name"] = comment.get("user_display_name", "Anonymous")
     
     response_doc = {
         **comment,
