@@ -78,12 +78,135 @@ class UpdateVideoInput:
 
 @strawberry.input
 class CreateCommentInput:
+    video_id: str
     content: str
-    parent_comment_id: Optional[str] = None
+    parent_id: Optional[str] = None
+
+@strawberry.type
+class CommentMutations:
+    @strawberry.mutation
+    async def create_comment(
+        self, 
+        input: CreateCommentInput,
+        info: strawberry.Info
+    ) -> CommentType:
+        """Create a new comment"""
+        db = get_database()
+        user_id = info.context["user_id"]
+        
+        # Get user's display name
+        user = await db.users.find_one({"_id": ObjectId(user_id)})
+        if not user:
+            raise Exception("User not found")
+        
+        # Verify video exists
+        video = await db.videos.find_one({"_id": ObjectId(input.video_id)})
+        if not video:
+            raise Exception("Video not found")
+        
+        # If it's a reply, verify parent comment exists
+        if input.parent_id:
+            parent = await db.comments.find_one({"_id": ObjectId(input.parent_id)})
+            if not parent:
+                raise Exception("Parent comment not found")
+        
+        # Create comment with cached display name
+        comment_doc = {
+            "video_id": ObjectId(input.video_id),
+            "user_id": ObjectId(user_id),
+            "user_display_name": user["display_name"],  # Cache display name
+            "content": input.content,
+            "parent_id": ObjectId(input.parent_id) if input.parent_id else None,
+            "likes_count": 0,
+            "replies_count": 0,
+            "liked_by": [],
+            "is_edited": False,
+            "edited_at": None,
+            "is_pinned": False,
+            "is_hearted": False,
+            "created_at": datetime.utcnow(),
+            "updated_at": datetime.utcnow(),
+            "is_active": True
+        }
+        
+        result = await db.comments.insert_one(comment_doc)
+        
+        # Update counts
+        if input.parent_id:
+            await db.comments.update_one(
+                {"_id": ObjectId(input.parent_id)},
+                {"$inc": {"replies_count": 1}}
+            )
+        
+        await db.videos.update_one(
+            {"_id": ObjectId(input.video_id)},
+            {"$inc": {"comments_count": 1}}
+        )
+        
+        return CommentType(
+            id=str(result.inserted_id),
+            video_id=input.video_id,
+            user_id=str(user_id),
+            user_display_name=user["display_name"],
+            content=input.content,
+            parent_id=input.parent_id,
+            created_at=comment_doc["created_at"]
+        )
+    
+    @strawberry.mutation
+    async def update_comment(
+        self,
+        comment_id: str,
+        content: str,
+        info: strawberry.Info
+    ) -> CommentType:
+        """Update a comment"""
+        db = get_database()
+        user_id = info.context["user_id"]
+        
+        # Get comment
+        comment = await db.comments.find_one({
+            "_id": ObjectId(comment_id),
+            "user_id": ObjectId(user_id),
+            "is_active": True
+        })
+        
+        if not comment:
+            raise Exception("Comment not found or you don't have permission to edit it")
+        
+        # Update comment
+        await db.comments.update_one(
+            {"_id": ObjectId(comment_id)},
+            {
+                "$set": {
+                    "content": content,
+                    "is_edited": True,
+                    "edited_at": datetime.utcnow(),
+                    "updated_at": datetime.utcnow()
+                }
+            }
+        )
+        
+        # Return updated comment
+        comment = await db.comments.find_one({"_id": ObjectId(comment_id)})
+        
+        return CommentType(
+            id=str(comment["_id"]),
+            video_id=str(comment["video_id"]),
+            user_id=str(comment["user_id"]),
+            user_display_name=comment["user_display_name"],
+            content=comment["content"],
+            parent_id=str(comment["parent_id"]) if comment.get("parent_id") else None,
+            likes_count=comment.get("likes_count", 0),
+            replies_count=comment.get("replies_count", 0),
+            is_edited=True,
+            edited_at=comment["edited_at"],
+            created_at=comment["created_at"]
+        )
 
 
 @strawberry.type
-class Mutation(VideoEditorMutation):
+class Mutation(VideoEditorMutation, CommentMutations):
     @strawberry.mutation
     async def register(self, input: RegisterInput) -> AuthPayload:
         """Register a new user"""
