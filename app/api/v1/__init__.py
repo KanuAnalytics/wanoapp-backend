@@ -15,6 +15,8 @@ from app.api.v1.videos import router as videos_router
 from app.api.v1.comments import router as comments_router
 from app.api.v1.feed import router as feed_router
 from app.api.v1.metrics import router as metrics_router
+from app.api.v1.reports import router as reports_router
+
 
 # Include all routers
 api_router.include_router(auth_router, prefix="/auth", tags=["authentication"])
@@ -23,3 +25,4 @@ api_router.include_router(videos_router, prefix="/videos", tags=["videos"])
 api_router.include_router(comments_router, prefix="", tags=["comments"])
 api_router.include_router(feed_router, prefix="/feed", tags=["feed"])
 api_router.include_router(metrics_router, prefix="/metrics", tags=["metrics"])
+api_router.include_router(reports_router, prefix="/reports", tags=["reports"])
