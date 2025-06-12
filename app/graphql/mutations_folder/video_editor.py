@@ -163,7 +163,7 @@ class VideoEditorMutation:
                 "title": None,  # Can be updated later by user
                 "description": None,
                 "video_type": "regular",
-                "privacy": "public",
+                "privacy": input.videoType,
                 "metadata": {
                     "duration": total_duration,
                     "width": 1080,  # You might want to detect this from the actual video
