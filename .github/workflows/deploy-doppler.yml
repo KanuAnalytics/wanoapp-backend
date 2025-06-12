@@ -31,8 +31,7 @@ jobs:
         run: doppler secrets download --no-file --format env > .env.stage.dev
 
       - name: Copy .env to Remote Directory
-        run: |
-          cp .env.stage.dev ./.env
+        run: cp .env.stage.dev ./.env
 
       - name: Set up Docker
         uses: docker/setup-buildx-action@v1
@@ -42,19 +41,15 @@ jobs:
           export DOCKER_BUILDKIT=1
           docker compose build
 
-      - name: Deploy and verify new container (without stopping the old one)
+      - name: Deploy and verify new container
         run: |
           set -e
           docker compose up -d --wait --wait-timeout 120 --force-recreate
 
-      - name: Stop and Remove Old Container (Zero Downtime)
+      - name: Remove Exited Old Containers (Safe)
         run: |
-          RUNNING=$(docker ps -aq -f name=${{ env.CONTAINER_NAME }})
-          if [ ! -z "$RUNNING" ]; then
-            echo "Stopping and removing any previous containers with name ${{ env.CONTAINER_NAME }}..."
-            docker stop ${{ env.CONTAINER_NAME }} || true
-            docker rm ${{ env.CONTAINER_NAME }} || true
-          fi
+          # Only remove stopped/exited containers with the same name, NOT running ones
+          docker ps -a -f "name=${{ env.CONTAINER_NAME }}" -f "status=exited" -q | xargs --no-run-if-empty docker rm -f
 
       - name: Remove Old Docker Images (Cleanup)
         run: |
