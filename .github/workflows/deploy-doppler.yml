@@ -15,17 +15,14 @@ jobs:
   build-and-deploy:
     runs-on: [self-hosted, server]
     env:
-      # Doppler configuration
       DOPPLER_PROJECT: wano-app
       DOPPLER_CONFIG: dev
       DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN_DEV }}
-      # Docker image tag
       DOCKER_TAG: ${{ github.sha }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
-
 
       - name: Install Doppler CLI via GitHub Action
         uses: dopplerhq/cli-action@v3
@@ -45,10 +42,17 @@ jobs:
           export DOCKER_BUILDKIT=1
           docker compose build
 
-      - name: Stop and Remove Existing Container (if it exists)
+      - name: Deploy and verify new container (without stopping the old one)
         run: |
-          if [ "$(docker ps -aq -f name=${{ env.CONTAINER_NAME }})" ]; then
-            echo "Stopping existing container..."
+          set -e
+          docker compose up -d --wait --wait-timeout 120 --force-recreate
+
+      - name: Stop and Remove Old Container (Zero Downtime)
+        run: |
+          # Remove old containers with the same name, except the latest one
+          RUNNING=$(docker ps -aq -f name=${{ env.CONTAINER_NAME }})
+          if [ ! -z "$RUNNING" ]; then
+            echo "Stopping and removing any previous containers with name ${{ env.CONTAINER_NAME }}..."
             docker stop ${{ env.CONTAINER_NAME }} || true
             docker rm ${{ env.CONTAINER_NAME }} || true
           fi
@@ -57,11 +61,6 @@ jobs:
         run: |
           LATEST_IMAGE_ID=$(docker images --filter="reference=${{ env.IMAGE_NAME }}:*" --format "{{.ID}}" | head -n 1)
           docker images --filter="reference=${{ env.IMAGE_NAME }}:*" --format "{{.ID}}" | grep -v "$LATEST_IMAGE_ID" | xargs --no-run-if-empty docker rmi -f || true
-
-      - name: Deploy and verify
-        run: |
-          set -e
-          docker compose up -d --wait --wait-timeout 120 --force-recreate
 
       - name: Remove dangling images & build cache
         run: |
