@@ -451,7 +451,8 @@ class Mutation(VideoEditorMutation, CommentMutations):
             FEid=video_doc.get("FEid"),
             start=video_doc.get("start", 0.0),
             end=video_doc.get("end", input.duration),
-            remoteUrl=video_doc.get("remoteUrl")
+            remoteUrl=video_doc.get("remoteUrl"),
+            type=video_doc.get('type')
         )
         
     @strawberry.mutation
