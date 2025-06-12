@@ -60,9 +60,10 @@ jobs:
 
       - name: Deploy and verify
         run: |
-          set -e                              
-          docker compose up -d --wait \
-            --wait-timeout 120 \               
+          set -e
+          docker compose up \
+            --abort-on-container-exit \
+            --exit-code-from prime \   # service name in compose file
             --force-recreate
 
       - name: Remove dangling images & build cache
