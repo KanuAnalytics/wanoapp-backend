@@ -67,46 +67,12 @@ jobs:
           docker builder prune -f
           docker system prune -a --volumes -f
 
-      - name: Notify Slack on Success
-        if: success()
-        uses: slackapi/slack-github-action@v1.25.0
+      - name: Slack Notification (rich)
+        uses: act10ns/slack@v2
         with:
-          payload: |
-            {
-              "text": ":white_check_mark: *Deployment succeeded!*",
-              "attachments": [
-                {
-                  "color": "good",
-                  "fields": [
-                    { "title": "Repository", "value": "${{ github.repository }}", "short": true },
-                    { "title": "Branch", "value": "${{ github.ref }}", "short": true },
-                    { "title": "Commit", "value": "${{ github.sha }}", "short": true },
-                    { "title": "Deployer", "value": "${{ github.actor }}", "short": true }
-                  ]
-                }
-              ]
-            }
+          status: ${{ job.status }}
+          steps: ${{ toJson(steps) }}
+          config: .github/config/slack.yml
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-
-      - name: Notify Slack on Failure
-        if: failure()
-        uses: slackapi/slack-github-action@v1.25.0
-        with:
-          payload: |
-            {
-              "text": ":x: *Deployment failed!*",
-              "attachments": [
-                {
-                  "color": "danger",
-                  "fields": [
-                    { "title": "Repository", "value": "${{ github.repository }}", "short": true },
-                    { "title": "Branch", "value": "${{ github.ref }}", "short": true },
-                    { "title": "Commit", "value": "${{ github.sha }}", "short": true },
-                    { "title": "Deployer", "value": "${{ github.actor }}", "short": true }
-                  ]
-                }
-              ]
-            }
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        if: always()
