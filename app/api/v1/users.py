@@ -6,7 +6,7 @@ app/api/v1/users.py
 """
 import asyncio
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Body, HTTPException, Depends, status
+from fastapi import APIRouter, Body, HTTPException, Depends, status, Query
 from bson import ObjectId
 from datetime import datetime
 from app.models.base import PyObjectId
