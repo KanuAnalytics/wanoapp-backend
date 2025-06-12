@@ -15,6 +15,7 @@ from app.core.database import get_database
 from app.core.security import get_password_hash, create_verification_token
 from app.api.deps import get_current_active_user
 from pydantic import BaseModel, Field, EmailStr, HttpUrl, validator
+from app.models.video import VideoUrls
 from app.services.email_service import email_service
 import logging
 
@@ -42,6 +43,7 @@ class VideoDetail(BaseModel):
     title: Optional[str] = None
     thumbnail_url: Optional[str] = None
     created_at: Optional[datetime] = None
+    url: Optional[VideoUrls] = None
 
 class CompleteUserResponse(BaseModel):
     """Complete user response model with ALL fields"""
@@ -247,7 +249,8 @@ async def get_video_details(db, video_ids: List[ObjectId]) -> List[VideoDetail]:
             description=video.get("description"),
             title=video.get("title"),
             thumbnail_url=video.get("urls", {}).get("thumbnail") if video.get("urls") else None,
-            created_at=video.get("created_at")
+            created_at=video.get("created_at"),
+            url=video.get("urls")
         )
     
     # Return in the same order as video_ids
