@@ -47,6 +47,23 @@ class ReportReason(str, Enum):
     MISINFORMATION = "misinformation"
     OTHER = "other"
 
+
+class ReportCategory(str, Enum):
+    """Extended report categories for more specific violation types"""
+    VIOLENCE = "violence"
+    HATE_SPEECH = "hate_speech"
+    NUDITY = "nudity"
+    SUICIDE_SELF_HARM = "suicide_self_harm"
+    FALSE_INFORMATION = "false_information"
+    BULLYING = "bullying"
+    TERRORISM = "terrorism"
+    CHILD_EXPLOITATION = "child_exploitation"
+    DANGEROUS_ACTS = "dangerous_acts"
+    REGULATED_GOODS = "regulated_goods"
+    INTELLECTUAL_PROPERTY = "intellectual_property"
+    SPAM = "spam"
+    OTHER = "other"
+
 class CampaignStatus(str, Enum):
     DRAFT = "draft"
     ACTIVE = "active"

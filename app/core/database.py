@@ -26,6 +26,8 @@ async def connect_to_mongo():
         # Create indexes for better performance
         await create_indexes()
         
+        await create_comment_indexes(db.db)
+        
         logger.info("Connected to MongoDB")
     except Exception as e:
         logger.error(f"Could not connect to MongoDB: {e}")
@@ -56,6 +58,38 @@ async def create_indexes():
         logger.info("Database indexes created")
     except Exception as e:
         logger.error(f"Error creating indexes: {e}")
+        
+async def create_comment_indexes(db):
+    """Create indexes for comments collection"""
+    
+    # Existing indexes
+    await db.comments.create_index("video_id")
+    await db.comments.create_index("user_id")
+    await db.comments.create_index("parent_id")
+    
+    # New index for display name
+    await db.comments.create_index("user_display_name")
+    
+    # Compound indexes for common queries
+    await db.comments.create_index([
+        ("video_id", 1),
+        ("parent_id", 1),
+        ("is_active", 1),
+        ("created_at", -1)
+    ])
+    
+    # Text index for search
+    await db.comments.create_index([
+        ("content", "text"),
+        ("user_display_name", "text")
+    ])
+    
+    # Index for user comments query
+    await db.comments.create_index([
+        ("user_id", 1),
+        ("is_active", 1),
+        ("created_at", -1)
+    ])
 
 def get_database():
     """Get database instance"""
