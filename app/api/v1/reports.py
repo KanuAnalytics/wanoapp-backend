@@ -29,6 +29,7 @@ async def report_video(
     - Requires authentication
     - Prevents duplicate reports from same user for same video
     - Returns report details upon successful creation
+    - Reason field is now optional
     """
     db = get_database()
     
@@ -76,7 +77,7 @@ async def report_video(
     report_doc = {
         "video_id": ObjectId(video_id),
         "reporter_id": ObjectId(current_user),
-        "reason": report_data.reason,
+        "reason": report_data.reason,  # Can be None
         "category": report_data.category,
         "comment": report_data.comment,
         "timestamp": report_data.timestamp,

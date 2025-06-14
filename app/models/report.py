@@ -31,8 +31,8 @@ class VideoReport(BaseDocument):
     video_id: PyObjectId = Field(..., description="ID of the reported video")
     reporter_id: PyObjectId = Field(..., description="ID of the user making the report")
     
-    # Report details
-    reason: ReportReason = Field(..., description="Primary reason for the report")
+    # Report details - reason is now optional
+    reason: Optional[ReportReason] = Field(None, description="Primary reason for the report")
     category: ReportCategory = Field(..., description="Specific category of the violation")
     comment: Optional[str] = Field(None, max_length=500, description="Additional details from reporter")
     
@@ -61,7 +61,7 @@ class VideoReport(BaseDocument):
 
 class ReportCreate(BaseModel):
     """Request model for creating a video report"""
-    reason: ReportReason = Field(..., description="Primary reason for the report")
+    reason: Optional[ReportReason] = Field(None, description="Primary reason for the report")
     category: ReportCategory = Field(..., description="Specific category of the violation")
     comment: Optional[str] = Field(None, max_length=500, description="Additional details about the violation")
     timestamp: Optional[float] = Field(None, ge=0, description="Specific timestamp in video where violation occurs (seconds)")
@@ -78,7 +78,7 @@ class ReportResponse(BaseModel):
     id: str = Field(alias="_id")
     video_id: str
     reporter_id: str
-    reason: ReportReason
+    reason: Optional[ReportReason]
     category: ReportCategory
     comment: Optional[str]
     timestamp: Optional[float]

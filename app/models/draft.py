@@ -6,6 +6,7 @@ from app.models.base import BaseDocument, PyObjectId
 class ClipModel(BaseModel):
     """Individual clip in a draft"""
     id: str = Field(..., description="Unique clip identifier")
+    userId: Optional[str] = Field(None, description="ID of the user who created this video/photo")
     type: Literal["video", "photo"] = Field(..., description="Clip type")
     duration: float = Field(..., ge=0, description="Clip duration in seconds")
     start: float = Field(..., ge=0, description="Start time")
