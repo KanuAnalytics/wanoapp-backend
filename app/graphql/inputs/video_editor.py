@@ -24,3 +24,5 @@ class CompileVideoInput:
     audio_url: Optional[str] = None
     ratio: Optional[str] = None
     videoType: Optional[str] = "Public"
+    description: Optional[str] = None
+    

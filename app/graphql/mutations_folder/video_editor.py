@@ -161,7 +161,7 @@ class VideoEditorMutation:
             video_doc = {
                 "creator_id": ObjectId(user_id),
                 "title": None,  # Can be updated later by user
-                "description": None,
+                "description": input.description,
                 "video_type": "regular",
                 "privacy": input.videoType,
                 "metadata": {
