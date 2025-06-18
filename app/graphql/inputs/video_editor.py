@@ -23,6 +23,6 @@ class CompileVideoInput:
     video: list[VideoInput]
     audio_url: Optional[str] = None
     ratio: Optional[str] = None
-    videoType: Optional[str] = "Public"
+    videoType: Optional[str] = "public"
     description: Optional[str] = None
     

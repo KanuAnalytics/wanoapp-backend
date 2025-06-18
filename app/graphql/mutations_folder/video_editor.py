@@ -1,264 +1,144 @@
-"""
 
+"""
 app/graphql/mutations_folder/video_editor.py
-
 """
 
-
-import time
 import strawberry
-from typing import Optional
-from bson import ObjectId
-from datetime import datetime
-from app.graphql.types import VideoType, VideoTypeEnum, VideoPrivacyEnum
+import httpx
+import asyncio
+from typing import Dict, Any
+from app.graphql.types import ResponseType
 from app.graphql.inputs.video_editor import CompileVideoInput
-from app.services.upload_DO import upload_to_spaces
-from app.services.video_editor import (
-    change_video_ratio, convert_image_to_video, stitch_videos, 
-    trim_video, add_audio_to_video, download_file_from_url
-)
-from app.core.database import get_database
-import tempfile
-import os
-from fastapi import HTTPException
-from app.services.upload_DO import allowed_file, secure_filename, get_content_type
-import shutil
+from fastapi import HTTPException, BackgroundTasks
+from app.core.config import settings
 
-async def process_and_upload_video(stitched_video_path, local_paths, upload_to_spaces):
-    # Generate filename for the compiled video
-    compiled_filename = f"compiled_video_{int(time.time())}.mp4"
-    
-    # Validate file type
-    if not allowed_file(compiled_filename):
-        raise HTTPException(
-            status_code=400, 
-            detail="Invalid file type. Allowed: mp4, avi, mov, wmv, flv, webm, mkv"
-        )
-    
-    secure_compiled_filename = secure_filename(compiled_filename)
-    
-    # Read the stitched video file and create an UploadFile-like object
-    with open(stitched_video_path, 'rb') as video_file:
-        video_content = video_file.read()
+async def call_video_service_api(input: CompileVideoInput, user_id: str) -> Dict[str, Any]:
+        """
+        Call the second backend's GraphQL API
+        """
+        # GraphQL endpoint URL of your second backend
+        SERVICE_API_URL = settings.VIDEO_SERVICE_URL  # Update this URL
         
-    # Create a temporary file-like object for upload
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
-    temp_file.write(video_content)
-    temp_file.seek(0)
-    
-    # Create an UploadFile object for the upload function
-    class MockUploadFile:
-        def __init__(self, file_path, filename):
-            self.filename = filename
-            self.size = os.path.getsize(file_path)
-            self._file = open(file_path, 'rb')
+        # Prepare the GraphQL mutation query
+        mutation = """
+        mutation CompileVideo($input: CompileVideoInput!) {
+            compileVideo(input: $input) {
+                remoteUrl
+                duration
+                start
+                end
+                type
+            }
+        }
+        """
         
-        async def read(self, size=-1):
-            return self._file.read(size)
+        # Convert the input to include user_id
+        variables = {
+            "input": {
+                "video": [
+                    {
+                        "FEid": video.FEid,
+                        "duration": video.duration,
+                        "start": video.start,
+                        "end": video.end,
+                        "remoteUrl": video.remoteUrl,
+                        "type": video.type,
+                        "index": video.index,
+                        "isTrimmed": video.isTrimmed
+                    }
+                    for video in input.video
+                ],
+                "audioUrl": input.audio_url,
+                "ratio": input.ratio,
+                "videoType": input.videoType,
+                "description": input.description,
+                "userId": user_id  # Add the user_id field
+            }
+        }
         
-        async def seek(self, offset, whence=0):
-            return self._file.seek(offset, whence)
+        # Prepare the request payload
+        payload = {
+            "query": mutation,
+            "variables": variables
+        }
         
-        def close(self):
-            self._file.close()
-    
-    mock_video = MockUploadFile(temp_file.name, secure_compiled_filename)
-    
-    # Upload to Spaces
-    success, result, object_key = await upload_to_spaces(mock_video, secure_compiled_filename)
-    
-    if not success:
-        raise HTTPException(status_code=500, detail=f"Upload failed: {result}")
-    
-    # Clean up temporary files
-    mock_video.close()
-    os.unlink(temp_file.name)
-    
-    # Clean up downloaded video files
-    for path in local_paths:
-        if os.path.exists(path):
-            os.unlink(path)
-    
-    # Clean up stitched video if different from original
-    if stitched_video_path not in local_paths and os.path.exists(stitched_video_path):
-        os.unlink(stitched_video_path)
-    
-    return result
+        # Make the HTTP request to the second backend with longer timeout
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.post(
+                    SERVICE_API_URL,
+                    json=payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        # Add any authentication headers if needed
+                        # "Authorization": f"Bearer {token}",
+                    },
+                    timeout=300.0  # 5 minutes timeout for long-running operations
+                )
+                
+                # Check if the request was successful
+                response.raise_for_status()
+                
+                # Parse the response
+                response_data = response.json()
+                
+                # Check for GraphQL errors
+                if "errors" in response_data:
+                    error_messages = [error.get("message", "Unknown error") for error in response_data["errors"]]
+                    raise Exception(f"GraphQL errors: {', '.join(error_messages)}")
+                
+                # Extract the data from the response
+                if "data" in response_data and "compileVideo" in response_data["data"]:
+                    return response_data["data"]["compileVideo"]
+                else:
+                    raise Exception("Invalid response format from service API")
+                    
+            except httpx.TimeoutException:
+                raise Exception("Request to service API timed out")
+            except httpx.HTTPStatusError as e:
+                raise Exception(f"HTTP error from service API: {e.response.status_code}")
+            except Exception as e:
+                raise Exception(f"Error calling service API: {str(e)}")
+
+async def call_video_service_api_background(input: CompileVideoInput, user_id: str):
+        """
+        Background task to call the second backend's GraphQL API
+        This runs independently and doesn't block the main response
+        """
+        try:
+            await call_video_service_api(input, user_id)
+            # Optionally: Store success status in database, send notification, etc.
+            print(f"Video compilation completed successfully for user {user_id}")
+            
+        except Exception as e:
+            # Handle errors in background task
+            # Optionally: Store error status in database, send error notification, etc.
+            print(f"Video compilation failed for user {user_id}: {str(e)}")
+            # You might want to log this properly or store in database
 
 @strawberry.type
 class VideoEditorMutation:
     @strawberry.mutation
-    async def compile_video(self, info, input: CompileVideoInput) -> VideoType:
+    async def compile_video(self, info, input: CompileVideoInput) -> ResponseType:
         try:
             # Check authentication
             user_id = info.context.get("user_id")
             if not user_id:
                 raise Exception("Authentication required")
             
-            db = get_database()
+            print(user_id)
             
-            # Get user info and check verification
-            user = await db.users.find_one({"_id": ObjectId(user_id)})
-            # if not user.get("is_verified", False):
-            #     raise Exception("Please verify your email before uploading videos")
+            # Fire and forget - start the background task without waiting
+            asyncio.create_task(call_video_service_api_background(input, user_id))
             
-            # Download all videos/photos locally and map by index
-            local_paths = {}
-            
-            print(f"Compiling video with input: {input}")
-
-            for video in input.video:
-                idx = video.index  # Assuming 'index' is provided in each video input
-                if video.type == 'photo':
-                    local_path_image = await download_file_from_url(video.remoteUrl, temp_dir="temp_photos")
-                    local_path = await convert_image_to_video(local_path_image, video.duration)
-                    local_paths[idx] = local_path
-                else:
-                    local_path = await download_file_from_url(video.remoteUrl, temp_dir="temp_videos")
-                    if video.isTrimmed:
-                        trimmed_video_path = await trim_video(local_path, video.start, video.end)
-                        print(f"Trimmed video path: {trimmed_video_path}")
-                        local_paths[idx] = trimmed_video_path
-                    else:
-                        local_paths[idx] = local_path
-
-            # Sort local_paths by index for stitching
-            ordered_paths = [local_paths[i] for i in sorted(local_paths.keys())]
-            
-            print(f"Ordered video paths: {ordered_paths}")
-            
-            # Stitch videos together
-            if len(ordered_paths) == 0:
-                raise HTTPException(status_code=400, detail="No videos provided")
-            
-            if len(ordered_paths) == 1:
-                # Only one video, no stitching needed
-                stitched_video_path = ordered_paths[0]
-            else:
-                # Stitch multiple videos in order
-                stitched_video_path = ordered_paths[0]
-                for i in range(1, len(ordered_paths)):
-                    stitched_video_path = await stitch_videos(stitched_video_path, ordered_paths[i])
-                    
-            if input.audio_url:
-                # Add audio to the stitched video
-                temp_audio_path = await download_file_from_url(input.audio_url, temp_dir="temp_audio")
-                stitched_video_path = await add_audio_to_video(stitched_video_path, temp_audio_path)
-            
-            if input.ratio:
-                # Resize the video to the specified ratio
-                stitched_video_path = await change_video_ratio(stitched_video_path, new_ratio=input.ratio)
-            
-            # Upload and get URL
-            result = await process_and_upload_video(stitched_video_path, ordered_paths, upload_to_spaces)
-            
-            # Calculate total duration
-            total_duration = sum(video.duration for video in input.video)
-            
-            print(f"Video compiled and uploaded successfully: {result}")
-
-            # Create video document in database
-            video_doc = {
-                "creator_id": ObjectId(user_id),
-                "title": None,  # Can be updated later by user
-                "description": input.description,
-                "video_type": "regular",
-                "privacy": input.videoType,
-                "metadata": {
-                    "duration": total_duration,
-                    "width": 1080,  # You might want to detect this from the actual video
-                    "height": 1920,
-                    "fps": 30.0,
-                    "file_size": 0  # You can calculate this during upload
-                },
-                "urls": {
-                    "original": result,
-                    "hls_playlist": result,  # In production, generate HLS separately
-                    "thumbnail": result,  # In production, generate thumbnail separately
-                    "download": result
-                },
-                # Additional fields for compatibility
-                "FEid": None,
-                "start": 0,
-                "end": total_duration,
-                "duration": total_duration,
-                "remoteUrl": result,
-                "type": 'video',
-                # Standard fields
-                "hashtags": [],
-                "categories": [],
-                "remix_enabled": True,
-                "comments_enabled": True,
-                "created_at": datetime.utcnow(),
-                "updated_at": datetime.utcnow(),
-                "is_active": True,
-                "views_count": 0,
-                "likes_count": 0,
-                "comments_count": 0,
-                "shares_count": 0,
-                "bookmarks_count": 0,
-                "is_approved": True,
-                "is_flagged": False,
-                "report_count": 0,
-                "is_remix": False,
-                "remix_count": 0,
-                "country": user.get("localization", {}).get("country", "NG"),
-                "language": user.get("localization", {}).get("languages", ["en"])[0]
-            }
-            
-            # Insert into database
-            result_insert = await db.videos.insert_one(video_doc)
-            
-            # Update user's video count
-            await db.users.update_one(
-                {"_id": ObjectId(user_id)},
-                {"$inc": {"videos_count": 1}}
-            )
-            
-            # Clean up temp directories if they exist
-            for temp_dir in ["temp_audio", "temp_videos", "temp_photos", "output"]:
-                if os.path.exists(temp_dir) and os.path.isdir(temp_dir):
-                    try:
-                        shutil.rmtree(temp_dir)
-                    except Exception as cleanup_err:
-                        print(f"Failed to remove {temp_dir}: {cleanup_err}")
-            
-            # Return VideoType from your existing types
-            return VideoType(
-                id=str(result_insert.inserted_id),
-                creator_id=str(video_doc["creator_id"]),
-                title=video_doc.get("title"),
-                remoteUrl=result,
-                type= video_doc["type"],
-                duration=video_doc["duration"],
-                start=video_doc["start"],
-                end=video_doc["end"],
-                description=video_doc.get("description"),
-                video_type=VideoTypeEnum(video_doc["video_type"]),
-                privacy=VideoPrivacyEnum(video_doc["privacy"]),
-                views_count=video_doc.get("views_count", 0),
-                likes_count=video_doc.get("likes_count", 0),
-                comments_count=video_doc.get("comments_count", 0),
-                shares_count=video_doc.get("shares_count", 0),
-                hashtags=video_doc.get("hashtags", []),
-                categories=video_doc.get("categories", []),
-                created_at=video_doc["created_at"],
-                buffered_views=0,
-                buffered_likes=0,
-                buffered_comments=0
+            # Return immediately with a success response
+            return ResponseType(
+                message="Video compilation request submitted successfully. Processing in background.",
+                status="accepted"
             )
             
         except HTTPException:
             # Re-raise HTTP exceptions
             raise
         except Exception as e:
-            # Clean up any temporary files in case of error
-            try:
-                if 'local_paths' in locals():
-                    for path in local_paths.values():
-                        if os.path.exists(path):
-                            os.unlink(path)
-            except:
-                pass
-            
             raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")

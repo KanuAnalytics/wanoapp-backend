@@ -55,6 +55,11 @@ class UserType:
     date_of_birth: Optional[datetime] = None
     tags: List[str] = strawberry.field(default_factory=list)
     
+@strawberry.type   
+class ResponseType:
+    message: str
+    status: str
+    
 @strawberry.type
 class VideoType:
     id: str

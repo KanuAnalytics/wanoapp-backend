@@ -76,6 +76,9 @@ class Settings(BaseSettings):
     DO_SPACES_ENDPOINT: str
     DO_SPACES_SECRET_KEY: str
     
+    #service URL
+    VIDEO_SERVICE_URL: str
+    
     class Config:
         env_file = ".env"
         case_sensitive = True
