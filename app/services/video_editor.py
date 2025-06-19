@@ -153,7 +153,16 @@ async def change_video_ratio(video_path: str, new_ratio: str, output_dir: Option
         output_path = os.path.join(output_dir, unique_name)
         
         # Write the output file
-        resized_clip.write_videofile(output_path, codec="libx264", audio_codec="aac")
+        resized_clip.write_videofile(
+            output_path,
+            codec="libx264",
+            audio_codec="aac",
+            ffmpeg_params=[
+                "-pix_fmt", "yuv420p",     # Required for Android
+                "-profile:v", "main",      # Better compression than baseline
+                "-level", "3.1"            # Good for 720p and most Android devices
+            ]
+        )
         
         logger.info(f"Video resized and saved to {output_path}")
         return output_path
@@ -195,7 +204,16 @@ async def stitch_videos(video_path1, video_path2, output_dir="output"):
         output_path = os.path.join(output_dir, unique_name)
         
         # Write the output file
-        final_clip.write_videofile(output_path, codec="libx264", audio_codec="aac")
+        final_clip.write_videofile(
+            output_path,
+            codec="libx264",
+            audio_codec="aac",
+            ffmpeg_params=[
+                "-pix_fmt", "yuv420p",     # Required for Android
+                "-profile:v", "main",      # Better compression than baseline
+                "-level", "3.1"            # Good for 720p and most Android devices
+            ]
+        )
 
         print(f"Video saved to {output_path}")
         return output_path
@@ -281,7 +299,16 @@ async def add_audio_to_video(video_path, audio_path, output_dir="output"):
         output_path = os.path.join(output_dir, unique_name)
         
         # Write the final video with new audio
-        final_clip.write_videofile(output_path, codec="libx264", audio_codec="aac")
+        final_clip.write_videofile(
+            output_path,
+            codec="libx264",
+            audio_codec="aac",
+            ffmpeg_params=[
+                "-pix_fmt", "yuv420p",     # Required for Android
+                "-profile:v", "main",      # Better compression than baseline
+                "-level", "3.1"            # Good for 720p and most Android devices
+            ]
+        )
         print(f"Video with new audio saved to {output_path}")
         return output_path
     except Exception as e:
