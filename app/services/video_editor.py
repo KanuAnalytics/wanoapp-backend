@@ -231,7 +231,16 @@ async def trim_video(video_path, start_time, end_time, output_dir="temp_videos")
         os.makedirs(output_dir, exist_ok=True)
         output_path = os.path.join(output_dir, unique_name)
 
-        final_clip.write_videofile(output_path, codec="libx264", audio_codec="aac")
+        final_clip.write_videofile(
+            output_path,
+            codec="libx264",
+            audio_codec="aac",
+            ffmpeg_params=[
+                "-pix_fmt", "yuv420p",     # Required for Android
+                "-profile:v", "main",      # Better compression than baseline
+                "-level", "3.1"            # Good for 720p and most Android devices
+            ]
+        )        
         print(f"Trimmed video saved to {output_path}")
         return output_path
     except Exception as e:
