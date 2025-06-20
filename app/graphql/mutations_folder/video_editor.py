@@ -12,6 +12,7 @@ from app.graphql.inputs.video_editor import CompileVideoInput
 from fastapi import HTTPException, BackgroundTasks
 from app.core.config import settings
 
+# this is for updating the Deployment
 async def call_video_service_api(input: CompileVideoInput, user_id: str) -> Dict[str, Any]:
         """
         Call the second backend's GraphQL API
