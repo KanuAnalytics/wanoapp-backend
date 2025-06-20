@@ -7,6 +7,8 @@ import os
 import uuid
 import re
 from fastapi import UploadFile
+from app.core.config import settings
+
 
 def secure_filename(filename: str) -> str:
     """Secure a filename by removing/replacing unsafe characters"""
@@ -73,9 +75,9 @@ def get_content_type(filename):
 async def upload_to_spaces(file_obj: UploadFile, filename: str, isAudio: bool = False):
     client = boto3.client(
         's3',
-        endpoint_url=os.getenv('DO_SPACES_ENDPOINT'),
-        aws_access_key_id=os.getenv('DO_SPACES_ACCESS_KEY_ID'),
-        aws_secret_access_key=os.getenv('DO_SPACES_SECRET_KEY'),
+        endpoint_url=settings.DO_SPACES_ENDPOINT,
+        aws_access_key_id=settings.DO_SPACES_ACCESS_KEY_ID,
+        aws_secret_access_key=settings.DO_SPACES_SECRET_KEY,
     )
 
     folder = "audio" if isAudio else "videos"
@@ -91,7 +93,7 @@ async def upload_to_spaces(file_obj: UploadFile, filename: str, isAudio: bool = 
 
         client.upload_file(
             tmp_path,
-            os.getenv('DO_SPACES_BUCKET_NAME'),
+            settings.DO_SPACES_BUCKET_NAME,
             unique_filename,
             ExtraArgs={
                 'ContentType': get_content_type(filename),
@@ -101,7 +103,7 @@ async def upload_to_spaces(file_obj: UploadFile, filename: str, isAudio: bool = 
 
         os.remove(tmp_path)
 
-        public_url = f"{os.getenv('DO_SPACES_ENDPOINT')}/{os.getenv('DO_SPACES_BUCKET_NAME')}/{unique_filename}"
+        public_url = f"{settings.DO_SPACES_ENDPOINT}/{settings.DO_SPACES_BUCKET_NAME}/{unique_filename}"
         return True, public_url, unique_filename
 
     except ClientError as e:

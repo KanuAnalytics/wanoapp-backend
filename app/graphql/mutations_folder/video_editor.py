@@ -73,7 +73,7 @@ async def call_video_service_api(input: CompileVideoInput, user_id: str) -> Dict
                         # Add any authentication headers if needed
                         # "Authorization": f"Bearer {token}",
                     },
-                    timeout=300.0  # 5 minutes timeout for long-running operations
+                    timeout=600.0  # 10 minutes timeout for long-running operations
                 )
                 
                 # Check if the request was successful

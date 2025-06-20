@@ -11,13 +11,6 @@ import os
 
 class Settings(BaseSettings):
 
-    # DigitalOcean Spaces
-    DO_SPACES_ACCESS_KEY_ID: str
-    DO_SPACES_SECRET_KEY:     str
-    DO_SPACES_BUCKET_NAME:    str
-    DO_SPACES_ENDPOINT:       str
-
-
     #Doppler
     DOPPLER_CONFIG: str
     DOPPLER_ENVIRONMENT: str
@@ -82,6 +75,5 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = True
-        extra='allow'
 
 settings = Settings()
