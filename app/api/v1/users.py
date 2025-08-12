@@ -122,6 +122,7 @@ class UserUpdate(BaseModel):
     display_name: Optional[str] = None
     bio: Optional[str] = None
     profile_picture: Optional[str] = None
+    cover_picture: Optional[str] = None
     localization: Optional[dict] = None
     gender: Optional[str] = None
     date_of_birth: Optional[datetime] = None
@@ -141,6 +142,8 @@ class UserResponse(BaseModel):
     gender: Optional[str] = None
     date_of_birth: Optional[datetime] = None
     tags: List[str] = Field(default_factory=list)
+    profile_picture: Optional[str] = None
+    cover_picture: Optional[str] = None
     
     class Config:
         populate_by_name = True

@@ -39,6 +39,14 @@ def allowed_file(filename):
     print('.' in filename and ext)
     return '.' in filename and ext in ALLOWED_EXTENSIONS
 
+def is_image_file(filename):
+    """Check if the file is an image based on its extension"""
+    if '.' not in filename:
+        return False
+    ext = filename.rsplit('.', 1)[1].lower()
+    image_extensions = {'jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff', 'webp', 'svg', 'ico', 'heic'}
+    return ext in image_extensions
+
 def get_content_type(filename):
     ext = filename.rsplit('.', 1)[1].lower()
     content_types = {
@@ -67,12 +75,13 @@ def get_content_type(filename):
         'tiff': 'image/tiff',
         'webp': 'image/webp',
         'svg': 'image/svg+xml',
-        'ico': 'image/x-icon'
+        'ico': 'image/x-icon',
+        'heic': 'image/heic'
     }
     # Default to video/mp4 for unknown, or audio/mpeg if isAudio
     return content_types.get(ext, 'audio/mpeg' if ext in ['mp3', 'wav', 'aac', 'ogg', 'flac', 'm4a'] else 'video/mp4')
 
-async def upload_to_spaces(file_obj: UploadFile, filename: str, isAudio: bool = False):
+async def upload_to_spaces(file_obj: UploadFile, filename: str, isAudio: bool = False, isImage: bool = False):
     client = boto3.client(
         's3',
         endpoint_url=settings.DO_SPACES_ENDPOINT,
@@ -80,7 +89,13 @@ async def upload_to_spaces(file_obj: UploadFile, filename: str, isAudio: bool = 
         aws_secret_access_key=settings.DO_SPACES_SECRET_KEY,
     )
 
-    folder = "audio" if isAudio else "videos"
+    if isImage:
+        folder = "profile-pictures"
+    elif isAudio:
+        folder = "audio"
+    else:
+        folder = "videos"
+    
     unique_filename = f"{folder}/{uuid.uuid4()}_{filename}"
 
     try:
