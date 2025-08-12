@@ -57,6 +57,9 @@ class VideoResponse(BaseModel):
     end: Optional[float] = None
     remoteUrl: Optional[str] = None
     
+    # Follow status
+    is_following: Optional[bool] = None
+    
     class Config:
         populate_by_name = True
 
@@ -155,7 +158,10 @@ async def get_videos(
     return videos
 
 @router.get("/{video_id}", response_model=VideoResponse)
-async def get_video(video_id: str):
+async def get_video(
+    video_id: str,
+    current_user: str = Depends(get_current_active_user)
+):
     """Get a specific video by ID and increment view count"""
     db = get_database()
     
@@ -182,6 +188,11 @@ async def get_video(video_id: str):
     # Get buffered counts for immediate display
     buffered = await metrics_buffer.get_buffered_counts(video_id)
     
+    # Check if current user is following the video creator
+    creator_doc = await db.users.find_one({"_id": video["creator_id"]})
+    current_user_oid = ObjectId(current_user)
+    is_following = current_user_oid in creator_doc.get("followers", [])
+    
     video["_id"] = str(video["_id"])
     video["creator_id"] = str(video["creator_id"])
     
@@ -190,6 +201,7 @@ async def get_video(video_id: str):
     response.buffered_views = buffered["views"]
     response.buffered_likes = buffered["likes"]
     response.buffered_comments = buffered["comments"]
+    response.is_following = is_following
     
     return response
 
