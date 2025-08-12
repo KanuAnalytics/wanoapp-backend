@@ -44,6 +44,7 @@ class RegisterRequest(BaseModel):
     email: EmailStr
     password: str = Field(..., min_length=6)
     display_name: str = Field(..., min_length=1, max_length=100)
+    localization: dict
     
     # Optional demographic fields
     gender: Optional[str] = None
@@ -117,11 +118,7 @@ async def register(request: RegisterRequest):
         "display_name": request.display_name,
         "password_hash": get_password_hash(request.password),
         "user_type": "standard",
-        "localization": {
-            "country": "NG",  # Default to Nigeria
-            "languages": ["en"],  # Default to English
-            "tribes": None
-        },
+        "localization": request.localization,
         "created_at": datetime.utcnow(),
         "updated_at": datetime.utcnow(),
         "is_active": True,
