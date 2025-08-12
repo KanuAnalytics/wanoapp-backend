@@ -470,7 +470,7 @@ async def get_user_complete(
                 "is_active": True,
                 "privacy": "public"
             }
-        ).sort("created_at", -1).limit(5)
+        ).sort("created_at", -1)
         
         recent_videos = []
         async for video in videos_cursor:
