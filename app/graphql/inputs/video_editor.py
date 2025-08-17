@@ -25,4 +25,5 @@ class CompileVideoInput:
     ratio: Optional[str] = None
     videoType: Optional[str] = "public"
     description: Optional[str] = None
+    thumbnail: Optional[str] = None
     
