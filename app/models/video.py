@@ -38,7 +38,7 @@ class VideoUrls(BaseModel):
     """Video URLs model"""
     original: HttpUrl
     hls_playlist: HttpUrl  # .m3u8 file
-    thumbnail: HttpUrl
+    thumbnail: Optional[HttpUrl] = None
     preview: Optional[HttpUrl] = None
     download: Optional[HttpUrl] = None
 
