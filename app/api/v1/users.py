@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field, EmailStr, HttpUrl, validator
 from app.models.video import VideoUrls
 from app.services.email_service import email_service
 import logging
+from app.services.metrics_service import metrics_buffer
 
 logger = logging.getLogger(__name__)
 
@@ -593,6 +594,29 @@ async def get_user_detailed_stats(
         "categories": [],
         "hashtags": []
     }
+    
+    # Add buffered counts to the totals
+    user_videos = await db.videos.find(
+        {"creator_id": ObjectId(user_id), "is_active": True}, 
+        {"_id": 1}
+    ).to_list(None)
+    
+    total_buffered_views = 0
+    total_buffered_likes = 0  
+    total_buffered_comments = 0
+    
+    for video in user_videos:
+        video_id = str(video["_id"])
+        # Get only the buffered portion (not total), since DB counts are already included
+        async with metrics_buffer._lock:
+            total_buffered_views += metrics_buffer.views_buffer.get(video_id, 0)
+            total_buffered_likes += metrics_buffer.likes_buffer.get(video_id, 0)
+            total_buffered_comments += metrics_buffer.comments_buffer.get(video_id, 0)
+    
+    # Add buffered counts to database totals
+    video_stats["total_views"] += total_buffered_views
+    video_stats["total_likes"] += total_buffered_likes
+    video_stats["total_comments"] += total_buffered_comments
     
     # Flatten and count hashtags
     all_hashtags = []
