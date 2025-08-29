@@ -7,6 +7,7 @@ app/api/v1/users.py
 import asyncio
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Body, HTTPException, Depends, status, Query
+from enum import Enum
 from bson import ObjectId
 from datetime import datetime
 from app.models.base import PyObjectId
@@ -23,6 +24,10 @@ from app.services.metrics_service import metrics_buffer
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+class RelationshipType(str, Enum):
+    followers = "followers"
+    following = "following"
 
 class UserCreate(BaseModel):
     username: str
@@ -151,6 +156,16 @@ class UserResponse(BaseModel):
 
 class TagsUpdate(BaseModel):
     tags: List[str] = Field(..., description="List of user interest tags")
+
+class FollowerResponse(BaseModel):
+    """Response model for follower details"""
+    id: str = Field(alias="_id")
+    name: str = Field(alias="display_name")
+    username: str
+    picture: Optional[str] = Field(alias="profile_picture")
+    
+    class Config:
+        populate_by_name = True
     
 # Patch request model with all optional fields
 class UserPatchRequest(BaseModel):
@@ -205,7 +220,6 @@ class UserPatchRequest(BaseModel):
         extra = 'forbid'
 
 # Enhanced response model with all user fields
-# Enhanced response model with all user fields
 class UserPatchResponse(BaseModel):
     """Response model for PATCH user endpoint"""
     id: str = Field(alias="_id")
@@ -232,6 +246,29 @@ class UserPatchResponse(BaseModel):
     
     class Config:
         populate_by_name = True
+
+# Helper function to get user relationships (followers/following)
+async def get_user_relationships(db, user_ids: List[ObjectId]) -> List[FollowerResponse]:
+    """Get user details for a list of user IDs (for followers/following lists)"""
+    if not user_ids:
+        return []
+    
+    # Get users from database
+    users_cursor = db.users.find(
+        {"_id": {"$in": user_ids}, "is_active": True},
+        {"_id": 1, "display_name": 1, "username": 1, "profile_picture": 1}
+    )
+    
+    users = []
+    async for user in users_cursor:
+        users.append(FollowerResponse(
+            _id=str(user["_id"]),
+            display_name=user.get("display_name", ""),
+            username=user["username"],
+            profile_picture=user.get("profile_picture")
+        ))
+    
+    return users
 
 # Helper function to get video details
 async def get_video_details(db, video_ids: List[ObjectId]) -> List[VideoDetail]:
@@ -1266,3 +1303,42 @@ async def update_me(
     user = await db.users.find_one({"_id": ObjectId(current_user)})
     user["_id"] = str(user["_id"])
     return UserResponse(**user)
+
+@router.get("/{user_id}/relationships", response_model=List[FollowerResponse])
+async def get_user_relationships_endpoint(
+    user_id: str,
+    relationship_type: RelationshipType,
+    skip: Optional[int] = None,
+    limit: Optional[int] = None,
+):
+    """Get list of user relationships (followers or following). If skip and limit are not provided, returns all."""
+    db = get_database()
+    
+    # Validate user_id format
+    if not ObjectId.is_valid(user_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid user ID format"
+        )
+    
+    user = await db.users.find_one({"_id": ObjectId(user_id)})
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    # Get the appropriate relationship list based on type
+    relationship_ids = user.get(relationship_type.value, [])
+    
+    if not relationship_ids:
+        return []
+    
+    # Apply pagination only if skip and limit are provided
+    if skip is not None and limit is not None:
+        relationship_ids = relationship_ids[skip:skip + limit]
+    
+    # Get relationship details using the reusable function
+    relationships = await get_user_relationships(db, relationship_ids)
+    
+    return relationships
