@@ -5,6 +5,7 @@ app/api/v1/users.py
 
 """
 import asyncio
+import re
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Body, HTTPException, Depends, status, Query
 from enum import Enum
@@ -125,6 +126,7 @@ class UserWithDetailsResponse(BaseModel):
         }
 
 class UserUpdate(BaseModel):
+    username: Optional[str] = None
     display_name: Optional[str] = None
     bio: Optional[str] = None
     profile_picture: Optional[str] = None
@@ -991,7 +993,11 @@ async def update_user(
     current_user: str = Depends(get_current_active_user)
 ):
     """Update a user (only the user themselves can update)"""
-    db = get_database()
+    try:
+        db = get_database()
+        
+    except Exception as e:
+            raise e
     
     # Verify user is updating their own profile
     if user_id != current_user:
@@ -999,6 +1005,44 @@ async def update_user(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Can only update your own profile"
         )
+    
+    # Check for username uniqueness if username is being updated
+    if user_update.username is not None:
+        # Validate username format
+        username = user_update.username.strip()
+        if len(username) < 3:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Username must be at least 3 characters long"
+            )
+        if len(username) > 30:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Username must be at most 30 characters long"
+            )
+        if not re.match("^[a-zA-Z0-9_.-]+$", username):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Username can only contain letters, numbers, underscores, hyphens, and periods"
+            )
+        
+        # Keep original case for username
+        user_update.username = username
+        
+        # Get current user to check if username is actually changing
+        current_user_doc = await db.users.find_one({"_id": ObjectId(user_id)})
+        if current_user_doc and current_user_doc["username"] != user_update.username:
+            # Check if the new username is already taken
+            existing_user = await db.users.find_one({
+                "username": user_update.username,
+                "_id": {"$ne": ObjectId(user_id)}  # Exclude current user
+            })
+            
+            if existing_user:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Username is already taken"
+                )
     
     update_data = {
         k: v for k, v in user_update.dict(exclude_unset=True).items()
