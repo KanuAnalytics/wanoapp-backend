@@ -6,6 +6,8 @@ app/api/v1/users.py
 """
 import asyncio
 import re
+import json
+from bson.json_util import dumps
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Body, HTTPException, Depends, status, Query
 from enum import Enum
@@ -25,6 +27,48 @@ from app.services.metrics_service import metrics_buffer
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+@router.get("/search")
+async def search_users_endpoint(
+    q: str = Query(..., min_length=1, description="Username or full name (regex, case-insensitive, prefix)"),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=50),
+):
+    """Regex search users by `username` or `display_name`.
+    Uses prefix-anchored regex for index-friendly lookups and returns only needed fields.
+    """
+    db = get_database()
+
+    term = q.strip()
+    if not term:
+        raise HTTPException(status_code=400, detail="Empty query")
+
+    escaped = re.escape(term)
+    regex = {"$regex": f"^{escaped}", "$options": "i"}
+
+    pipeline = [
+        {"$match": {
+            "is_active": True,
+            "$or": [
+                {"username": regex},
+                {"display_name": regex},
+            ],
+        }},
+        {"$sort": {"followers_count": -1}},
+        {"$skip": skip},
+        {"$limit": limit},
+        {"$project": {
+            "_id": {"$toString": "$_id"},
+            "username": 1,
+            "display_name": 1,
+            "profile_picture": 1,
+            "followers_count": 1,
+            "created_at": {"$dateToString": {"format": "%Y-%m-%dT%H:%M:%S.%LZ", "date": "$created_at"}},
+        }}
+    ]
+    docs = await db.users.aggregate(pipeline).to_list(length=limit)
+    return json.loads(dumps(docs))
 
 class RelationshipType(str, Enum):
     followers = "followers"
