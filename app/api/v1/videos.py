@@ -173,7 +173,7 @@ async def search_videos(
     db = get_database()
     regex = {"$regex": f"^{re.escape(q.strip())}", "$options": "i"}
     pipeline = [
-        {"$match": {"description": regex}},
+        {"$match": {"description": regex, "is_active": True}},        
         {"$sort": {"created_at": -1}},
         {"$skip": skip},
         {"$limit": limit},
