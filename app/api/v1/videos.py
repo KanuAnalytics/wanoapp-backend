@@ -5,7 +5,7 @@ app/api/v1/vidoes.py
 
 """
 from typing import List, Optional
-from fastapi import APIRouter, HTTPException, Depends, status, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, Depends, status, UploadFile, File, Form, Query
 from bson import ObjectId
 from datetime import datetime
 from app.models.video import Video, VideoType, VideoPrivacy
@@ -13,6 +13,9 @@ from app.core.database import get_database
 from app.api.deps import get_current_active_user, get_verified_user
 from app.services.metrics_service import metrics_buffer
 from pydantic import BaseModel, Field
+import re
+import json
+from bson.json_util import dumps
 
 router = APIRouter()
 
@@ -156,6 +159,47 @@ async def get_videos(
         videos.append(response)
     
     return videos
+
+# --- Search endpoint ---
+@router.get("/search")
+async def search_videos(
+    q: str = Query(..., description="Search query"),
+    skip: int = 0,
+    limit: int = 20,
+):
+    """
+    Search videos by description field only.
+    """
+    db = get_database()
+    regex = {"$regex": f"^{re.escape(q.strip())}", "$options": "i"}
+    pipeline = [
+        {"$match": {"description": regex}},
+        {"$sort": {"created_at": -1}},
+        {"$skip": skip},
+        {"$limit": limit},
+        {"$lookup": {
+            "from": "users",
+            "localField": "creator_id",
+            "foreignField": "_id",
+            "as": "creator"
+        }},
+        {"$unwind": {"path": "$creator", "preserveNullAndEmptyArrays": True}},
+        {"$project": {
+            "_id": {"$toString": "$_id"},
+            "creator_id": {"$toString": "$creator_id"},
+            "description": 1,
+            "created_at": {"$dateToString": {"format": "%Y-%m-%dT%H:%M:%S.%LZ", "date": "$created_at"}},
+            "thumbnail": "$urls.thumbnail",
+            "user": {
+                "username": "$creator.username",
+                "display_name": "$creator.display_name",
+                "profile_picture": "$creator.profile_picture"
+            }
+        }}
+    ]
+    cursor = db.videos.aggregate(pipeline)
+    docs = await cursor.to_list(length=limit)
+    return json.loads(dumps(docs))
 
 @router.get("/{video_id}", response_model=VideoResponse)
 async def get_video(
