@@ -505,6 +505,7 @@ async def get_user_complete(
         "_id": str(user["_id"]),
         "bookmarked_videos": bookmarked_video_details,
         "liked_videos": liked_video_details,
+        "likes_count": len(liked_video_details),
         "following": [str(uid) for uid in user.get("following", [])],
         "followers": [str(uid) for uid in user.get("followers", [])]
     }
