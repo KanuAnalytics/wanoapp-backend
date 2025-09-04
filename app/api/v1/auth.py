@@ -125,7 +125,14 @@ async def register(request: RegisterRequest):
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Email already registered"
             )
-    
+
+    # Password policy: must contain at least one uppercase letter and one digit
+    if not any(c.isupper() for c in request.password) or not any(c.isdigit() for c in request.password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password must contain at least one uppercase letter and one number"
+        )
+
     # Generate verification token
     verification_data = create_verification_token(request.email)
     
@@ -566,6 +573,12 @@ async def reset_password(request: ResetPasswordRequest):
     if not verify_password(request.otp, otp_hash):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid code or expired")
 
+    # Password policy: must contain at least one uppercase letter and one digit
+    if not any(c.isupper() for c in request.new_password) or not any(c.isdigit() for c in request.new_password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password must contain at least one uppercase letter and one number"
+        )
     # Update password and purge OTP fields
     new_hash = get_password_hash(request.new_password)
 
