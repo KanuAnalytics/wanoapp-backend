@@ -7,6 +7,7 @@ import sendgrid
 from sendgrid.helpers.mail import Mail, Email, To, Content
 from app.core.config import settings
 import logging
+import secrets
 
 logger = logging.getLogger(__name__)
 
@@ -14,11 +15,16 @@ class EmailService:
     def __init__(self):
         try:
             self.sg = sendgrid.SendGridAPIClient(api_key=settings.SENDGRID_API_KEY)
-            self.from_email = Email(settings.SENDGRID_FROM_EMAIL)
+            self.from_email = Email(settings.SENDGRID_FROM_EMAIL, "Wano Team")
             self.is_configured = True
         except Exception as e:
             logger.warning(f"SendGrid not configured: {e}")
             self.is_configured = False
+
+    def _generate_otp(self, length: int = 6) -> str:
+        """Generate a cryptographically secure numeric OTP of the given length."""
+        digits = "0123456789"
+        return "".join(secrets.choice(digits) for _ in range(length))
     
     async def send_verification_email(self, to_email: str, username: str, verification_token: str):
         """Send verification email to user"""
@@ -83,5 +89,52 @@ class EmailService:
             logger.error(f"Failed to send verification email: {str(e)}")
             # Return False but don't block registration
             return False
+
+    async def send_password_reset_otp(self, to_email: str, username: str, otp: str | None = None, expiry_minutes: int = 30):
+        """
+        Send a 6-digit OTP to the user for password reset.
+        If `otp` is not provided, a secure 6-digit code will be generated and returned.
+        Returns a tuple: (success: bool, otp: str)
+        """
+        # Prepare OTP
+        otp_code = otp or self._generate_otp(6)
+
+        if not self.is_configured:
+            logger.warning("SendGrid not configured. Using OTP above for testing.")
+            # Return True to avoid blocking flows in non-email environments
+            return True, otp_code
+
+        subject = "Your WanoApp password reset code"
+        html_content = f"""
+        <html>
+            <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                <h2 style="color: #333;">Password reset request</h2>
+                <p>Hi {username},</p>
+                <p>Use the following one-time code to reset your password:</p>
+                <div style="text-align: center; margin: 24px 0;">
+                    <div style="display: inline-block; font-size: 28px; letter-spacing: 6px; font-weight: bold; padding: 12px 20px; border: 1px dashed #ccc; border-radius: 8px;">
+                        {otp_code}
+                    </div>
+                </div>
+                <p style="color: #666;">For your security, do not share this code with anyone.</p>
+                <p style="color: #999; font-size: 14px;">This code will expire in {expiry_minutes} minutes.</p>
+                <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
+                <p style="color: #999; font-size: 12px;">If you didn't request a password reset, you can safely ignore this email.</p>
+                <p>Best regards,<br>The WanoApp Team</p>
+            </body>
+        </html>
+        """
+
+        to_email_obj = To(to_email)
+        content = Content("text/html", html_content)
+        mail = Mail(self.from_email, to_email_obj, subject, content)
+
+        try:
+            response = self.sg.send(mail)
+            logger.info(f"Password reset OTP sent to {to_email}. Status code: {response.status_code}")
+            return True, otp_code
+        except Exception as e:
+            logger.error(f"Failed to send password reset OTP: {str(e)}")
+            return False, otp_code
 
 email_service = EmailService()
