@@ -39,6 +39,24 @@ class ResendVerificationRequest(BaseModel):
     email: EmailStr
 
 
+class ForgotPasswordRequest(BaseModel):
+    """Request a password reset OTP for a user identified by username or email."""
+    username_or_email: str = Field(..., min_length=3, max_length=100)
+
+
+# --- Inserted models for OTP verification and password reset ---
+class VerifyResetOtpRequest(BaseModel):
+    """Verify a password reset OTP for a user."""
+    username_or_email: str = Field(..., min_length=3, max_length=100)
+    otp: str = Field(..., min_length=6, max_length=6)
+
+class ResetPasswordRequest(BaseModel):
+    """Reset password using a valid OTP."""
+    username_or_email: str = Field(..., min_length=3, max_length=100)
+    otp: str = Field(..., min_length=6, max_length=6)
+    new_password: str = Field(..., min_length=6, max_length=128)
+
+
 class RegisterRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=30, pattern="^[a-zA-Z0-9_]+$")
     email: EmailStr
@@ -404,3 +422,164 @@ async def check_verification_status(username: str):
         "is_verified": user.get("is_verified", False),
         "verified_at": user.get("verified_at")
     }
+
+@router.post("/forgot-password")
+async def forgot_password(request: ForgotPasswordRequest):
+    """
+    Create and email a 6-digit OTP to reset password for a specific user.
+    - Accepts username or email.
+    - Stores a hashed OTP and an expiry in the user's record.
+    - Always returns a generic message to avoid user enumeration.
+    """
+    db = get_database()
+
+    # Find user by username or email (case-insensitive for email)
+    user = await db.users.find_one({
+        "$or": [
+            {"username": request.username_or_email},
+            {"email": request.username_or_email}
+        ]
+    })
+
+    # Return error if user not found
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+
+    # Optional: simple rate limiting to prevent abuse
+    now = datetime.utcnow()
+    cooldown_minutes = 1
+    last_requested = user.get("password_reset_requested_at")
+    if last_requested and isinstance(last_requested, datetime):
+        earliest_next = last_requested + timedelta(minutes=cooldown_minutes)
+        if earliest_next > now:
+            # Too many requests
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Please wait a few minutes before requesting another OTP"
+            )
+
+    # Generate & send OTP via email service
+    try:
+        email_ok, otp = await email_service.send_password_reset_otp(
+            to_email=user["email"],
+            username=user["username"]
+        )
+    except Exception as e:
+        logging.exception("Error while sending password reset OTP")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to send OTP email"
+        )
+
+    if not email_ok:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to send OTP email"
+        )
+
+    # Persist hashed OTP and expiry
+    expiry_minutes = 30
+    otp_expires = now + timedelta(minutes=expiry_minutes)
+
+    # Reuse existing password hash function for storage; do NOT store raw OTP
+    otp_hash = get_password_hash(otp)
+
+    await db.users.update_one(
+        {"_id": user["_id"]},
+        {"$set": {
+            "password_reset_otp_hash": otp_hash,
+            "password_reset_otp_expires": otp_expires,
+            "password_reset_requested_at": now,
+            "updated_at": now
+        }}
+    )
+
+
+    # Always a generic message (prevents user enumeration)
+    return {
+        "message": "If the account exists, an OTP has been sent to the registered email.",
+        "expires_in_minutes": expiry_minutes,
+    }
+
+
+# --- Inserted endpoints for OTP verification and password reset ---
+
+@router.post("/verify-reset-otp")
+async def verify_reset_otp(request: VerifyResetOtpRequest):
+    """
+    Verify that the provided OTP is correct and not expired for the user.
+    Always uses a generic error to avoid user enumeration.
+    """
+    db = get_database()
+
+    user = await db.users.find_one({
+        "$or": [
+            {"username": request.username_or_email},
+            {"email": request.username_or_email}
+        ]
+    })
+
+    # Generic error to avoid enumeration
+    if not user:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid code or expired")
+
+    # Check presence and expiry
+    otp_hash = user.get("password_reset_otp_hash")
+    otp_expires = user.get("password_reset_otp_expires")
+    if not otp_hash or not otp_expires or otp_expires < datetime.utcnow():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid code or expired")
+
+    # Verify code
+    if not verify_password(request.otp, otp_hash):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid code or expired")
+
+    return {"valid": True, "expires_at": otp_expires}
+
+
+@router.post("/reset-password")
+async def reset_password(request: ResetPasswordRequest):
+    """
+    Reset the user's password using a valid OTP. On success, clears the OTP fields.
+    """
+    db = get_database()
+
+    user = await db.users.find_one({
+        "$or": [
+            {"username": request.username_or_email},
+            {"email": request.username_or_email}
+        ]
+    })
+
+    # Generic error to avoid enumeration
+    if not user:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid code or expired")
+
+    otp_hash = user.get("password_reset_otp_hash")
+    otp_expires = user.get("password_reset_otp_expires")
+
+    if not otp_hash or not otp_expires or otp_expires < datetime.utcnow():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid code or expired")
+
+    if not verify_password(request.otp, otp_hash):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid code or expired")
+
+    # Update password and purge OTP fields
+    new_hash = get_password_hash(request.new_password)
+
+    await db.users.update_one(
+        {"_id": user["_id"]},
+        {"$set": {
+            "password_hash": new_hash,
+            "updated_at": datetime.utcnow(),
+            "password_changed_at": datetime.utcnow()
+        }, "$unset": {
+            "password_reset_otp_hash": "",
+            "password_reset_otp_expires": "",
+            "password_reset_requested_at": ""
+        }}
+    )
+
+    return {"message": "Password has been reset successfully"}
