@@ -18,7 +18,7 @@ from app.models.base import (
 
 class UserBase(BaseModel):
     """Base user model with common fields"""
-    username: str = Field(..., min_length=3, max_length=30, pattern="^[a-zA-Z0-9_]+$")
+    username: str = Field(..., min_length=3, max_length=30)
     email: EmailStr
     display_name: str = Field(..., min_length=1, max_length=100)
     bio: Optional[str] = Field(None, max_length=500)
