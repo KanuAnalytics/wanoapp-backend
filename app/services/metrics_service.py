@@ -112,6 +112,22 @@ class MetricsBuffer:
                 await self._flush_video_metrics(video_id)
             elif self.total_updates >= self.batch_size:
                 await self.flush_all()
+                
+    async def get_user_videos_like_count(self, user_id: str) -> int:
+        """Get total likes count across all videos of a user"""
+        try:
+            db = get_database()
+            pipeline = [
+                {"$match": {"creator_id": ObjectId(user_id)}},
+                {"$group": {"_id": None, "total_likes": {"$sum": "$likes_count"}}}
+            ]
+            result = await db.videos.aggregate(pipeline).to_list(length=1)
+            if result:
+                return result[0].get("total_likes", 0)
+            return 0
+        except Exception as e:
+            logger.error(f"Error fetching user videos like count for user {user_id}: {e}")
+            return 0
 
     async def _flush_video_metrics(self, video_id: str):
         """Flush metrics for a specific video"""
