@@ -499,13 +499,15 @@ async def get_user_complete(
         user.get("liked_videos", [])
     )
     
+    like_count = await metrics_buffer.get_user_videos_like_count(user_id)
+    
     # Convert ObjectId fields to strings
     user_data = {
         **user,
         "_id": str(user["_id"]),
         "bookmarked_videos": bookmarked_video_details,
         "liked_videos": liked_video_details,
-        "likes_count": len(liked_video_details),
+        "likes_count": like_count,
         "following": [str(uid) for uid in user.get("following", [])],
         "followers": [str(uid) for uid in user.get("followers", [])]
     }
