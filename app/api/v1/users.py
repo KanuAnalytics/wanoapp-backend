@@ -95,6 +95,7 @@ class VideoDetail(BaseModel):
     thumbnail_url: Optional[str] = None
     created_at: Optional[datetime] = None
     url: Optional[VideoUrls] = None
+    views_count: Optional[int] = None
 
 class CompleteUserResponse(BaseModel):
     """Complete user response model with ALL fields"""
@@ -162,6 +163,7 @@ class UserWithDetailsResponse(BaseModel):
     is_followed_by: bool = False  # If this user follows current user
     mutual_followers_count: int = 0  # Number of mutual followers
     recent_videos: List[VideoDetail] = Field(default_factory=list)  # Last 5 videos with details
+    views: int = 0  # Number of mutual followers
     
     class Config:
         json_encoders = {
@@ -337,7 +339,8 @@ async def get_video_details(db, video_ids: List[ObjectId]) -> List[VideoDetail]:
             title=video.get("title"),
             thumbnail_url=video.get("urls", {}).get("thumbnail") if video.get("urls") else None,
             created_at=video.get("created_at"),
-            url=video.get("urls")
+            url=video.get("urls"),
+            views_count=video.get("views_count")
         )
     
     # Return in the same order as video_ids
@@ -564,7 +567,8 @@ async def get_user_complete(
                 description=video.get("description"),
                 title=video.get("title"),
                 thumbnail_url=video.get("urls", {}).get("thumbnail") if video.get("urls") else None,
-                created_at=video.get("created_at")
+                created_at=video.get("created_at"),
+                views_count=video.get("views_count")
             ))
         
         response_data["recent_videos"] = recent_videos
