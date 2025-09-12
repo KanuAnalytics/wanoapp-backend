@@ -64,6 +64,8 @@ async def call_video_service_api(input: CompileVideoInput, user_id: str) -> Dict
             "variables": variables
         }
         
+        print("Calling video service API inside the function for user: ", user_id)
+        
         # Make the HTTP request to the second backend with longer timeout
         async with httpx.AsyncClient() as client:
             try:
@@ -108,6 +110,7 @@ async def call_video_service_api_background(input: CompileVideoInput, user_id: s
         This runs independently and doesn't block the main response
         """
         try:
+            print("Starting background video compilation task for user:", user_id)
             await call_video_service_api(input, user_id)
             # Optionally: Store success status in database, send notification, etc.
             print(f"Video compilation completed successfully for user {user_id}")
