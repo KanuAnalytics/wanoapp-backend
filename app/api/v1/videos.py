@@ -31,6 +31,8 @@ class VideoPost(BaseModel):
     end: Optional[float] = None
     remix_enabled: Optional[bool] = True
     comments_enabled: bool = True
+    categoryId: Optional[str] = None
+    subcategoryId: Optional[str] = None
 
 class VideoCreate(BaseModel):
     title: Optional[str] = None
@@ -108,6 +110,8 @@ async def post_video(
                 "thumbnail": input.thumbnail,  # In production, generate thumbnail separately
                 "download": input.remoteUrl
             },
+            "categoryId" : input.categoryId,
+            "subcategoryId" : input.subcategoryId,
             # Additional fields for compatibility
             "FEid": None,
             "start": 0,
