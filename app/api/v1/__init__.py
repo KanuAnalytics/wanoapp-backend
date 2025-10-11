@@ -18,7 +18,6 @@ from app.api.v1.metrics import router as metrics_router
 from app.api.v1.reports import router as reports_router
 from app.api.v1.drafts import router as drafts_router
 from app.api.v1.music import router as music_router
-from app.api.v1.categories import router as categories_router
 
 
 
@@ -32,4 +31,4 @@ api_router.include_router(metrics_router, prefix="/metrics", tags=["metrics"])
 api_router.include_router(reports_router, prefix="/reports", tags=["reports"])
 api_router.include_router(drafts_router, prefix="/drafts", tags=["drafts"])
 api_router.include_router(music_router, prefix="/music", tags=["music"])
-api_router.include_router(categories_router, prefix="/categories", tags=["categories"])
+
