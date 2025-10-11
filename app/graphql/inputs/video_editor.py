@@ -26,6 +26,4 @@ class CompileVideoInput:
     videoType: Optional[str] = "public"
     description: Optional[str] = None
     thumbnail: Optional[str] = None
-    categoryId: Optional[str] = None
-    subcategoryId: Optional[str] = None
     

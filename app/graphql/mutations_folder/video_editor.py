@@ -54,10 +54,7 @@ async def call_video_service_api(input: CompileVideoInput, user_id: str) -> Dict
                 "videoType": input.videoType,
                 "description": input.description,
                 "userId": user_id,  # Add the user_id field
-                "thumbnail" : input.thumbnail,
-                "categoryId" : input.categoryId,
-                "subcategoryId" : input.subcategoryId
-
+                "thumbnail" : input.thumbnail
             }
         }
         
