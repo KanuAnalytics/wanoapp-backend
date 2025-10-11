@@ -31,8 +31,8 @@ class VideoPost(BaseModel):
     end: Optional[float] = None
     remix_enabled: Optional[bool] = True
     comments_enabled: bool = True
-    categoryId: str
-    subcategoryId: str
+    categoryId: Optional[str] = None
+    subcategoryId: Optional[str] = None
 
 class VideoCreate(BaseModel):
     title: Optional[str] = None
