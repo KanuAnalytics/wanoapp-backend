@@ -21,6 +21,8 @@ class VideoInput:
 @strawberry.input
 class CompileVideoInput:
     video: list[VideoInput]
+    categoryId: str
+    subcategoryId: str
     audio_url: Optional[str] = None
     ratio: Optional[str] = None
     videoType: Optional[str] = "public"
