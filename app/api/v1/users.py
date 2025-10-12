@@ -190,6 +190,7 @@ class UserResponse(BaseModel):
     user_type: UserType
     is_verified: bool = False
     created_at: datetime
+    is_active: bool = True
     followers_count: int = 0
     following_count: int = 0
     videos_count: int = 0
@@ -459,6 +460,56 @@ async def patch_user_profile(
     updated_user["_id"] = str(updated_user["_id"])
     
     return UserPatchResponse(**updated_user)
+
+@router.delete("/delete", status_code=status.HTTP_204_NO_CONTENT)
+async def permanently_delete_user(
+    current_user: str = Depends(get_current_active_user)
+):
+    try:
+        """
+        Permanently delete a user:
+        - Sets is_deleted to True
+        - Sets username and email to 'deleted_user-<user_id>' (unique)
+        - Sets display_name to 'Deleted User'
+        - Removes cover_picture, profile_picture, and bio
+        - Only user themselves or admins can perform this action
+        """
+        db = get_database()
+        
+        print('trying to delete the user:', current_user)
+
+        # Check if user exists
+        user = await db.users.find_one({"_id": ObjectId(current_user)})
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+
+        # Update user fields to mark as deleted and anonymize
+        await db.users.update_one(
+            {"_id": ObjectId(current_user)},
+            {
+                "$set": {
+                    "is_active": False,
+                    "username": f"deleted_user-{current_user}",
+                    "email": f"deleted_user-{current_user}",
+                    "display_name": "Deleted User",
+                    "profile_picture": None,
+                    "cover_picture": None,
+                    "bio": None,
+                    "updated_at": datetime.utcnow()
+                }
+            }
+        )
+        
+        return
+    except Exception as e:
+        logger.error(f"Error permanently deleting user {current_user}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error permanently deleting user"
+        )
 
 @router.get("/{user_id}/complete", response_model=UserWithDetailsResponse)
 async def get_user_complete(
@@ -1114,32 +1165,6 @@ async def update_user(
     user = await db.users.find_one({"_id": ObjectId(user_id)})
     user["_id"] = str(user["_id"])
     return UserResponse(**user)
-
-@router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_user(
-    user_id: str,
-    current_user: str = Depends(get_current_active_user)
-):
-    """Soft delete a user"""
-    db = get_database()
-    
-    # Only allow users to delete their own account (or admins)
-    if user_id != current_user:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Can only delete your own account"
-        )
-    
-    result = await db.users.update_one(
-        {"_id": ObjectId(user_id)},
-        {"$set": {"is_active": False, "updated_at": datetime.utcnow()}}
-    )
-    
-    if result.matched_count == 0:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
-        )
 
 @router.post("/{user_id}/follow", status_code=status.HTTP_200_OK)
 async def follow_user(

@@ -386,13 +386,17 @@ async def get_video_comments(
         is_liked = ObjectId(current_user) in comment.get("liked_by", [])
         
         # Ensure user_display_name has fallback
-        comment["user_display_name"] = comment.get("user_display_name", "Anonymous")
+        # comment["user_display_name"] = comment.get("user_display_name", "Anonymous")
+        
+        user =  await db.users.find_one({"_id": ObjectId(comment["user_id"])})
         
         response_doc = {
             **comment,
             "_id": str(comment["_id"]),
             "video_id": str(comment["video_id"]),
+            "user_display_name": user["display_name"] if user and "display_name" in user else "Anonymous",
             "user_id": str(comment["user_id"]),
+            "is_user_active": user["is_active"] if user and "is_active" in user else False,
             "parent_id": None,
             "is_liked": is_liked
         }
@@ -431,13 +435,17 @@ async def get_comment_replies(
         is_liked = ObjectId(current_user) in reply.get("liked_by", [])
         
         # Ensure user_display_name has fallback
-        reply["user_display_name"] = reply.get("user_display_name", "Anonymous")
+        # reply["user_display_name"] = reply.get("user_display_name", "Anonymous")
+        
+        user =  await db.users.find_one({"_id": ObjectId(reply["user_id"])})
         
         response_doc = {
             **reply,
             "_id": str(reply["_id"]),
             "video_id": str(reply["video_id"]),
             "user_id": str(reply["user_id"]),
+            "user_display_name": user["display_name"] if user and "display_name" in user else "Anonymous",
+            "is_user_active": user["is_active"] if user and "is_active" in user else False,
             "parent_id": str(reply["parent_id"]),
             "is_liked": is_liked
         }
