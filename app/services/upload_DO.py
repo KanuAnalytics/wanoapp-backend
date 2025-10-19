@@ -118,7 +118,7 @@ async def upload_to_spaces(file_obj: UploadFile, filename: str, isAudio: bool = 
 
         os.remove(tmp_path)
 
-        public_url = f"{settings.DO_SPACES_ENDPOINT}/{settings.DO_SPACES_BUCKET_NAME}/{unique_filename}"
+        public_url = f"{settings.DO_SPACES_CDN_URL}/{settings.DO_SPACES_BUCKET_NAME}/{unique_filename}"
         return True, public_url, unique_filename
 
     except ClientError as e:
