@@ -28,6 +28,7 @@ class FeedVideo(BaseModel):
     buffered_views: int = 0
     buffered_likes: int = 0
     user: dict = {}
+    has_liked: bool = False
 
 @router.get("/", response_model=List[FeedVideo])
 async def get_feed(
@@ -40,6 +41,10 @@ async def get_feed(
 ):
     """Get personalized video feed, videos from a specific user, or saved videos"""
     db = get_database()
+
+    # Get the current user's liked videos for quick lookup
+    user_doc = await db.users.find_one({"_id": ObjectId(current_user)}, {"liked_videos": 1})
+    liked_video_ids = set(str(v) for v in user_doc.get("liked_videos", []))
     
     # Single unified pipeline that handles all scenarios
     if saved:
@@ -125,11 +130,10 @@ async def get_feed(
         # For saved videos, video data is in doc["videos"], otherwise it's directly in doc
         video = doc.get("videos", doc) if saved else doc
         video_id = str(video["_id"])
-        
+        has_liked = video_id in liked_video_ids
         # Get buffered counts
         buffered = await metrics_buffer.get_buffered_counts(video_id)
         user_info = video.get("user", {})
-        
         videos.append(FeedVideo(
             id=video_id,
             creator_id=str(video["creator_id"]),
@@ -141,7 +145,8 @@ async def get_feed(
             is_ad=False,
             buffered_views=buffered["views"],
             buffered_likes=buffered["likes"],
-            user=user_info
+            user=user_info,
+            has_liked=has_liked,
         ))
     
     # Insert ads (1:20 ratio) - only for personalized feed, not for specific user videos or saved videos
