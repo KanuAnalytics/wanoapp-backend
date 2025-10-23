@@ -46,10 +46,10 @@ async def get_verified_user(current_user: str = Depends(get_current_active_user)
     db = get_database()
     user = await db.users.find_one({"_id": ObjectId(current_user)})
     
-    if not user.get("is_verified", False):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Email verification required. Please check your email and verify your account."
-        )
+    # if not user.get("is_verified", False):
+    #     raise HTTPException(
+    #         status_code=status.HTTP_403_FORBIDDEN,
+    #         detail="Email verification required. Please check your email and verify your account."
+    #     )
     
     return current_user
