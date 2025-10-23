@@ -52,6 +52,14 @@ class UserBase(BaseModel):
     videos_count: int = Field(default=0, ge=0)
     likes_count: int = Field(default=0, ge=0)
     
+    # New fields for blocking functionality
+    blocked_users: List[PyObjectId] = Field(
+        default_factory=list, description="Users that this user has blocked"
+    )
+    blocked_by: List[PyObjectId] = Field(
+        default_factory=list, description="Users who have blocked this user"
+    )
+    
     @validator('gender')
     def validate_gender(cls, v):
         if v is not None:

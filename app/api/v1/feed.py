@@ -42,9 +42,14 @@ async def get_feed(
     """Get personalized video feed, videos from a specific user, or saved videos"""
     db = get_database()
 
-    # Get the current user's liked videos for quick lookup
-    user_doc = await db.users.find_one({"_id": ObjectId(current_user)}, {"liked_videos": 1})
+    user_doc = await db.users.find_one(
+        {"_id": ObjectId(current_user)},
+        {"liked_videos": 1, "blocked_users": 1, "blocked_by": 1, "following": 1, "localization": 1}
+    )
+
     liked_video_ids = set(str(v) for v in user_doc.get("liked_videos", []))
+    blocked_users = user_doc.get("blocked_users", [])
+    blocked_by = user_doc.get("blocked_by", [])
     
     # Single unified pipeline that handles all scenarios
     if saved:
@@ -93,6 +98,14 @@ async def get_feed(
             })
             if exclude_creator_ids:
                 match_conditions["creator_id"] = {"$nin": exclude_creator_ids}
+            
+             # 🧱 Exclude videos from blocked users
+            exclude_ids = set(blocked_users + blocked_by)
+            if exclude_ids:
+                match_conditions["creator_id"] = {
+                    **match_conditions.get("creator_id", {}),
+                    "$nin": list(exclude_ids)
+                }
         
         pipeline = [
             {"$match": match_conditions},
