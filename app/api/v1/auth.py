@@ -4,6 +4,7 @@ Authentication endpoints
 app/api/v1/auth.py
 
 """
+from profanity_check import predict, predict_prob
 from datetime import datetime, timedelta
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, status, Query
@@ -100,12 +101,27 @@ class RegisterResponse(BaseModel):
     is_new_user: bool = True  # Indicates this is a new registration
     verification_email_sent: bool = False  # Indicates if verification email was sent
 
+# Manual banned word list (expand as needed)
+BANNED_WORDS = {
+    "fuck", "sex", "porn", "sexy", "sperm", "cum", "bitch", "dick", "pussy",
+    "cock", "slut", "nigger", "faggot", "rape", "nude", "wasted sperm"
+}
 
 @router.post("/register", response_model=RegisterResponse)
 async def register(request: RegisterRequest):
     """Register a new user and return access token"""
     db = get_database()
-    
+
+    # --- Profanity and banned-word check ---
+    probability = predict_prob([request.username])[0]
+    lower_username = request.username.lower()
+
+    if probability > 0.7 or any(bad_word in lower_username for bad_word in BANNED_WORDS):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username contains inappropriate language"
+        )
+
     # Check if username or email already exists
     existing_user = await db.users.find_one({
         "$or": [
