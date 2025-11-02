@@ -65,7 +65,6 @@ class VideoResponse(BaseModel):
     comments_count: int
     created_at: datetime
     
-    # Include buffered counts for real-time feel
     buffered_views: int = 0
     buffered_likes: int = 0
     buffered_comments: int = 0
@@ -75,9 +74,9 @@ class VideoResponse(BaseModel):
     end: Optional[float] = None
     remoteUrl: Optional[str] = None
     
-    # Follow status
     is_following: Optional[bool] = None
-    
+    is_liked: Optional[bool] = None  
+
     class Config:
         populate_by_name = True
 
@@ -323,6 +322,12 @@ async def get_video(
     # Get buffered counts for immediate display
     buffered = await metrics_buffer.get_buffered_counts(video_id)
     
+    # Get current user data
+    user_doc = await db.users.find_one({"_id": ObjectId(current_user)})
+
+    # Check if current user has liked this video
+    is_liked = ObjectId(video_id) in (user_doc.get("liked_videos") or [])
+    
     # Check if current user is following the video creator
     creator_doc = await db.users.find_one({"_id": video["creator_id"]})
     current_user_oid = ObjectId(current_user)
@@ -331,13 +336,12 @@ async def get_video(
     video["_id"] = str(video["_id"])
     video["creator_id"] = str(video["creator_id"])
     
-    # Add buffered counts to response
     response = VideoResponse(**video)
     response.buffered_views = buffered["views"]
     response.buffered_likes = buffered["likes"]
     response.buffered_comments = buffered["comments"]
     response.is_following = is_following
-    
+    response.is_liked = is_liked
     return response
 
 @router.put("/{video_id}", response_model=VideoResponse)
