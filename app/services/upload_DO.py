@@ -8,6 +8,7 @@ import uuid
 import re
 from fastapi import UploadFile
 from app.core.config import settings
+from botocore.client import Config
 
 
 def secure_filename(filename: str) -> str:
@@ -125,3 +126,59 @@ async def upload_to_spaces(file_obj: UploadFile, filename: str, isAudio: bool = 
         return False, str(e), None
     except Exception as e:
         return False, f"Unexpected error: {str(e)}", None
+    
+    
+
+def generate_presigned_upload_url(filename: str, folder: str = "videos"):
+    """
+    Generate a presigned PUT URL to upload directly to DigitalOcean Spaces.
+    Returns dict with upload_url, file_url, key, and content_type.
+    Compatible with AWS S3 signing pattern used by DigitalOcean.
+    """
+    
+    s3_client = boto3.client(
+        "s3",
+        endpoint_url=settings.DO_SPACES_ENDPOINT,
+        aws_access_key_id=settings.DO_SPACES_ACCESS_KEY_ID,
+        aws_secret_access_key=settings.DO_SPACES_SECRET_KEY,
+        config=Config(signature_version='s3v4')
+    )
+
+    # ✅ Ensure filename is safe
+    safe_filename = os.path.basename(filename)
+    if not safe_filename:
+        safe_filename = "unnamed"
+
+    # ✅ Determine MIME type safely
+    content_type = get_content_type(safe_filename)
+    if not content_type:
+        content_type = "application/octet-stream"
+
+    # ✅ Use UUID to avoid collisions
+    object_name = f"{folder}/{uuid.uuid4()}_{safe_filename}"
+
+    try:
+        # ✅ Generate pre-signed PUT URL with both ACL and Content-Type
+        presigned_url = s3_client.generate_presigned_url(
+            ClientMethod="put_object",
+            Params={
+                "Bucket": settings.DO_SPACES_BUCKET_NAME,
+                "Key": object_name,
+                "ACL": "public-read",
+                "ContentType": content_type,
+            },
+            ExpiresIn=3600,  
+        )
+
+        # ✅ Public CDN URL
+        file_url = f"{settings.DO_SPACES_CDN_URL}/{settings.DO_SPACES_BUCKET_NAME}/{object_name}"
+        return {
+            "upload_url": presigned_url,
+            "file_url": file_url,
+            "key": object_name,
+            "content_type": content_type,
+            "acl": "public-read",
+        }
+
+    except ClientError as e:
+        raise RuntimeError(f"Failed to generate presigned URL: {str(e)}")

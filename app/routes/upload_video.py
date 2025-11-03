@@ -1,10 +1,9 @@
 #app/routes/upload_video.py
 
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, APIRouter, Depends
+from fastapi import File, UploadFile, HTTPException, APIRouter, Query
 from fastapi.responses import JSONResponse
-from app.services.upload_DO import upload_to_spaces, allowed_file, secure_filename, get_content_type, is_image_file
-
+from app.services.upload_DO import upload_to_spaces, allowed_file, secure_filename, get_content_type, is_image_file, generate_presigned_upload_url
 router = APIRouter(prefix="/video", tags=["Upload Video"])
 
 @router.post("/upload")
@@ -59,3 +58,18 @@ async def upload_video(video: UploadFile = File(...), isAudio: bool = False, isI
             
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
+    
+@router.get("/presigned-upload")
+async def get_presigned_upload_url(
+    filename: str = Query(..., description="Original filename, e.g. myvideo.mp4"),
+    folder: str = Query("videos", description="Folder in DO Spaces: videos, audio, profile-pictures")
+):
+    """
+    Get a pre-signed upload URL for DigitalOcean Spaces.
+    Automatically determines content type.
+    """
+    try:
+        result = generate_presigned_upload_url(filename=filename, folder=folder)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
