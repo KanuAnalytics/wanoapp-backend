@@ -164,6 +164,9 @@ class UserWithDetailsResponse(BaseModel):
     mutual_followers_count: int = 0  # Number of mutual followers
     recent_videos: List[VideoDetail] = Field(default_factory=list)  # Last 5 videos with details
     views: int = 0  # Number of mutual followers
+    can_unblock: Optional[bool] = None  # If current user has blocked this user
+    blocked: Optional[bool] = None  # If this user has blocked current user
+    
     
     class Config:
         json_encoders = {
@@ -190,6 +193,7 @@ class UserResponse(BaseModel):
     user_type: UserType
     is_verified: bool = False
     created_at: datetime
+    is_active: bool = True
     followers_count: int = 0
     following_count: int = 0
     videos_count: int = 0
@@ -460,6 +464,125 @@ async def patch_user_profile(
     
     return UserPatchResponse(**updated_user)
 
+@router.delete("/delete", status_code=status.HTTP_204_NO_CONTENT)
+async def permanently_delete_user(
+    current_user: str = Depends(get_current_active_user)
+):
+    try:
+        """
+        Permanently delete a user:
+        - Sets is_deleted to True
+        - Sets username and email to 'deleted_user-<user_id>' (unique)
+        - Sets display_name to 'Deleted User'
+        - Removes cover_picture, profile_picture, and bio
+        - Only user themselves or admins can perform this action
+        """
+        db = get_database()
+        
+        print('trying to delete the user:', current_user)
+
+        # Check if user exists
+        user = await db.users.find_one({"_id": ObjectId(current_user)})
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+
+        # Update user fields to mark as deleted and anonymize
+        await db.users.update_one(
+            {"_id": ObjectId(current_user)},
+            {
+                "$set": {
+                    "is_active": False,
+                    "username": f"deleted_user-{current_user}",
+                    "email": f"deleted_user-{current_user}@wanoafrica.com",
+                    "display_name": "Deleted User",
+                    "profile_picture": None,
+                    "cover_picture": None,
+                    "bio": None,
+                    "updated_at": datetime.utcnow()
+                }
+            }
+        )
+        
+        return
+    except Exception as e:
+        logger.error(f"Error permanently deleting user {current_user}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error permanently deleting user"
+        )
+
+@router.post('/block_user/{target_user}', status_code=status.HTTP_204_NO_CONTENT)
+def block_user(
+    target_user: str,
+    current_user: str = Depends(get_current_active_user)):
+    
+    try:
+        """
+        Block a user:
+        - Adds target_user to current_user's blocked_users list
+            - Adds current_user to target_user's blocked_by list
+        """
+        
+        db = get_database()
+        
+        current_user_id = ObjectId(current_user)
+        target_user_id = ObjectId(target_user)
+        # 1. Add target_user to blocked_users of current_user
+        db.users.update_one(
+            {"_id": current_user_id},
+            {"$addToSet": {"blocked_users": target_user_id}}
+        )
+        
+        # 2. Add current_user to blocked_by of target_user
+        db.users.update_one(
+            {"_id": target_user_id},
+            {"$addToSet": {"blocked_by": current_user_id}}
+        )
+    except Exception as e:
+        logger.error(f"Error blocking user {target_user} by {current_user}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error blocking user"
+        )
+        
+@router.post('/unblock_user/{target_user}', status_code=status.HTTP_204_NO_CONTENT)
+def unblock_user(
+    target_user: str,
+    current_user: str = Depends(get_current_active_user)):
+    
+    try:
+        """
+        Unblock a user:
+        - Removes target_user from current_user's blocked_users list
+            - Removes current_user from target_user's blocked_by list
+        """
+        
+        db = get_database()
+        
+        current_user_id = ObjectId(current_user)
+        target_user_id = ObjectId(target_user)
+        
+        # 1. Remove target_user from blocked_users of current_user
+        db.users.update_one(
+            {"_id": current_user_id},
+            {"$pull": {"blocked_users": target_user_id}}
+        )
+        
+        # 2. Remove current_user from blocked_by of target_user
+        db.users.update_one(
+            {"_id": target_user_id},
+            {"$pull": {"blocked_by": current_user_id}}
+        )
+    except Exception as e:
+        logger.error(f"Error unblocking user {target_user} by {current_user}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error unblocking user"
+        )
+
 @router.get("/{user_id}/complete", response_model=UserWithDetailsResponse)
 async def get_user_complete(
     user_id: str,
@@ -530,16 +653,83 @@ async def get_user_complete(
     
     # Calculate mutual followers
     if current_user != user_id:
+         # 🔒 Blocking check (current user’s perspective)
+        current_user_oid = ObjectId(current_user)
+
+        # Fetch current user’s blocking info
         current_user_data = await db.users.find_one(
             {"_id": current_user_oid},
-            {"followers": 1}
+            {"blocked_users": 1, "blocked_by": 1}
         )
-        if current_user_data:
-            user_followers_set = set(user.get("followers", []))
-            current_followers_set = set(current_user_data.get("followers", []))
-            mutual_followers_count = len(user_followers_set.intersection(current_followers_set))
-        else:
-            mutual_followers_count = 0
+
+        if not current_user_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Current user not found"
+            )
+
+        blocked_users = current_user_data.get("blocked_users", [])
+        blocked_by = current_user_data.get("blocked_by", [])
+
+        is_blocked_by_me = ObjectId(user_id) in blocked_users
+        is_blocked_by_them = ObjectId(user_id) in blocked_by
+
+        if is_blocked_by_me or is_blocked_by_them:
+            # Return a sanitized "deleted account" representation when there's a blocking relationship
+            deleted_user = {
+                **user,
+                "_id": str(user["_id"]),
+                "username": f"deleted_user",
+                "email": f"deleted_user@wanoafrica.com",
+                "display_name": "Deleted Account",
+                "bio": None,
+                "profile_picture": None,
+                "cover_picture": None,
+                "is_active": False,
+                "is_verified": False,
+                "verification_token": None,
+                "verification_token_expires": None,
+                "verified_at": None,
+                "localization": user.get("localization", {}),
+                "theme": None,
+                "features": {},
+                "tags": [],
+                "bookmarked_videos": [],
+                "liked_videos": [],
+                "following": [],
+                "followers": [],
+                "followers_count": 0,
+                "following_count": 0,
+                "videos_count": 0,
+                "likes_count": 0,
+                "created_at": user.get("created_at") or datetime.utcnow(),
+                "updated_at": datetime.utcnow()
+            }
+
+            complete_blocked = CompleteUserResponse(**deleted_user)
+
+            return UserWithDetailsResponse(
+                user=complete_blocked,
+                is_following=False,
+                is_followed_by=False,
+                mutual_followers_count=0,
+                recent_videos=[],
+                views=0,
+                can_unblock=is_blocked_by_me,
+                blocked=is_blocked_by_them or is_blocked_by_me,
+            )
+        else:   
+            # Calculate mutual followers
+            current_user_data = await db.users.find_one(
+                {"_id": current_user_oid},
+                {"followers": 1}
+            )
+            if current_user_data:
+                user_followers_set = set(user.get("followers", []))
+                current_followers_set = set(current_user_data.get("followers", []))
+                mutual_followers_count = len(user_followers_set.intersection(current_followers_set))
+            else:
+                mutual_followers_count = 0
     else:
         mutual_followers_count = 0
     
@@ -1114,32 +1304,6 @@ async def update_user(
     user = await db.users.find_one({"_id": ObjectId(user_id)})
     user["_id"] = str(user["_id"])
     return UserResponse(**user)
-
-@router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_user(
-    user_id: str,
-    current_user: str = Depends(get_current_active_user)
-):
-    """Soft delete a user"""
-    db = get_database()
-    
-    # Only allow users to delete their own account (or admins)
-    if user_id != current_user:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Can only delete your own account"
-        )
-    
-    result = await db.users.update_one(
-        {"_id": ObjectId(user_id)},
-        {"$set": {"is_active": False, "updated_at": datetime.utcnow()}}
-    )
-    
-    if result.matched_count == 0:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
-        )
 
 @router.post("/{user_id}/follow", status_code=status.HTTP_200_OK)
 async def follow_user(

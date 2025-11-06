@@ -46,6 +46,7 @@ class CommentResponse(BaseModel):
     parent_id: Optional[str] = None
     likes_count: int = 0
     replies_count: int = 0
+    is_user_active: bool = False
     is_liked: bool = False  # Whether current user liked it
     is_edited: bool = False
     edited_at: Optional[datetime] = None

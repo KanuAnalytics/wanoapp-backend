@@ -19,12 +19,16 @@ class FeedVideo(BaseModel):
     id: str
     creator_id: str
     title: Optional[str]
+    description: Optional[str] = None
+    thumbnail: Optional[str] = None
     views_count: int
     likes_count: int
     is_ad: bool = False
     # Include buffered counts
     buffered_views: int = 0
     buffered_likes: int = 0
+    user: dict = {}
+    has_liked: bool = False
 
 @router.get("/", response_model=List[FeedVideo])
 async def get_feed(
@@ -32,10 +36,20 @@ async def get_feed(
     skip: int = 0,
     limit: int = 20,
     user_id: Optional[str] = None,
-    saved: bool = False
+    saved: bool = False,
+    exclude_following: bool = False
 ):
     """Get personalized video feed, videos from a specific user, or saved videos"""
     db = get_database()
+
+    user_doc = await db.users.find_one(
+        {"_id": ObjectId(current_user)},
+        {"liked_videos": 1, "blocked_users": 1, "blocked_by": 1, "following": 1, "localization": 1}
+    )
+
+    liked_video_ids = set(str(v) for v in user_doc.get("liked_videos", []))
+    blocked_users = user_doc.get("blocked_users", [])
+    blocked_by = user_doc.get("blocked_by", [])
     
     # Single unified pipeline that handles all scenarios
     if saved:
@@ -67,6 +81,11 @@ async def get_feed(
         else:
             # Get personalized feed
             user = await db.users.find_one({"_id": ObjectId(current_user)})
+            exclude_creator_ids = []
+            if exclude_following:
+                following_ids = user.get("following", [])
+                if following_ids:
+                    exclude_creator_ids = [ObjectId(uid) for uid in following_ids]
             user_country = user.get("localization", {}).get("country", "NG")
             user_languages = user.get("localization", {}).get("languages", ["en"])
             
@@ -77,12 +96,45 @@ async def get_feed(
                     {"language": {"$in": user_languages}}
                 ]
             })
+            if exclude_creator_ids:
+                match_conditions["creator_id"] = {"$nin": exclude_creator_ids}
+            
+             # 🧱 Exclude videos from blocked users
+            exclude_ids = set(blocked_users + blocked_by)
+            if exclude_ids:
+                match_conditions["creator_id"] = {
+                    **match_conditions.get("creator_id", {}),
+                    "$nin": list(exclude_ids)
+                }
         
         pipeline = [
             {"$match": match_conditions},
             {"$sort": {"created_at": -1}},
             {"$skip": skip},
-            {"$limit": limit}
+            {"$limit": limit},
+            {"$lookup": {
+                "from": "users",
+                "localField": "creator_id",
+                "foreignField": "_id",
+                "as": "creator"
+            }},
+            {"$unwind": {"path": "$creator", "preserveNullAndEmptyArrays": True}},
+            {"$project": {
+                "_id": {"$toString": "$_id"},
+                "creator_id": {"$toString": "$creator_id"},
+                "title": 1,
+                "description": 1,
+                "views_count": 1,
+                "likes_count": 1,
+                "created_at": {"$dateToString": {"format": "%Y-%m-%dT%H:%M:%S.%LZ", "date": "$created_at"}},
+                "thumbnail": "$urls.thumbnail",
+                "is_active": 1,
+                "user": {
+                    "username": "$creator.username",
+                    "display_name": "$creator.display_name",
+                    "profile_picture": "$creator.profile_picture"
+                }
+            }}
         ]
         cursor = db.videos.aggregate(pipeline)
     
@@ -91,19 +143,23 @@ async def get_feed(
         # For saved videos, video data is in doc["videos"], otherwise it's directly in doc
         video = doc.get("videos", doc) if saved else doc
         video_id = str(video["_id"])
-        
+        has_liked = video_id in liked_video_ids
         # Get buffered counts
         buffered = await metrics_buffer.get_buffered_counts(video_id)
-        
+        user_info = video.get("user", {})
         videos.append(FeedVideo(
             id=video_id,
             creator_id=str(video["creator_id"]),
             title=video.get("title"),
+            description=video.get("description"),
+            thumbnail=video.get("thumbnail"),
             views_count=video.get("views_count", 0),
             likes_count=video.get("likes_count", 0),
             is_ad=False,
             buffered_views=buffered["views"],
-            buffered_likes=buffered["likes"]
+            buffered_likes=buffered["likes"],
+            user=user_info,
+            has_liked=has_liked,
         ))
     
     # Insert ads (1:20 ratio) - only for personalized feed, not for specific user videos or saved videos

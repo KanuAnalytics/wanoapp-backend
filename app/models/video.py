@@ -102,7 +102,7 @@ class Video(BaseDocument):
                 self.end = duration
             if self.video_type == VideoType.BITS and duration > 15:
                 raise ValueError("Bits videos must be 15 seconds or less")
-            elif self.video_type == VideoType.REGULAR and (duration < 15 or duration > 90):
+            elif self.video_type == VideoType.REGULAR and (duration < 15 or duration > 120):
                 raise ValueError("Regular videos must be between 15 and 90 seconds")
         return self
     

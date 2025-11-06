@@ -12,12 +12,27 @@ from app.models.video import Video, VideoType, VideoPrivacy
 from app.core.database import get_database
 from app.api.deps import get_current_active_user, get_verified_user
 from app.services.metrics_service import metrics_buffer
-from pydantic import BaseModel, Field
+from pydantic import BaseModel,HttpUrl, Field
 import re
 import json
 from bson.json_util import dumps
 
 router = APIRouter()
+
+class VideoPost(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    video_type: Optional[VideoType] = VideoType.REGULAR
+    privacy: VideoPrivacy = VideoPrivacy.PUBLIC
+    remoteUrl: str
+    thumbnail: Optional[str] = 'https://wano-africadev.lon1.digitaloceanspaces.com/wanoafrica-dospaces-key/profile-pictures/thumbnail_placeholder.png'
+    duration: Optional[float] = 0.0
+    start: Optional[float] = 0.0
+    end: Optional[float] = None
+    remix_enabled: Optional[bool] = True
+    comments_enabled: bool = True
+    categoryId: Optional[str] = None
+    subcategoryId: Optional[str] = None
 
 class VideoCreate(BaseModel):
     title: Optional[str] = None
@@ -50,7 +65,6 @@ class VideoResponse(BaseModel):
     comments_count: int
     created_at: datetime
     
-    # Include buffered counts for real-time feel
     buffered_views: int = 0
     buffered_likes: int = 0
     buffered_comments: int = 0
@@ -60,12 +74,88 @@ class VideoResponse(BaseModel):
     end: Optional[float] = None
     remoteUrl: Optional[str] = None
     
-    # Follow status
     is_following: Optional[bool] = None
-    
+    is_liked: Optional[bool] = None  
+
     class Config:
         populate_by_name = True
 
+@router.post("/post", status_code=status.HTTP_201_CREATED)
+async def post_video(
+    input: VideoPost,
+    current_user: str = Depends(get_verified_user)
+):
+    try: 
+        """Endpoint to handle video posting logic"""
+        db = get_database()
+        user = await db.users.find_one({"_id": ObjectId(current_user)})
+        
+        video_doc = {
+            "creator_id": ObjectId(current_user),
+            "title": input.title,  # Can be updated later by user
+            "description": input.description,
+            "video_type": "regular",
+            "privacy": input.privacy,
+            "metadata": {
+                "duration": input.duration,
+                "width": 1080,  # You might want to detect this from the actual video
+                "height": 1920,
+                "fps": 30.0,
+                "file_size": 0  # You can calculate this during upload
+            },
+            "urls": {
+                "original": input.remoteUrl,
+                "hls_playlist": input.remoteUrl,  # In production, generate HLS separately
+                "thumbnail": input.thumbnail,  # In production, generate thumbnail separately
+                "download": input.remoteUrl
+            },
+            "categoryId" : input.categoryId,
+            "subcategoryId" : input.subcategoryId,
+            # Additional fields for compatibility
+            "FEid": None,
+            "start": 0,
+            "end": input.end,
+            "duration": input.duration,
+            "remoteUrl": input.remoteUrl,
+            "type": 'video',
+            # Standard fields
+            "hashtags": [],
+            "categories": [],
+            "remix_enabled": True,
+            "comments_enabled": input.comments_enabled,
+            "created_at": datetime.utcnow(),
+            "updated_at": datetime.utcnow(),
+            "is_active": True,
+            "views_count": 0,
+            "likes_count": 0,
+            "comments_count": 0,
+            "shares_count": 0,
+            "bookmarks_count": 0,
+            "is_approved": True,
+            "is_flagged": False,
+            "report_count": 0,
+            "is_remix": False,
+            "remix_count": 0,
+            "country": user.get("localization", {}).get("country", "NG"),
+            "language": user.get("localization", {}).get("languages", ["en"])[0]
+        }
+        
+        # Insert into database
+        await db.videos.insert_one(video_doc)
+        
+        # Update user's video count
+        await db.users.update_one(
+            {"_id": ObjectId(current_user)},
+            {"$inc": {"videos_count": 1}}
+        )
+        
+        # This is a placeholder implementation
+        return {"message": "Video posted successfully"}
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
 # Modify create_video function
 # Update the create_video endpoint to use get_verified_user
 @router.post("/", response_model=VideoResponse, status_code=status.HTTP_201_CREATED)
@@ -232,6 +322,12 @@ async def get_video(
     # Get buffered counts for immediate display
     buffered = await metrics_buffer.get_buffered_counts(video_id)
     
+    # Get current user data
+    user_doc = await db.users.find_one({"_id": ObjectId(current_user)})
+
+    # Check if current user has liked this video
+    is_liked = ObjectId(video_id) in (user_doc.get("liked_videos") or [])
+    
     # Check if current user is following the video creator
     creator_doc = await db.users.find_one({"_id": video["creator_id"]})
     current_user_oid = ObjectId(current_user)
@@ -240,13 +336,12 @@ async def get_video(
     video["_id"] = str(video["_id"])
     video["creator_id"] = str(video["creator_id"])
     
-    # Add buffered counts to response
     response = VideoResponse(**video)
     response.buffered_views = buffered["views"]
     response.buffered_likes = buffered["likes"]
     response.buffered_comments = buffered["comments"]
     response.is_following = is_following
-    
+    response.is_liked = is_liked
     return response
 
 @router.put("/{video_id}", response_model=VideoResponse)

@@ -361,14 +361,14 @@ class Mutation(VideoEditorMutation, CommentMutations):
         
         # Get user info and check verification
         user = await db.users.find_one({"_id": ObjectId(user_id)})
-        
-        if not user.get("is_verified", False):
-            raise Exception("Please verify your email before uploading videos")
+     
+        # if not user.get("is_verified", False):
+        #     raise Exception("Please verify your email before uploading videos")
         
         # Validate video type against duration
         if input.video_type == VideoTypeEnum.BITS and input.duration > 15:
             raise Exception("Bits videos must be 15 seconds or less")
-        elif input.video_type == VideoTypeEnum.REGULAR and (input.duration < 15 or input.duration > 90):
+        elif input.video_type == VideoTypeEnum.REGULAR and (input.duration < 15 or input.duration > 120):
             raise Exception("Regular videos must be between 15 and 90 seconds")
         
         video_doc = {

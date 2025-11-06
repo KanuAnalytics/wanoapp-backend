@@ -67,6 +67,7 @@ class Settings(BaseSettings):
     DO_SPACES_ACCESS_KEY_ID: str
     DO_SPACES_BUCKET_NAME: str
     DO_SPACES_ENDPOINT: str
+    DO_SPACES_CDN_URL: str
     DO_SPACES_SECRET_KEY: str
     
     #service URL
@@ -75,6 +76,6 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = True
-        # extra="allow"
+        extra="ignore"
 
 settings = Settings()
