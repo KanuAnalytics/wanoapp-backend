@@ -5,8 +5,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_COLOR=1 \
-    PIP_ONLY_BINARY=:all:   # fail fast if a wheel isn’t available (prevents accidental compiles)
-
+    PIP_ONLY_BINARY=:all:
+    
 # Only what you need at runtime; add build tools only if you really need them
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg wget && \
