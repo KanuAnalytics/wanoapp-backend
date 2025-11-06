@@ -5,7 +5,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_COLOR=1 \
-    PIP_ONLY_BINARY=:all:
+    PIP_ONLY_BINARY=":all:" \
+    PIP_NO_BINARY="starkbank-ecdsa"
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements.txt
     
 # Only what you need at runtime; add build tools only if you really need them
 RUN apt-get update && apt-get install -y --no-install-recommends \
