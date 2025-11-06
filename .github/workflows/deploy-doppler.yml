@@ -28,7 +28,7 @@ jobs:
         uses: dopplerhq/cli-action@v3
 
       - name: Fetch secrets from Doppler
-        run: doppler secrets download --no-file --format env > .env.stage.dev
+        run: doppler secrets download --no-file --format env | sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' > .env.stage.dev
 
       - name: Copy .env to Remote Directory
         run: cp .env.stage.dev ./.env
