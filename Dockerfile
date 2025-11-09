@@ -1,31 +1,32 @@
-# Use glibc-based image so wheels are available
-FROM python:3.11-slim AS runtime
+FROM python:3.11-slim
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_NO_COLOR=1 \
-    PIP_ONLY_BINARY=":all:" \
-    PIP_NO_BINARY="starkbank-ecdsa"
+ENV PYTHONDONTWRITEBYTECODE=1 \\
+    PYTHONUNBUFFERED=1
 
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install -r requirements.txt
-    
-# Only what you need at runtime; add build tools only if you really need them
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg wget && \
-    rm -rf /var/lib/apt/lists/*
+# Install system dependencies
+RUN apt-get update && apt-get install -y \\
+    gcc \\
+    libffi-dev \\
+    libssl-dev \\
+    build-essential \\
+    ffmpeg \\
+    wget \\
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+
+# Copy requirements first (this line seems to be missing in your slim version)
 COPY requirements.txt .
 
-# Cache pip between builds + avoid building from source
-RUN --mount=type=cache,target=/root/.cache/pip \
+# Install Python dependencies
+RUN --mount=type=cache,target=/root/.cache/pip \\
     pip install -r requirements.txt
 
+# Copy the rest of the application
 COPY . .
-EXPOSE 8000
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \\
   CMD wget -qO- http://127.0.0.1:8000/health || exit 1
 
+EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
