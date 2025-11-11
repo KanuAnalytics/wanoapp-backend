@@ -3,11 +3,19 @@
 
 from fastapi import File, UploadFile, HTTPException, APIRouter, Query
 from fastapi.responses import JSONResponse
+from fastapi import BackgroundTasks  # NEW
+from bson import ObjectId
+from app.services.transcode_hls import transcode_and_publish  # NEW
 from app.services.upload_DO import upload_to_spaces, allowed_file, secure_filename, get_content_type, is_image_file, generate_presigned_upload_url
 router = APIRouter(prefix="/video", tags=["Upload Video"])
 
 @router.post("/upload")
-async def upload_video(video: UploadFile = File(...), isAudio: bool = False, isImage: bool = False):
+async def upload_video(
+    video: UploadFile = File(...),
+    isAudio: bool = False,
+    isImage: bool = False,
+    bg: BackgroundTasks = None,
+):
     # Validate file presence
     if not video.filename:
         raise HTTPException(status_code=400, detail="No file selected")
@@ -34,6 +42,25 @@ async def upload_video(video: UploadFile = File(...), isAudio: bool = False, isI
         success, result, object_key = await upload_to_spaces(video, filename, isAudio=isAudio, isImage=isImage)
         
         if success:
+            # === Start HLS transcode non-blocking ===
+            video_id = str(ObjectId())  # MongoDB Atlas–friendly ID string
+
+            def job():
+                try:
+                    out = transcode_and_publish(object_key, video_id)
+                    # TODO: Persist to DB here (when you have the full Video payload ready):
+                    # - urls.hls_playlist = out["master_url"]
+                    # - urls.thumbnail = out["poster_url"]
+                    # - urls.original = result
+                    # - processing_status = "READY"
+                except Exception as e:
+                    # TODO: mark processing_status = "FAILED" and log error
+                    pass
+
+            if bg:
+                bg.add_task(job)
+
+
             if isImage:
                 media_type = "Image"
             elif isAudio:
@@ -49,7 +76,8 @@ async def upload_video(video: UploadFile = File(...), isAudio: bool = False, isI
                     'object_key': object_key,
                     'file_size': str(file_size),
                     'content_type': get_content_type(filename),
-                    'media_type': media_type.lower()
+                    'media_type': media_type.lower(),
+                    'video_id': video_id,  # NEW
                 },
                 status_code=200
             )

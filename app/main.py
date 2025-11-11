@@ -108,6 +108,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Length", "Content-Range"],
 )
 
 # Include the API router - THIS IS WHAT'S MISSING!
