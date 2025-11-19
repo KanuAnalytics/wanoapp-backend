@@ -27,7 +27,6 @@ logger = logging.getLogger(__name__)
 async def ensure_indexes(db):
     """Create indexes idempotently, avoiding name/spec conflicts."""
     try:
-        logger.info("CORS_ORIGINS from env: %s", settings.CORS_ORIGINS)
         users_info_list = [idx async for idx in db.users.list_indexes()]
         videos_info_list = [idx async for idx in db.videos.list_indexes()]
         users_info = {idx.get("name"): idx for idx in users_info_list}
