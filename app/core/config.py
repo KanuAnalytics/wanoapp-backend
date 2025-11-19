@@ -33,7 +33,7 @@ class Settings(BaseSettings):
             "http://localhost:3000",
             "http://localhost:3001", 
             "https://devbe.wanoafrica.com",
-            "https://wano-web.vercel.app/"
+            "https://wano-web.vercel.app"
             # Add any other origins you need
         ]    
     # Auth
