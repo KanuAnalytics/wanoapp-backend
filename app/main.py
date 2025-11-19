@@ -94,7 +94,7 @@ async def lifespan(app: FastAPI):
     await metrics_buffer.stop()   # Stop the metrics buffer
     await close_mongo_connection()
 
-# Create FastAPI app
+# Create FastAPI app.
 app = FastAPI(
     title=settings.APP_NAME,
     lifespan=lifespan,
