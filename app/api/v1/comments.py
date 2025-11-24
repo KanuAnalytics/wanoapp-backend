@@ -395,6 +395,7 @@ async def get_video_comments(
             "_id": str(comment["_id"]),
             "video_id": str(comment["video_id"]),
             "user_display_name": user["display_name"] if user and "display_name" in user else "Anonymous",
+            "profile_picture": user["profile_picture"] if user and "profile_picture" in user else None,
             "user_id": str(comment["user_id"]),
             "is_user_active": user["is_active"] if user and "is_active" in user else False,
             "parent_id": None,
@@ -445,6 +446,7 @@ async def get_comment_replies(
             "video_id": str(reply["video_id"]),
             "user_id": str(reply["user_id"]),
             "user_display_name": user["display_name"] if user and "display_name" in user else "Anonymous",
+            "profile_picture": user["profile_picture"] if user and "profile_picture" in user else None,
             "is_user_active": user["is_active"] if user and "is_active" in user else False,
             "parent_id": str(reply["parent_id"]),
             "is_liked": is_liked
