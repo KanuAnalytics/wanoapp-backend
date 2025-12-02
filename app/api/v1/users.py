@@ -466,7 +466,7 @@ async def patch_user_profile(
 
 @router.delete("/delete", status_code=status.HTTP_204_NO_CONTENT)
 async def permanently_delete_user(
-    current_user: str = Depends(get_current_active_user)
+    current_user: str = Depends(get_current_active_user),
 ):
     try:
         """
@@ -476,8 +476,10 @@ async def permanently_delete_user(
         - Sets display_name to 'Deleted User'
         - Removes cover_picture, profile_picture, and bio
         - Only user themselves or admins can perform this action
+        - Soft deletes all their videos
         """
         db = get_database()
+        now = datetime.utcnow()
         
         print('trying to delete the user:', current_user)
 
@@ -501,9 +503,15 @@ async def permanently_delete_user(
                     "profile_picture": None,
                     "cover_picture": None,
                     "bio": None,
-                    "updated_at": datetime.utcnow()
+                    "updated_at": now
                 }
             }
+        )
+
+        # Soft delete all videos for this user
+        await db.videos.update_many(
+            {"creator_id": ObjectId(current_user)},
+            {"$set": {"is_active": False, "updated_at": now}}
         )
         
         return
@@ -513,6 +521,66 @@ async def permanently_delete_user(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error permanently deleting user"
         )
+
+@router.delete("/ban/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def ban_user(
+    user_id: str,
+    current_user: str = Depends(get_current_active_user),
+):
+    """
+    Admin-only ban:
+    - Anonymizes and deactivates the target user
+    - Soft deletes all their videos
+    """
+    db = get_database()
+    now = datetime.utcnow()
+
+    # Ensure the requester is an admin
+    requesting_user = await db.users.find_one({"_id": ObjectId(current_user)})
+    if not requesting_user or requesting_user.get("user_type") != UserType.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin privileges required to ban users"
+        )
+
+    if not ObjectId.is_valid(user_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid user ID"
+        )
+
+    # Check if target user exists
+    user = await db.users.find_one({"_id": ObjectId(user_id)})
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+
+    # Anonymize and deactivate the user
+    await db.users.update_one(
+        {"_id": ObjectId(user_id)},
+        {
+            "$set": {
+                "is_active": False,
+                "username": f"deleted_user-{user_id}",
+                "email": f"deleted_user-{user_id}@wanoafrica.com",
+                "display_name": "Deleted User",
+                "profile_picture": None,
+                "cover_picture": None,
+                "bio": None,
+                "updated_at": now
+            }
+        }
+    )
+
+    # Soft delete all videos for this user
+    await db.videos.update_many(
+        {"creator_id": ObjectId(user_id)},
+        {"$set": {"is_active": False, "updated_at": now}}
+    )
+
+    return
 
 @router.post('/block_user/{target_user}', status_code=status.HTTP_204_NO_CONTENT)
 def block_user(

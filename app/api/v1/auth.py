@@ -28,6 +28,7 @@ class Token(BaseModel):
     user_id: str
     username: str
     is_verified: bool
+    user_type: Optional[str] = None
 
 class LoginRequest(BaseModel):
     username: str
@@ -273,7 +274,8 @@ async def login_json(login_data: LoginRequest):
         "token_type": "bearer",
         "user_id": str(user["_id"]),
         "username": user["username"],
-        "is_verified": user.get("is_verified", False)
+        "is_verified": user.get("is_verified", False),
+        "user_type": user.get("user_type")
     }
 
 # @router.post("/register")
