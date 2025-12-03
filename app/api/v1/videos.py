@@ -16,6 +16,7 @@ from pydantic import BaseModel,HttpUrl, Field
 import re
 import json
 from bson.json_util import dumps
+from app.models.user import UserType
 
 router = APIRouter()
 
@@ -396,33 +397,49 @@ async def delete_video(
     video_id: str,
     current_user: str = Depends(get_current_active_user)
 ):
-    """Soft delete a video"""
+    """Soft delete a video. Only creator or admin can delete."""
     db = get_database()
-    
-    # Verify ownership
+
+    # Get current user document
+    user_doc = await db.users.find_one({"_id": ObjectId(current_user)})
+    if not user_doc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found"
+        )
+
+    # Verify video exists
     video = await db.videos.find_one({"_id": ObjectId(video_id)})
     if not video:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Video not found"
         )
-    
-    if str(video["creator_id"]) != current_user:
+
+    # Check permissions (creator or admin)
+    is_creator = str(video["creator_id"]) == current_user
+    is_admin = user_doc.get("user_type") == UserType.ADMIN  # adjust if your field is different
+
+    if not (is_creator or is_admin):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Can only delete your own videos"
+            detail="You do not have permission to delete this video"
         )
-    
+
+    # Soft delete video
     await db.videos.update_one(
         {"_id": ObjectId(video_id)},
         {"$set": {"is_active": False, "updated_at": datetime.utcnow()}}
     )
-    
-    # Update user's video count
+
+    # Decrement creator’s video count ONLY if the creator deleted it
+    # Or if admin deleted it, decrement the *actual owner's* count
     await db.users.update_one(
-        {"_id": ObjectId(current_user)},
+        {"_id": video["creator_id"]},
         {"$inc": {"videos_count": -1}}
     )
+
+    return {"message": "Video deleted successfully"}  # Optional for 204
 
 @router.post("/{video_id}/like", status_code=status.HTTP_200_OK)
 async def like_video(
