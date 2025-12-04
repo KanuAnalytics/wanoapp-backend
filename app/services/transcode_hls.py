@@ -30,22 +30,36 @@ def transcode_and_publish(object_key: str, video_id: str) -> dict:
         os.makedirs(out_dir, exist_ok=True)
 
         cmd = f'''set -e
-ffmpeg -y -i "{src}" -filter_complex "[0:v]split=5[v1080][v720][v480][v360][v240]" \
--map "[v1080]" -map a:0? -c:v h264 -profile:v high -preset veryfast -b:v 5500k -maxrate 6000k -bufsize 11000k -vf "scale=w=1920:h=1080:force_original_aspect_ratio=decrease" \
--g 48 -keyint_min 48 -sc_threshold 0 -c:a aac -b:a 128k -ac 2 \
--f hls -hls_time 4 -hls_playlist_type vod -hls_segment_type fmp4 -master_pl_name master.m3u8 \
--hls_flags independent_segments \
--var_stream_map "v:0,a:0 v:1,a:0 v:2,a:0 v:3,a:0 v:4,a:0" \
--b:v:1 3000k -maxrate:v:1 3500k -bufsize:v:1 7000k -vf:v:1 "scale=w=1280:h=720:force_original_aspect_ratio=decrease" \
--b:v:2 1500k -maxrate:v:2 1800k -bufsize:v:2 3600k -vf:v:2 "scale=w=854:h=480:force_original_aspect_ratio=decrease" \
--b:v:3 800k  -maxrate:v:3 950k  -bufsize:v:3 1900k -vf:v:3 "scale=w=640:h=360:force_original_aspect_ratio=decrease" \
--b:v:4 450k  -maxrate:v:4 550k  -bufsize:v:4 1100k -vf:v:4 "scale=w=426:h=240:force_original_aspect_ratio=decrease" \
--hls_fmp4_init_filename "init_$RepresentationID$.mp4" -seg_duration 4 \
-"{out_dir}/prog_index.m3u8"
+ffmpeg -y -i "{src}" -filter_complex "\
+[0:v]split=5[v0][v1][v2][v3][v4]; \
+[v0]scale=w=1920:h=-2:force_original_aspect_ratio=decrease:force_divisible_by=2,format=yuv420p[v0out]; \
+[v1]scale=w=1280:h=-2:force_original_aspect_ratio=decrease:force_divisible_by=2,format=yuv420p[v1out]; \
+[v2]scale=w=854:h=-2:force_original_aspect_ratio=decrease:force_divisible_by=2,format=yuv420p[v2out]; \
+[v3]scale=w=640:h=-2:force_original_aspect_ratio=decrease:force_divisible_by=2,format=yuv420p[v3out]; \
+[v4]scale=w=426:h=-2:force_original_aspect_ratio=decrease:force_divisible_by=2,format=yuv420p[v4out]" \
+-map "[v0out]" -map a:0? \
+-map "[v1out]" -map a:0? \
+-map "[v2out]" -map a:0? \
+-map "[v3out]" -map a:0? \
+-map "[v4out]" -map a:0? \
+-c:v libx264 -preset veryfast -g 48 -keyint_min 48 -sc_threshold 0 \
+-profile:v:0 high -b:v:0 5500k -maxrate:v:0 6000k -bufsize:v:0 11000k \
+-profile:v:1 high -b:v:1 3000k -maxrate:v:1 3500k -bufsize:v:1 7000k  \
+-profile:v:2 main -b:v:2 1500k -maxrate:v:2 1800k -bufsize:v:2 3600k  \
+-profile:v:3 main -b:v:3 800k  -maxrate:v:3 950k  -bufsize:v:3 1900k  \
+-profile:v:4 baseline -b:v:4 450k  -maxrate:v:4 550k  -bufsize:v:4 1100k \
+-c:a aac -b:a 128k -ac 2 \
+-f hls -hls_time 4 -hls_playlist_type vod -hls_segment_type fmp4 -hls_flags independent_segments \
+-hls_fmp4_init_filename "init_%v.mp4" \
+-hls_segment_filename "{out_dir}/v%v/seg_%06d.m4s" \
+-master_pl_name master.m3u8 \
+-var_stream_map "v:0,a:0 v:1,a:1 v:2,a:2 v:3,a:3 v:4,a:4" \
+"{out_dir}/v%v/prog_index.m3u8"
 
 # Poster
 ffmpeg -y -ss 1 -i "{src}" -vframes 1 -vf "scale=720:-1" "{out_dir}/poster.jpg"
 '''
+
         subprocess.run(["bash","-lc", cmd], check=True)
 
         master_url = publish_dir(out_dir, f"hls/{video_id}")

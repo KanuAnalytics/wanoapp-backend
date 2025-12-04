@@ -54,8 +54,9 @@ async def upload_video(
                     # - urls.original = result
                     # - processing_status = "READY"
                 except Exception as e:
-                    # TODO: mark processing_status = "FAILED" and log error
-                    pass
+                    import traceback, logging
+                    logging.exception("HLS transcode failed: %s", e)
+
 
             if bg:
                 bg.add_task(job)
