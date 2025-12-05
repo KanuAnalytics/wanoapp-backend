@@ -17,6 +17,12 @@ class Settings(BaseSettings):
     DOPPLER_PROJECT: str
 
 
+    CLOUDFLARE_ACCOUNT_ID: str
+    CLOUDFLARE_STREAM_API_TOKEN: str
+    CLOUDFLARE_STREAM_API_BASE: str = "https://api.cloudflare.com/client/v4"
+
+
+
     # Database
     MONGODB_URI: str
     # App
