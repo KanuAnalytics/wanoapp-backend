@@ -7,7 +7,7 @@ services:
     container_name: ${CONTAINER_NAME}
     network_mode: host  
     ports:
-      - "8000:8000"  # Map container port 3000 to host port 3000
+      - "8001:8000"  # Map container port 3000 to host port 3000
     env_file:
       - .env
     restart: always
