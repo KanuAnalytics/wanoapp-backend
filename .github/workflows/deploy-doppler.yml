@@ -19,6 +19,8 @@ jobs:
       DOPPLER_CONFIG: dev
       DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN_DEV }}
       DOCKER_TAG: ${{ github.sha }}
+      COMPOSE_PROJECT_NAME: wano-africa-be-dev   
+      
 
     steps:
       - name: Checkout code
