@@ -1,7 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from app.api.deps import get_current_active_user
 from app.core.database import get_database
 
 router = APIRouter()
@@ -12,7 +11,7 @@ class VersionResponse(BaseModel):
 
 
 @router.get("/version", response_model=VersionResponse)
-async def get_app_version(current_user: str = Depends(get_current_active_user)):
+async def get_app_version():
     """Return the current app version from the config collection."""
     db = get_database()
 
