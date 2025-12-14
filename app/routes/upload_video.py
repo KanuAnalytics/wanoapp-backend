@@ -3,7 +3,7 @@
 
 from fastapi import File, UploadFile, HTTPException, APIRouter, Query
 from fastapi.responses import JSONResponse
-from app.services.upload_DO import upload_to_spaces, allowed_file, secure_filename, get_content_type, is_image_file, generate_presigned_upload_url
+from app.services.upload_DO import upload_to_spaces, allowed_file, secure_filename, get_content_type, is_image_file, generate_presigned_upload_url, generate_stream_direct_upload_url, get_stream_video_status
 router = APIRouter(prefix="/video", tags=["Upload Video"])
 
 @router.post("/upload")
@@ -69,7 +69,20 @@ async def get_presigned_upload_url(
     Automatically determines content type.
     """
     try:
-        result = generate_presigned_upload_url(filename=filename, folder=folder)
+        result = generate_stream_direct_upload_url(filename=filename, folder=folder)
         return result
+    except Exception as e:
+        print(str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@router.get("/{uid}")
+def video_status(
+    uid:str
+    ):
+    try:
+        print("Fetching status for UID:", uid)
+        status = get_stream_video_status(uid)
+        print("Status fetched:", status)
+        return status
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

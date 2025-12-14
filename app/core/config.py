@@ -71,6 +71,11 @@ class Settings(BaseSettings):
     DO_SPACES_CDN_URL: str
     DO_SPACES_SECRET_KEY: str
     
+    #Cloudflare
+    CLOUDFLARE_ACCOUNT_ID: str
+    CLOUDFLARE_STREAM_API_TOKEN: str
+    CLOUDFLARE_STREAM_API_BASE: str
+    
     #service URL
     VIDEO_SERVICE_URL: str
     
