@@ -9,6 +9,7 @@ import re
 from fastapi import UploadFile
 from app.core.config import settings
 from botocore.client import Config
+import requests
 
 
 def secure_filename(filename: str) -> str:
@@ -182,3 +183,113 @@ def generate_presigned_upload_url(filename: str, folder: str = "videos"):
 
     except ClientError as e:
         raise RuntimeError(f"Failed to generate presigned URL: {str(e)}")
+
+
+def generate_stream_direct_upload_url(filename: str, folder: str = "videos"):
+    """
+    Generate a Cloudflare Stream direct upload URL.
+    Returns dict with upload_url, stream_uid, and meta info.
+
+    Frontend will:
+      - POST the file to `upload_url` as multipart/form-data
+      - After upload, the video is available via Stream playback URL.
+    """
+
+    # Make sure you have these in your settings / env:
+    # CF_STREAM_ACCOUNT_ID
+    # CF_STREAM_API_TOKEN  (must have Stream:Edit permissions)
+    account_id = settings.CLOUDFLARE_ACCOUNT_ID
+    api_token = settings.CLOUDFLARE_STREAM_API_TOKEN
+    base_url = settings.CLOUDFLARE_STREAM_API_BASE
+
+    if not account_id or not api_token:
+        raise RuntimeError("Cloudflare Stream account ID or API token not configured")
+
+    # Optional: attach metadata to the video
+    safe_filename = os.path.basename(filename) or "unnamed"
+    # This is just to namespace/organize metadata, has no folder structure effect in Stream
+    video_name = f"{folder}/{uuid.uuid4()}_{safe_filename}"
+
+    url = f"{base_url}/accounts/{account_id}/stream/direct_upload"
+
+    # Docs: you can send e.g. {"maxDurationSeconds": 3600, "expiry": "2025-01-01T00:00:00Z"} etc.
+    # We'll keep it minimal.
+    payload = {
+        "maxDurationSeconds": 210,
+        "meta": {
+            "name": video_name,
+        },
+        # If you want this upload URL to expire quickly, you can add "expiry" here.
+        # "expiry": "2025-12-31T23:59:59Z",
+    }
+
+    headers = {
+        "Authorization": f"Bearer {api_token}",
+        "Content-Type": "application/json",
+    }
+
+    resp = requests.post(url, json=payload, headers=headers, timeout=10)
+    if not resp.ok:
+        raise RuntimeError(
+            f"Failed to create Cloudflare Stream direct upload URL: "
+            f"{resp.status_code} {resp.text}"
+        )
+
+    data = resp.json()
+    if not data.get("success"):
+        raise RuntimeError(f"Cloudflare Stream API responded with error: {data}")
+
+    result = data["result"]
+    upload_url = result["uploadURL"]
+    stream_uid = result["uid"]
+
+    # Public playback URL patterns (you can choose how you want to expose)
+    # HLS:  https://videodelivery.net/{uid}/manifest/video.m3u8
+    # Web:  https://watch.videodelivery.net/{uid}
+    playback_url = f"https://videodelivery.net/{stream_uid}/manifest/video.m3u8"
+    
+    print(stream_uid)
+
+    return {
+        "upload_url": upload_url,   # where the client will POST the file
+        "stream_uid": stream_uid,   # save this in DB for later playback
+        "file_url": playback_url,
+        "name": video_name,
+    }
+
+
+def get_stream_video_status(uid: str):
+    """
+    Check Cloudflare Stream video status by UID.
+    Calls Cloudflare API using backend-side credential, never exposed to FE.
+    """
+    account_id = settings.CLOUDFLARE_ACCOUNT_ID
+    api_token = settings.CLOUDFLARE_STREAM_API_TOKEN
+
+    if not account_id or not api_token:
+        raise RuntimeError("Cloudflare Stream account ID or API token not configured")
+
+    url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/stream/{uid}"
+
+    headers = {
+        "Authorization": f"Bearer {api_token}",
+    }
+
+    resp = requests.get(url, headers=headers, timeout=10)
+    if not resp.ok:
+        raise RuntimeError(
+            f"Failed to fetch video status from Cloudflare Stream: "
+            f"{resp.status_code} {resp.text}"
+        )
+
+    data = resp.json()
+    if not data.get("success"):
+        raise RuntimeError(f"Cloudflare Stream API error: {data}")
+
+    result = data["result"]
+
+    # You can shape this however you want; here's a minimal + useful subset:
+    return {
+        "uid": result.get("uid"),
+        "readyToStream": result.get("readyToStream"),
+    }
