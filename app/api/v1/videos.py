@@ -34,6 +34,7 @@ class VideoPost(BaseModel):
     comments_enabled: bool = True
     categoryId: Optional[str] = None
     subcategoryId: Optional[str] = None
+    isReadyToStream: Optional[bool] = False
 
 class VideoCreate(BaseModel):
     title: Optional[str] = None
@@ -97,6 +98,7 @@ async def post_video(
             "description": input.description,
             "video_type": "regular",
             "privacy": input.privacy,
+            "isReadyToStream": input.isReadyToStream,
             "metadata": {
                 "duration": input.duration,
                 "width": 1080,  # You might want to detect this from the actual video
@@ -142,7 +144,7 @@ async def post_video(
         }
         
         # Insert into database
-        await db.videos.insert_one(video_doc)
+        result = await db.videos.insert_one(video_doc)
         
         # Update user's video count
         await db.users.update_one(
@@ -151,7 +153,7 @@ async def post_video(
         )
         
         # This is a placeholder implementation
-        return {"message": "Video posted successfully"}
+        return {"message": "Video posted successfully", "video_id": str(result.inserted_id)}
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
