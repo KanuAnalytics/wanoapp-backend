@@ -7,6 +7,7 @@ import httpx
 from app.core.config import Settings
 from app.core.database import get_database
 from app.models.upload_video import CheckStatusReq
+from app.services.sqs_publisher import push_video_processing_job
 from app.services.upload_DO import upload_to_spaces, allowed_file, secure_filename, get_content_type, is_image_file, generate_presigned_upload_url, generate_stream_direct_upload_url, get_stream_video_status
 import asyncio
 from app.core.config import settings
@@ -190,8 +191,13 @@ async def check_stream_status(input: CheckStatusReq):
         uId = input.uId
         videoId = input.videoId
         print("Initiating status check for UID:", uId)
+        
+        push_video_processing_job(
+            videoId=videoId,
+            uId=uId,
+        )
         # Start background task to call the video service API
-        asyncio.create_task(call_video_service_check_status_api_background(uId, videoId))
+        # asyncio.create_task(call_video_service_check_status_api_background(uId, videoId))
         return {"message": "Video status check initiated in background"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
