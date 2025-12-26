@@ -60,27 +60,43 @@ async def get_feed(
         pipeline = [
             {"$match": {"_id": ObjectId(target_user_id)}},
             {
-                "$project": {
-                    "bookmarked_videos": {
-                        "$slice": ["$bookmarked_videos", skip, limit]
-                    }
+            "$project": {
+                "bookmarked_videos": {
+                "$slice": ["$bookmarked_videos", skip, limit]
                 }
+            }
             },
             {
-                "$lookup": {
-                    "from": "videos",
-                    "localField": "bookmarked_videos",
-                    "foreignField": "_id",
-                    "as": "videos",
-                }
+            "$lookup": {
+                "from": "videos",
+                "localField": "bookmarked_videos",
+                "foreignField": "_id",
+                "as": "videos",
+            }
             },
             {"$unwind": "$videos"},
-            {"$match": {"videos.is_active": True}},
+            {"$match": {
+            "videos.is_active": True,
+            "$or": [
+                {"videos.isReadyToStream": True},
+                {"videos.isReadyToStream": {"$exists": False}}
+            ]
+            }},
         ]
         cursor = db.users.aggregate(pipeline)
     else:
         # For all other cases, use videos collection with dynamic match conditions
-        match_conditions = {"is_active": True}
+        match_conditions = {
+            "is_active": True,
+            "$and": [
+                        {
+            "$or": [
+                {"isReadyToStream": True},
+                {"isReadyToStream": {"$exists": False}}
+                ]
+            }
+            ]
+        }
 
         if user_id:
             # Get videos from specific user
@@ -107,7 +123,7 @@ async def get_feed(
                     "$or": [
                         {"country": user_country},
                         {"language": {"$in": user_languages}},
-                    ],
+                    ]
                 }
             )
             if exclude_creator_ids:
@@ -124,6 +140,8 @@ async def get_feed(
         # 🔥 Direct sort: use the string from `sorted_by` as the field
         # Default: newest first (created_at descending)
         sort_stage = {sorted_by: -1} if sorted_by else {"created_at": -1}
+        
+        print("Match conditions:", match_conditions)
 
         pipeline = [
             {"$match": match_conditions},
