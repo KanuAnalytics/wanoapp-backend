@@ -85,6 +85,12 @@ class Settings(BaseSettings):
     #service URL
     VIDEO_SERVICE_URL: str
     
+    #AWS SQS
+    AWS_REGION: str
+    AWS_ACCESS_KEY_ID: str
+    AWS_SECRET_ACCESS_KEY: str
+    SQS_VIDEO_QUEUE_URL: str
+    
     class Config:
         env_file = ".env"
         case_sensitive = True
