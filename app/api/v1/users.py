@@ -210,11 +210,12 @@ class TagsUpdate(BaseModel):
     tags: List[str] = Field(..., description="List of user interest tags")
 
 class FollowerResponse(BaseModel):
-    """Response model for follower details"""
+    """Response model for follower/following details with relationship flag"""
     id: str = Field(alias="_id")
     name: str = Field(alias="display_name")
     username: str
     picture: Optional[str] = Field(alias="profile_picture")
+    is_following: bool = False  # whether current user follows this user
     
     class Config:
         populate_by_name = True
@@ -299,27 +300,42 @@ class UserPatchResponse(BaseModel):
     class Config:
         populate_by_name = True
 
-# Helper function to get user relationships (followers/following)
-async def get_user_relationships(db, user_ids: List[ObjectId]) -> List[FollowerResponse]:
-    """Get user details for a list of user IDs (for followers/following lists)"""
+# Helper function to get user relationships (followers/following) and compute is_following for current user
+async def get_user_relationships(
+    db,
+    user_ids: List[ObjectId],
+    current_user_id: ObjectId
+) -> List[FollowerResponse]:
+    """Get user details for a list of user IDs (followers/following lists)
+    and indicate whether the current user follows each one.
+    """
     if not user_ids:
         return []
-    
-    # Get users from database
+
+    # Fetch current user's following list once
+    current_user = await db.users.find_one(
+        {"_id": current_user_id},
+        {"following": 1}
+    )
+    current_following = set(current_user.get("following", [])) if current_user else set()
+
     users_cursor = db.users.find(
         {"_id": {"$in": user_ids}, "is_active": True},
         {"_id": 1, "display_name": 1, "username": 1, "profile_picture": 1}
     )
-    
+
     users = []
     async for user in users_cursor:
-        users.append(FollowerResponse(
-            _id=str(user["_id"]),
-            display_name=user.get("display_name", ""),
-            username=user["username"],
-            profile_picture=user.get("profile_picture")
-        ))
-    
+        users.append(
+            FollowerResponse(
+                _id=str(user["_id"]),
+                display_name=user.get("display_name", ""),
+                username=user["username"],
+                profile_picture=user.get("profile_picture"),
+                is_following=user["_id"] in current_following
+            )
+        )
+
     return users
 
 # Helper function to get video details
@@ -1637,6 +1653,7 @@ async def get_user_relationships_endpoint(
     relationship_type: RelationshipType,
     skip: Optional[int] = None,
     limit: Optional[int] = None,
+    current_user: str = Depends(get_current_active_user),
 ):
     """Get list of user relationships (followers or following). If skip and limit are not provided, returns all."""
     db = get_database()
@@ -1666,6 +1683,10 @@ async def get_user_relationships_endpoint(
         relationship_ids = relationship_ids[skip:skip + limit]
     
     # Get relationship details using the reusable function
-    relationships = await get_user_relationships(db, relationship_ids)
+    relationships = await get_user_relationships(
+        db,
+        relationship_ids,
+        ObjectId(current_user)
+    )
     
     return relationships
