@@ -23,6 +23,7 @@ class FeedVideo(BaseModel):
     buffered_likes: int = 0
     user: dict = {}
     has_liked: bool = False
+    is_following: bool = False
 
 
 @router.get("/", response_model=List[FeedVideo])
@@ -52,6 +53,7 @@ async def get_feed(
     liked_video_ids = set(str(v) for v in user_doc.get("liked_videos", []))
     blocked_users = user_doc.get("blocked_users", [])
     blocked_by = user_doc.get("blocked_by", [])
+    following_ids = set(str(v) for v in user_doc.get("following", []))
 
     # Single unified pipeline that handles all scenarios
     if saved:
@@ -95,9 +97,9 @@ async def get_feed(
             user = await db.users.find_one({"_id": ObjectId(current_user)})
             exclude_creator_ids = []
             if exclude_following:
-                following_ids = user.get("following", [])
-                if following_ids:
-                    exclude_creator_ids = [ObjectId(uid) for uid in following_ids]
+                user_following_ids = user.get("following", [])
+                if user_following_ids:
+                    exclude_creator_ids = [ObjectId(uid) for uid in user_following_ids]
             user_country = user.get("localization", {}).get("country", "NG")
             user_languages = user.get("localization", {}).get("languages", ["en"])
 
@@ -176,6 +178,7 @@ async def get_feed(
         video = doc.get("videos", doc) if saved else doc
         video_id = str(video["_id"])
         has_liked = video_id in liked_video_ids
+        is_following = str(video["creator_id"]) in following_ids
         # Get buffered counts
         buffered = await metrics_buffer.get_buffered_counts(video_id)
         user_info = video.get("user", {})
@@ -193,6 +196,7 @@ async def get_feed(
                 buffered_likes=buffered["likes"],
                 user=user_info,
                 has_liked=has_liked,
+                is_following=is_following,
             )
         )
 
