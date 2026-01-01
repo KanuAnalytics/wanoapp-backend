@@ -113,14 +113,23 @@ async def register(request: RegisterRequest):
     """Register a new user and return access token"""
     db = get_database()
 
-    # --- Profanity and banned-word check ---
-    probability = predict_prob([request.username])[0]
-    lower_username = request.username.lower()
+    # --- Profanity and banned-word check (username + display name) ---
+    username_probability = predict_prob([request.username])[0]
+    display_probability = predict_prob([request.display_name])[0]
 
-    if probability > 0.7 or any(bad_word in lower_username for bad_word in BANNED_WORDS):
+    lower_username = request.username.lower()
+    lower_display_name = request.display_name.lower()
+
+    if username_probability > 0.7 or any(bad_word in lower_username for bad_word in BANNED_WORDS):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Username contains inappropriate language"
+        )
+
+    if display_probability > 0.7 or any(bad_word in lower_display_name for bad_word in BANNED_WORDS):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Display name contains inappropriate language"
         )
 
     # Check if username or email already exists

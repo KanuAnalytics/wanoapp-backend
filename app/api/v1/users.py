@@ -34,6 +34,7 @@ async def search_users_endpoint(
     q: str = Query(..., min_length=1, description="Username or full name (regex, case-insensitive, prefix)"),
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=50),
+    current_user: str = Depends(get_current_active_user),
 ):
     """Regex search users by `username` or `display_name`.
     Uses prefix-anchored regex for index-friendly lookups and returns only needed fields.
@@ -47,6 +48,10 @@ async def search_users_endpoint(
     escaped = re.escape(term)
     regex = {"$regex": f"^{escaped}", "$options": "i"}
 
+    # Fetch current user's following list once and build a set for O(1) membership checks
+    me = await db.users.find_one({"_id": ObjectId(current_user)}, {"following": 1})
+    current_following = set(me.get("following", [])) if me else set()
+
     pipeline = [
         {"$match": {
             "is_active": True,
@@ -55,7 +60,7 @@ async def search_users_endpoint(
                 {"display_name": regex},
             ],
         }},
-        {"$sort": {"followers_count": -1}},
+        {"$sort": { "created_at": -1, "_id": 1}},
         {"$skip": skip},
         {"$limit": limit},
         {"$project": {
@@ -68,6 +73,12 @@ async def search_users_endpoint(
         }}
     ]
     docs = await db.users.aggregate(pipeline).to_list(length=limit)
+    for user in docs:
+        try:
+            user_oid = ObjectId(user["_id"])  # _id is a string due to $toString
+        except Exception:
+            user_oid = None
+        user["is_following"] = (user_oid in current_following) if user_oid else False
     return json.loads(dumps(docs))
 
 class RelationshipType(str, Enum):
