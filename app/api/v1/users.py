@@ -55,7 +55,7 @@ async def search_users_endpoint(
                 {"display_name": regex},
             ],
         }},
-        {"$sort": {"followers_count": -1}},
+        {"$sort": {"followers_count": -1, "created_at": -1, "_id": 1}},
         {"$skip": skip},
         {"$limit": limit},
         {"$project": {
