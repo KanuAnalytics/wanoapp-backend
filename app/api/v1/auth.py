@@ -5,7 +5,7 @@ app/api/v1/auth.py
 
 """
 from profanity_check import predict, predict_prob
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.security import OAuth2PasswordRequestForm
@@ -21,6 +21,13 @@ import logging
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+def _as_utc(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 class Token(BaseModel):
     access_token: str
@@ -44,6 +51,16 @@ class ResendVerificationRequest(BaseModel):
 class ForgotPasswordRequest(BaseModel):
     """Request a password reset OTP for a user identified by username or email."""
     username_or_email: str = Field(..., min_length=3, max_length=100)
+
+class RequestRegistrationOtpRequest(BaseModel):
+    """Request an email OTP before registration."""
+    email: EmailStr
+    username: Optional[str] = None
+
+class VerifyRegistrationOtpRequest(BaseModel):
+    """Verify a registration OTP for an email."""
+    email: EmailStr
+    otp: str = Field(..., min_length=6, max_length=6)
 
 
 # --- Inserted models for OTP verification and password reset ---
@@ -113,14 +130,23 @@ async def register(request: RegisterRequest):
     """Register a new user and return access token"""
     db = get_database()
 
-    # --- Profanity and banned-word check ---
-    probability = predict_prob([request.username])[0]
-    lower_username = request.username.lower()
+    # --- Profanity and banned-word check (username + display name) ---
+    username_probability = predict_prob([request.username])[0]
+    display_probability = predict_prob([request.display_name])[0]
 
-    if probability > 0.7 or any(bad_word in lower_username for bad_word in BANNED_WORDS):
+    lower_username = request.username.lower()
+    lower_display_name = request.display_name.lower()
+
+    if username_probability > 0.7 or any(bad_word in lower_username for bad_word in BANNED_WORDS):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Username contains inappropriate language"
+        )
+
+    if display_probability > 0.7 or any(bad_word in lower_display_name for bad_word in BANNED_WORDS):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Display name contains inappropriate language"
         )
 
     # Check if username or email already exists
@@ -161,8 +187,8 @@ async def register(request: RegisterRequest):
         "password_hash": get_password_hash(request.password),
         "user_type": "standard",
         "localization": request.localization,
-        "created_at": datetime.utcnow(),
-        "updated_at": datetime.utcnow(),
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc),
         "is_active": True,
         "is_verified": False,
         "verification_token": verification_data["token"],
@@ -236,6 +262,117 @@ async def register(request: RegisterRequest):
         is_new_user=True,
         verification_email_sent=verification_email_sent
     )
+
+@router.post("/request-registration-otp")
+async def request_registration_otp(request: RequestRegistrationOtpRequest):
+    """
+    Send a 6-digit OTP to verify an email before registration.
+    Stores a hashed OTP and expiry in a temporary collection.
+    """
+    db = get_database()
+
+    # Avoid sending OTP if email is already registered
+    existing_user = await db.users.find_one({"email": request.email})
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already registered"
+        )
+
+    if request.username:
+        existing_username = await db.users.find_one({"username": request.username})
+        if existing_username:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Username already taken"
+            )
+
+    now = datetime.now(timezone.utc)
+    expiry_minutes = 10
+    cooldown_minutes = 0.5
+
+    existing = await db.registration_otps.find_one({"email": request.email})
+    if existing:
+        last_requested = _as_utc(existing.get("requested_at"))
+        if last_requested and isinstance(last_requested, datetime):
+            earliest_next = last_requested + timedelta(minutes=cooldown_minutes)
+            if earliest_next > now:
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="Please wait a few minutes before requesting another code"
+                )
+
+    try:
+        email_ok, otp = await email_service.send_registration_otp(
+            to_email=request.email,
+            username=request.username
+        )
+    except Exception:
+        logger.exception("Error while sending registration OTP")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to send OTP email"
+        )
+
+    if not email_ok:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to send OTP email"
+        )
+
+    otp_hash = get_password_hash(otp)
+    otp_expires = now + timedelta(minutes=expiry_minutes)
+
+    await db.registration_otps.update_one(
+        {"email": request.email},
+        {"$set": {
+            "email": request.email,
+            "otp_hash": otp_hash,
+            "otp_expires": otp_expires,
+            "requested_at": now,
+            "updated_at": now
+        }},
+        upsert=True
+    )
+
+    return {
+        "message": "OTP sent to the email address.",
+        "expires_in_minutes": expiry_minutes
+    }
+
+@router.post("/verify-registration-otp")
+async def verify_registration_otp(request: VerifyRegistrationOtpRequest):
+    """
+    Verify that the provided OTP is correct and not expired for the email.
+    On success, delete the OTP record.
+    """
+    db = get_database()
+
+    record = await db.registration_otps.find_one({"email": request.email})
+    if not record:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid code or expired"
+        )
+
+    otp_hash = record.get("otp_hash")
+    otp_expires = record.get("otp_expires")
+    otp_expires_utc = _as_utc(otp_expires)
+    if not otp_hash or not otp_expires_utc or otp_expires_utc < datetime.now(timezone.utc):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid code or expired"
+        )
+
+    if not verify_password(request.otp, otp_hash):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid code or expired"
+        )
+
+    await db.registration_otps.delete_one({"email": request.email})
+
+    return {"verified": True}
 
 @router.post("/login/json", response_model=Token)
 async def login_json(login_data: LoginRequest):
@@ -344,7 +481,7 @@ async def verify_email_get(token: str = Query(..., description="Verification tok
     # Find user with this token
     user = await db.users.find_one({
         "verification_token": token,
-        "verification_token_expires": {"$gt": datetime.utcnow()}
+        "verification_token_expires": {"$gt": datetime.now(timezone.utc)}
     })
     
     if not user:
@@ -367,10 +504,10 @@ async def verify_email_get(token: str = Query(..., description="Verification tok
         {
             "$set": {
                 "is_verified": True,
-                "verified_at": datetime.utcnow(),
+                "verified_at": datetime.now(timezone.utc),
                 "verification_token": None,
                 "verification_token_expires": None,
-                "updated_at": datetime.utcnow()
+                "updated_at": datetime.now(timezone.utc)
             }
         }
     )
@@ -396,10 +533,10 @@ async def resend_verification(request: ResendVerificationRequest):
         return {"message": "Email already verified"}
     
     # Check if we recently sent a verification email (rate limiting)
-    last_sent = user.get("verification_token_expires")
+    last_sent = _as_utc(user.get("verification_token_expires"))
     if last_sent:
         time_since_last = last_sent - timedelta(hours=settings.EMAIL_VERIFICATION_TOKEN_EXPIRE_HOURS) + timedelta(minutes=5)
-        if time_since_last > datetime.utcnow():
+        if time_since_last > datetime.now(timezone.utc):
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail="Please wait a few minutes before requesting another verification email"
@@ -415,7 +552,7 @@ async def resend_verification(request: ResendVerificationRequest):
             "$set": {
                 "verification_token": verification_data["token"],
                 "verification_token_expires": verification_data["expires"],
-                "updated_at": datetime.utcnow()
+                "updated_at": datetime.now(timezone.utc)
             }
         }
     )
@@ -474,7 +611,7 @@ async def forgot_password(request: ForgotPasswordRequest):
         )
 
     # Optional: simple rate limiting to prevent abuse
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     cooldown_minutes = 1
     last_requested = user.get("password_reset_requested_at")
     if last_requested and isinstance(last_requested, datetime):
@@ -554,7 +691,8 @@ async def verify_reset_otp(request: VerifyResetOtpRequest):
     # Check presence and expiry
     otp_hash = user.get("password_reset_otp_hash")
     otp_expires = user.get("password_reset_otp_expires")
-    if not otp_hash or not otp_expires or otp_expires < datetime.utcnow():
+    otp_expires_utc = _as_utc(otp_expires)
+    if not otp_hash or not otp_expires_utc or otp_expires_utc < datetime.now(timezone.utc):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid code or expired")
 
     # Verify code
@@ -584,8 +722,9 @@ async def reset_password(request: ResetPasswordRequest):
 
     otp_hash = user.get("password_reset_otp_hash")
     otp_expires = user.get("password_reset_otp_expires")
+    otp_expires_utc = _as_utc(otp_expires)
 
-    if not otp_hash or not otp_expires or otp_expires < datetime.utcnow():
+    if not otp_hash or not otp_expires_utc or otp_expires_utc < datetime.now(timezone.utc):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid code or expired")
 
     if not verify_password(request.otp, otp_hash):
@@ -604,8 +743,8 @@ async def reset_password(request: ResetPasswordRequest):
         {"_id": user["_id"]},
         {"$set": {
             "password_hash": new_hash,
-            "updated_at": datetime.utcnow(),
-            "password_changed_at": datetime.utcnow()
+            "updated_at": datetime.now(timezone.utc),
+            "password_changed_at": datetime.now(timezone.utc)
         }, "$unset": {
             "password_reset_otp_hash": "",
             "password_reset_otp_expires": "",

@@ -90,6 +90,58 @@ class EmailService:
             # Return False but don't block registration
             return False
 
+    async def send_registration_otp(
+        self,
+        to_email: str,
+        username: str | None = None,
+        otp: str | None = None,
+        expiry_minutes: int = 10
+    ):
+        """
+        Send a 6-digit OTP to verify an email before registration.
+        If `otp` is not provided, a secure 6-digit code will be generated and returned.
+        Returns a tuple: (success: bool, otp: str)
+        """
+        otp_code = otp or self._generate_otp(6)
+        greeting_name = username or "there"
+
+        if not self.is_configured:
+            logger.warning("SendGrid not configured. Using OTP above for testing.")
+            return True, otp_code
+
+        subject = "Your WanoApp verification code"
+        html_content = f"""
+        <html>
+            <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                <h2 style="color: #333;">Verify your email</h2>
+                <p>Hi {greeting_name},</p>
+                <p>Use the following code to verify your email before registering:</p>
+                <div style="text-align: center; margin: 24px 0;">
+                    <div style="display: inline-block; font-size: 28px; letter-spacing: 6px; font-weight: bold; padding: 12px 20px; border: 1px dashed #ccc; border-radius: 8px;">
+                        {otp_code}
+                    </div>
+                </div>
+                <p style="color: #666;">For your security, do not share this code with anyone.</p>
+                <p style="color: #999; font-size: 14px;">This code will expire in {expiry_minutes} minutes.</p>
+                <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
+                <p style="color: #999; font-size: 12px;">If you didn't request this, you can safely ignore this email.</p>
+                <p>Best regards,<br>The WanoApp Team</p>
+            </body>
+        </html>
+        """
+
+        to_email_obj = To(to_email)
+        content = Content("text/html", html_content)
+        mail = Mail(self.from_email, to_email_obj, subject, content)
+
+        try:
+            response = self.sg.send(mail)
+            logger.info(f"Registration OTP sent to {to_email}. Status code: {response.status_code}")
+            return True, otp_code
+        except Exception as e:
+            logger.error(f"Failed to send registration OTP: {str(e)}")
+            return False, otp_code
+
     async def send_password_reset_otp(self, to_email: str, username: str, otp: str | None = None, expiry_minutes: int = 30):
         """
         Send a 6-digit OTP to the user for password reset.
