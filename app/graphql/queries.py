@@ -153,7 +153,8 @@ class Query:
             FEid=video.get("FEid"),
             start=video.get("start", 0.0),
             end=video.get("end", video.get("metadata", {}).get("duration", 0.0)),
-            remoteUrl=video.get("remoteUrl")
+            remoteUrl=video.get("remoteUrl"),
+            remoteUrl_CF=video.get("remoteUrl_CF")
         )
     
     @strawberry.field

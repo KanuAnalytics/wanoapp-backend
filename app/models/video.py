@@ -88,6 +88,7 @@ class Video(BaseDocument):
     start: float = Field(default=0.0)
     end: Optional[float] = None  # Will be set to duration if not specified
     remoteUrl: Optional[str] = None
+    remoteUrl_CF: Optional[str] = None
     
     # Music used (if any)
     music_id: Optional[PyObjectId] = None
