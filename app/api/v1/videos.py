@@ -26,6 +26,7 @@ class VideoPost(BaseModel):
     video_type: Optional[VideoType] = VideoType.REGULAR
     privacy: VideoPrivacy = VideoPrivacy.PUBLIC
     remoteUrl: str
+    remoteUrl_CF:str
     thumbnail: Optional[str] = 'https://wano-africadev.lon1.digitaloceanspaces.com/wanoafrica-dospaces-key/profile-pictures/thumbnail_placeholder.png'
     duration: Optional[float] = 0.0
     start: Optional[float] = 0.0
@@ -75,6 +76,7 @@ class VideoResponse(BaseModel):
     start: float = 0.0
     end: Optional[float] = None
     remoteUrl: Optional[str] = None
+    remoteUrl_CF: Optional[str] = None
     
     is_following: Optional[bool] = None
     is_liked: Optional[bool] = None  
@@ -120,6 +122,7 @@ async def post_video(
             "end": input.end,
             "duration": input.duration,
             "remoteUrl": input.remoteUrl,
+            "remoteUrl_CF":input.remoteUrl_CF,
             "type": 'video',
             # Standard fields
             "hashtags": [],
