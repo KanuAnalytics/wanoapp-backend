@@ -85,6 +85,7 @@ class VideoType:
     start: float = 0.0
     end: float = 0.0
     remoteUrl: Optional[str] = None
+    remoteUrl_CF: Optional[str] = None
     duration: float=0.0
     type: str
     
