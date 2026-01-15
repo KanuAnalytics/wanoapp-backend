@@ -73,6 +73,10 @@ class Settings(BaseSettings):
     
     #service URL
     VIDEO_SERVICE_URL: str
+
+    #stream
+    STREAM_API_KEY: str
+    STREAM_API_SECRET: str
     
     class Config:
         env_file = ".env"
