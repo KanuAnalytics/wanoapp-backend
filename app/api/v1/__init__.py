@@ -20,7 +20,6 @@ from app.api.v1.drafts import router as drafts_router
 from app.api.v1.music import router as music_router
 from app.api.v1.categories import router as categories_router
 from app.api.v1.config import router as config_router
-from app.api.v1.stream_chat import router as stream_chat_router
 
 
 
@@ -36,4 +35,3 @@ api_router.include_router(drafts_router, prefix="/drafts", tags=["drafts"])
 api_router.include_router(music_router, prefix="/music", tags=["music"])
 api_router.include_router(categories_router, prefix="/categories", tags=["categories"])
 api_router.include_router(config_router, prefix="/config", tags=["config"])
-api_router.include_router(stream_chat_router, prefix="/chat", tags=["stream-chat"])
