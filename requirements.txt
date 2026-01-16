@@ -53,4 +53,3 @@ phonenumbers==8.13.26
 python-dateutil==2.8.2
 pytz==2023.3
 alt-profanity-check==1.7.2
-stream-chat==4.28.0
