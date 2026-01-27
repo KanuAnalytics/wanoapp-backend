@@ -5,12 +5,13 @@ app/api/v1/vidoes.py
 
 """
 from typing import List, Optional
-from fastapi import APIRouter, HTTPException, Depends, status, UploadFile, File, Form, Query
+from fastapi import APIRouter, HTTPException, Depends, status, UploadFile, File, Form, Query, BackgroundTasks
 from bson import ObjectId
 from datetime import datetime
 from app.models.video import Video, VideoType, VideoPrivacy
 from app.core.database import get_database
 from app.api.deps import get_current_active_user, get_verified_user
+from app.services.expo import send_push_message
 from app.services.metrics_service import metrics_buffer
 from pydantic import BaseModel,HttpUrl, Field
 import re
@@ -444,7 +445,8 @@ async def delete_video(
 @router.post("/{video_id}/like", status_code=status.HTTP_200_OK)
 async def like_video(
     video_id: str,
-    current_user: str = Depends(get_current_active_user)
+    current_user: str = Depends(get_current_active_user),
+    background_tasks: BackgroundTasks = None
 ):
     """Like a video (buffered)"""
     db = get_database()
@@ -462,12 +464,44 @@ async def like_video(
         {"_id": ObjectId(current_user)},
         {"$addToSet": {"liked_videos": ObjectId(video_id)}}
     )
+
+    video = await db.videos.find_one(
+        {"_id": ObjectId(video_id)},
+        {"description": 1, "urls.thumbnail": 1, "thumbnail": 1, "creator_id": 1},
+    )
     
     # Increment like count in buffer
     await metrics_buffer.increment_like(video_id)
     
     # Get current buffered count for response
     buffered = await metrics_buffer.get_buffered_counts(video_id)
+
+    if background_tasks is not None:
+        display_name = user.get("display_name") or user.get("username") or "Someone"
+        description = (video or {}).get("description") or ""
+        description = description.strip()
+        description_preview = description[:30] + ("..." if len(description) > 30 else "")
+        thumbnail_url = None
+        if video:
+            thumbnail_url = (video.get("urls") or {}).get("thumbnail")
+        recipient_tokens = []
+        creator_id = (video or {}).get("creator_id")
+        if creator_id and str(creator_id) != str(current_user):
+            recipient = await db.users.find_one(
+                {"_id": ObjectId(creator_id)},
+                {"expo_push_tokens": 1},
+            )
+            recipient_tokens = (recipient or {}).get("expo_push_tokens") or []
+
+        for token in recipient_tokens:
+            background_tasks.add_task(
+                send_push_message,
+                token,
+                description_preview,
+                {"video_id": video_id, "liker_id": str(current_user)},
+                f"{display_name} liked your video",
+                thumbnail_url,
+            )
     
     return {
         "message": "Video liked successfully",
