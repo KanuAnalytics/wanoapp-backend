@@ -9,7 +9,7 @@ import re
 import json
 from bson.json_util import dumps
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Body, HTTPException, Depends, status, Query
+from fastapi import APIRouter, Body, HTTPException, Depends, status, Query, BackgroundTasks
 from enum import Enum
 from bson import ObjectId
 from datetime import datetime
@@ -23,6 +23,7 @@ from app.models.video import VideoUrls
 from app.services.email_service import email_service
 import logging
 from app.services.metrics_service import metrics_buffer
+from app.services.expo import send_push_message
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,9 @@ async def search_users_endpoint(
 class RelationshipType(str, Enum):
     followers = "followers"
     following = "following"
+
+class PushTokenRequest(BaseModel):
+    expo_push_token: str = Field(..., min_length=1)
 
 class UserCreate(BaseModel):
     username: str
@@ -490,6 +494,46 @@ async def patch_user_profile(
     updated_user["_id"] = str(updated_user["_id"])
     
     return UserPatchResponse(**updated_user)
+
+@router.post("/me/push-token")
+async def add_push_token(
+    payload: PushTokenRequest,
+    current_user: str = Depends(get_current_active_user),
+):
+    """Add a device Expo push token to the current user (deduped)."""
+    db = get_database()
+    token = payload.expo_push_token.strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="Invalid push token")
+
+    await db.users.update_many(
+        {"_id": {"$ne": ObjectId(current_user)}, "expo_push_tokens": token},
+        {"$pull": {"expo_push_tokens": token}},
+    )
+    await db.users.update_one(
+        {"_id": ObjectId(current_user)},
+        {"$addToSet": {"expo_push_tokens": token}, "$set": {"updated_at": datetime.utcnow()}},
+    )
+
+    return {"message": "Push token added"}
+
+@router.delete("/me/push-token")
+async def remove_push_token(
+    payload: PushTokenRequest,
+    current_user: str = Depends(get_current_active_user),
+):
+    """Remove a device Expo push token from the current user."""
+    db = get_database()
+    token = payload.expo_push_token.strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="Invalid push token")
+
+    await db.users.update_one(
+        {"_id": ObjectId(current_user)},
+        {"$pull": {"expo_push_tokens": token}, "$set": {"updated_at": datetime.utcnow()}},
+    )
+
+    return {"message": "Push token removed"}
 
 @router.delete("/delete", status_code=status.HTTP_204_NO_CONTENT)
 async def permanently_delete_user(
@@ -1403,7 +1447,8 @@ async def update_user(
 @router.post("/{user_id}/follow", status_code=status.HTTP_200_OK)
 async def follow_user(
     user_id: str,
-    current_user: str = Depends(get_current_active_user)
+    current_user: str = Depends(get_current_active_user),
+    background_tasks: BackgroundTasks = None,
 ):
     """Follow a user"""
     db = get_database()
@@ -1447,6 +1492,21 @@ async def follow_user(
             "$inc": {"followers_count": 1}
         }
     )
+
+    if background_tasks is not None:
+        display_name = current_user_doc.get("display_name") or current_user_doc.get("username") or "Someone"
+        username = current_user_doc.get("username") or "unknown"
+        profile_image = current_user_doc.get("profile_picture")
+        recipient_tokens = target_user.get("expo_push_tokens") or []
+        for token in recipient_tokens:
+            background_tasks.add_task(
+                send_push_message,
+                token,
+                "Tap to view their profile",
+                {"follower_id": str(current_user)},
+                f"{display_name}(@{username}) started following you",
+                profile_image,
+            )
     
     return {"message": "Successfully followed user"}
 
