@@ -536,10 +536,17 @@ async def unlike_video(
 @router.post("/{video_id}/bookmark", status_code=status.HTTP_200_OK)
 async def bookmark_video(
     video_id: str,
-    current_user: str = Depends(get_current_active_user)
+    current_user: str = Depends(get_current_active_user),
+    background_tasks: BackgroundTasks = None,
 ):
     """Bookmark a video"""
     db = get_database()
+
+    user = await db.users.find_one({"_id": ObjectId(current_user)})
+    video = await db.videos.find_one(
+        {"_id": ObjectId(video_id)},
+        {"description": 1, "urls.thumbnail": 1, "creator_id": 1},
+    )
     
     # Add to user's bookmarked videos
     await db.users.update_one(
@@ -552,6 +559,28 @@ async def bookmark_video(
         {"_id": ObjectId(video_id)},
         {"$inc": {"bookmarks_count": 1}}
     )
+
+    if background_tasks is not None and video:
+        creator_id = video.get("creator_id")
+        if creator_id and str(creator_id) != str(current_user):
+            recipient = await db.users.find_one(
+                {"_id": ObjectId(creator_id)},
+                {"expo_push_tokens": 1},
+            )
+            recipient_tokens = (recipient or {}).get("expo_push_tokens") or []
+            display_name = (user or {}).get("display_name") or (user or {}).get("username") or "Someone"
+            description = (video.get("description") or "").strip()
+            description_preview = description[:30] + ("..." if len(description) > 30 else "")
+            thumbnail_url = (video.get("urls") or {}).get("thumbnail")
+            for token in recipient_tokens:
+                background_tasks.add_task(
+                    send_push_message,
+                    token,
+                    description_preview,
+                    {"video_id": video_id, "saver_id": str(current_user)},
+                    f"{display_name} saved your video",
+                    thumbnail_url,
+                )
     
     return {"message": "Video bookmarked successfully"}
 
