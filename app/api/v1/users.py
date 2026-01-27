@@ -9,7 +9,7 @@ import re
 import json
 from bson.json_util import dumps
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Body, HTTPException, Depends, status, Query
+from fastapi import APIRouter, Body, HTTPException, Depends, status, Query, BackgroundTasks
 from enum import Enum
 from bson import ObjectId
 from datetime import datetime
@@ -23,6 +23,7 @@ from app.models.video import VideoUrls
 from app.services.email_service import email_service
 import logging
 from app.services.metrics_service import metrics_buffer
+from app.services.expo import send_push_message
 
 logger = logging.getLogger(__name__)
 
@@ -1428,7 +1429,8 @@ async def update_user(
 @router.post("/{user_id}/follow", status_code=status.HTTP_200_OK)
 async def follow_user(
     user_id: str,
-    current_user: str = Depends(get_current_active_user)
+    current_user: str = Depends(get_current_active_user),
+    background_tasks: BackgroundTasks = None,
 ):
     """Follow a user"""
     db = get_database()
@@ -1472,6 +1474,20 @@ async def follow_user(
             "$inc": {"followers_count": 1}
         }
     )
+
+    if background_tasks is not None:
+        display_name = current_user_doc.get("display_name") or current_user_doc.get("username") or "Someone"
+        profile_image = current_user_doc.get("profile_picture")
+        recipient_tokens = target_user.get("expo_push_tokens") or []
+        for token in recipient_tokens:
+            background_tasks.add_task(
+                send_push_message,
+                token,
+                "Tap to view their profile",
+                {"follower_id": str(current_user)},
+                f"{display_name} started following you",
+                profile_image,
+            )
     
     return {"message": "Successfully followed user"}
 
