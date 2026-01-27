@@ -296,7 +296,8 @@ async def search_videos(
 @router.get("/{video_id}", response_model=VideoResponse)
 async def get_video(
     video_id: str,
-    current_user: str = Depends(get_current_active_user)
+    current_user: str = Depends(get_current_active_user),
+    background_tasks: BackgroundTasks = None,
 ):
     """Get a specific video by ID and increment view count"""
     db = get_database()
@@ -323,6 +324,47 @@ async def get_video(
     
     # Get buffered counts for immediate display
     buffered = await metrics_buffer.get_buffered_counts(video_id)
+
+    total_views = video.get("views_count", 0) + buffered["views"]
+    if total_views == 25 and background_tasks is not None:
+        recipient = await db.users.find_one(
+            {"_id": video["creator_id"]},
+            {"expo_push_tokens": 1},
+        )
+        recipient_tokens = (recipient or {}).get("expo_push_tokens") or []
+        thumbnail_url = (video.get("urls") or {}).get("thumbnail")
+        description = (video.get("description") or "").strip()
+        description_preview = description[:30] + ("..." if len(description) > 30 else "")
+        for token in recipient_tokens:
+            background_tasks.add_task(
+                send_push_message,
+                token,
+                description_preview,
+                {"video_id": video_id},
+                "Your post is getting attention 🔥",
+                thumbnail_url,
+            )
+
+    milestone_labels = {50: "50", 100: "100", 1000: "1k", 5000: "5k"}
+    if total_views in milestone_labels and background_tasks is not None:
+        recipient = await db.users.find_one(
+            {"_id": video["creator_id"]},
+            {"expo_push_tokens": 1},
+        )
+        recipient_tokens = (recipient or {}).get("expo_push_tokens") or []
+        thumbnail_url = (video.get("urls") or {}).get("thumbnail")
+        title = f"Your video just hit {milestone_labels[total_views]} views"
+        description = (video.get("description") or "").strip()
+        description_preview = description[:30] + ("..." if len(description) > 30 else "")
+        for token in recipient_tokens:
+            background_tasks.add_task(
+                send_push_message,
+                token,
+                description_preview,
+                {"video_id": video_id},
+                title,
+                thumbnail_url,
+            )
     
     # Get current user data
     user_doc = await db.users.find_one({"_id": ObjectId(current_user)})
