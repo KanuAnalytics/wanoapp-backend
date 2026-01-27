@@ -405,7 +405,7 @@ async def login_json(login_data: LoginRequest):
     access_token = create_access_token(
         data={"sub": str(user["_id"])}, expires_delta=access_token_expires
     )
-    
+
     return {
         "access_token": access_token,
         "token_type": "bearer",

@@ -85,6 +85,9 @@ class RelationshipType(str, Enum):
     followers = "followers"
     following = "following"
 
+class PushTokenRequest(BaseModel):
+    expo_push_token: str = Field(..., min_length=1)
+
 class UserCreate(BaseModel):
     username: str
     email: EmailStr
@@ -490,6 +493,28 @@ async def patch_user_profile(
     updated_user["_id"] = str(updated_user["_id"])
     
     return UserPatchResponse(**updated_user)
+
+@router.post("/me/push-token")
+async def add_push_token(
+    payload: PushTokenRequest,
+    current_user: str = Depends(get_current_active_user),
+):
+    """Add a device Expo push token to the current user (deduped)."""
+    db = get_database()
+    token = payload.expo_push_token.strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="Invalid push token")
+
+    await db.users.update_many(
+        {"_id": {"$ne": ObjectId(current_user)}, "expo_push_tokens": token},
+        {"$pull": {"expo_push_tokens": token}},
+    )
+    await db.users.update_one(
+        {"_id": ObjectId(current_user)},
+        {"$addToSet": {"expo_push_tokens": token}, "$set": {"updated_at": datetime.utcnow()}},
+    )
+
+    return {"message": "Push token added"}
 
 @router.delete("/delete", status_code=status.HTTP_204_NO_CONTENT)
 async def permanently_delete_user(
