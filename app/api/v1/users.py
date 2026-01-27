@@ -517,6 +517,24 @@ async def add_push_token(
 
     return {"message": "Push token added"}
 
+@router.delete("/me/push-token")
+async def remove_push_token(
+    payload: PushTokenRequest,
+    current_user: str = Depends(get_current_active_user),
+):
+    """Remove a device Expo push token from the current user."""
+    db = get_database()
+    token = payload.expo_push_token.strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="Invalid push token")
+
+    await db.users.update_one(
+        {"_id": ObjectId(current_user)},
+        {"$pull": {"expo_push_tokens": token}, "$set": {"updated_at": datetime.utcnow()}},
+    )
+
+    return {"message": "Push token removed"}
+
 @router.delete("/delete", status_code=status.HTTP_204_NO_CONTENT)
 async def permanently_delete_user(
     current_user: str = Depends(get_current_active_user),
