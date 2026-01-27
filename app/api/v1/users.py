@@ -1477,6 +1477,7 @@ async def follow_user(
 
     if background_tasks is not None:
         display_name = current_user_doc.get("display_name") or current_user_doc.get("username") or "Someone"
+        username = current_user_doc.get("username") or "unknown"
         profile_image = current_user_doc.get("profile_picture")
         recipient_tokens = target_user.get("expo_push_tokens") or []
         for token in recipient_tokens:
@@ -1485,7 +1486,7 @@ async def follow_user(
                 token,
                 "Tap to view their profile",
                 {"follower_id": str(current_user)},
-                f"{display_name} started following you",
+                f"{display_name}(@{username}) started following you",
                 profile_image,
             )
     
