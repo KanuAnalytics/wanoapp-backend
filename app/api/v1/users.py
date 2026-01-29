@@ -726,6 +726,9 @@ def unblock_user(
 async def get_user_complete(
     user_id: str,
     include_videos: bool = Query(False, description="Include user's recent videos"),
+    include_liked: bool = Query(False, description="Include user's liked videos details"),
+    video_skip: int = Query(0, ge=0, description="Skip N recent videos when include_videos is true"),
+    video_limit: int = Query(200, ge=1, le=200, description="Limit recent videos when include_videos is true"),
     current_user: str = Depends(get_current_active_user)
 ):
     """
@@ -755,14 +758,21 @@ async def get_user_complete(
         )
     
     # Get video details for bookmarked and liked videos
-    bookmarked_video_details = await get_video_details(
-        db, 
-        user.get("bookmarked_videos", [])
-    )
-    liked_video_details = await get_video_details(
-        db, 
-        user.get("liked_videos", [])
-    )
+    if current_user == user_id:
+        bookmarked_video_details = await get_video_details(
+            db, 
+            user.get("bookmarked_videos", [])
+        )
+    else:
+        bookmarked_video_details = []
+
+    if include_liked:
+        liked_video_details = await get_video_details(
+            db, 
+            user.get("liked_videos", [])
+        )
+    else:
+        liked_video_details = []
     
     like_count = await metrics_buffer.get_user_videos_like_count(user_id)
     
@@ -847,7 +857,7 @@ async def get_user_complete(
 
             complete_blocked = CompleteUserResponse(**deleted_user)
 
-            return UserWithDetailsResponse(
+            response = UserWithDetailsResponse(
                 user=complete_blocked,
                 is_following=False,
                 is_followed_by=False,
@@ -857,16 +867,19 @@ async def get_user_complete(
                 can_unblock=is_blocked_by_me,
                 blocked=is_blocked_by_them or is_blocked_by_me,
             )
-        else:   
+            return response
+        else:
             # Calculate mutual followers
             current_user_data = await db.users.find_one(
                 {"_id": current_user_oid},
                 {"followers": 1}
             )
             if current_user_data:
-                user_followers_set = set(user.get("followers", []))
-                current_followers_set = set(current_user_data.get("followers", []))
-                mutual_followers_count = len(user_followers_set.intersection(current_followers_set))
+                # mutuals disabled for now
+                # user_followers_set = set(user.get("followers", []))
+                # current_followers_set = set(current_user_data.get("followers", []))
+                # mutual_followers_count = len(user_followers_set.intersection(current_followers_set))
+                mutual_followers_count = 0
             else:
                 mutual_followers_count = 0
     else:
@@ -889,7 +902,7 @@ async def get_user_complete(
                 "is_active": True,
                 "privacy": "public"
             }
-        ).sort("created_at", -1)
+        ).sort("created_at", -1).skip(video_skip).limit(video_limit)
         
         recent_videos = []
         async for video in videos_cursor:
