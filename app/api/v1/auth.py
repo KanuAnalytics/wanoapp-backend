@@ -6,7 +6,7 @@ app/api/v1/auth.py
 """
 from profanity_check import predict, predict_prob
 from datetime import datetime, timedelta, timezone
-from typing import Optional, List
+from typing import Optional, List, Literal
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.security import OAuth2PasswordRequestForm
 from jose import jwt
@@ -14,8 +14,10 @@ from app.core.config import settings
 from app.core.database import get_database
 from app.core.security import verify_password, get_password_hash, create_access_token, create_verification_token
 from app.services.email_service import email_service
+from app.services.twilio_whatsapp_service import twilio_whatsapp_service, TwilioWhatsAppServiceError
 from pydantic import BaseModel, EmailStr, validator, Field
 import logging
+import secrets
 
 
 logger = logging.getLogger(__name__)
@@ -28,6 +30,10 @@ def _as_utc(dt: datetime | None) -> datetime | None:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
+
+def _generate_numeric_otp(length: int = 6) -> str:
+    digits = "0123456789"
+    return "".join(secrets.choice(digits) for _ in range(length))
 
 class Token(BaseModel):
     access_token: str
@@ -53,14 +59,18 @@ class ForgotPasswordRequest(BaseModel):
     username_or_email: str = Field(..., min_length=3, max_length=100)
 
 class RequestRegistrationOtpRequest(BaseModel):
-    """Request an email OTP before registration."""
-    email: EmailStr
+    """Request an OTP before registration (email or WhatsApp)."""
+    channel: Literal["email", "whatsapp"] = "email"
+    email: Optional[EmailStr] = None
+    phone_number: Optional[str] = Field(None, pattern=r"^\+[1-9]\d{7,14}$")
     username: Optional[str] = None
 
 class VerifyRegistrationOtpRequest(BaseModel):
-    """Verify a registration OTP for an email."""
-    email: EmailStr
-    otp: str = Field(..., min_length=6, max_length=6)
+    """Verify a registration OTP for email or WhatsApp."""
+    channel: Literal["email", "whatsapp"] = "email"
+    email: Optional[EmailStr] = None
+    phone_number: Optional[str] = Field(None, pattern=r"^\+[1-9]\d{7,14}$")
+    otp: str = Field(..., min_length=4, max_length=10)
 
 
 # --- Inserted models for OTP verification and password reset ---
@@ -266,18 +276,10 @@ async def register(request: RegisterRequest):
 @router.post("/request-registration-otp")
 async def request_registration_otp(request: RequestRegistrationOtpRequest):
     """
-    Send a 6-digit OTP to verify an email before registration.
-    Stores a hashed OTP and expiry in a temporary collection.
+    Send an OTP to verify an email or WhatsApp number before registration.
+    Email and WhatsApp OTPs are stored hashed in a temporary collection.
     """
     db = get_database()
-
-    # Avoid sending OTP if email is already registered
-    existing_user = await db.users.find_one({"email": request.email})
-    if existing_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered"
-        )
 
     if request.username:
         existing_username = await db.users.find_one({"username": request.username})
@@ -291,88 +293,218 @@ async def request_registration_otp(request: RequestRegistrationOtpRequest):
     expiry_minutes = 10
     cooldown_minutes = 0.5
 
-    existing = await db.registration_otps.find_one({"email": request.email})
-    if existing:
-        last_requested = _as_utc(existing.get("requested_at"))
-        if last_requested and isinstance(last_requested, datetime):
-            earliest_next = last_requested + timedelta(minutes=cooldown_minutes)
-            if earliest_next > now:
-                raise HTTPException(
-                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                    detail="Please wait a few minutes before requesting another code"
-                )
+    if request.channel == "email":
+        if not request.email:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email is required for email verification"
+            )
 
-    try:
-        email_ok, otp = await email_service.send_registration_otp(
-            to_email=request.email,
-            username=request.username
+        # Avoid sending OTP if email is already registered
+        existing_user = await db.users.find_one({"email": request.email})
+        if existing_user:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email already registered"
+            )
+
+        existing = await db.registration_otps.find_one({"email": request.email})
+        if existing:
+            last_requested = _as_utc(existing.get("requested_at"))
+            if last_requested and isinstance(last_requested, datetime):
+                earliest_next = last_requested + timedelta(minutes=cooldown_minutes)
+                if earliest_next > now:
+                    raise HTTPException(
+                        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                        detail="Please wait a few minutes before requesting another code"
+                    )
+
+        try:
+            email_ok, otp = await email_service.send_registration_otp(
+                to_email=request.email,
+                username=request.username
+            )
+        except Exception:
+            logger.exception("Error while sending registration OTP")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to send OTP email"
+            )
+
+        if not email_ok:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to send OTP email"
+            )
+
+        otp_hash = get_password_hash(otp)
+        otp_expires = now + timedelta(minutes=expiry_minutes)
+
+        await db.registration_otps.update_one(
+            {"email": request.email},
+            {"$set": {
+                "email": request.email,
+                "otp_hash": otp_hash,
+                "otp_expires": otp_expires,
+                "requested_at": now,
+                "updated_at": now
+            }},
+            upsert=True
         )
-    except Exception:
-        logger.exception("Error while sending registration OTP")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to send OTP email"
+
+        return {
+            "message": "OTP sent to the email address.",
+            "expires_in_minutes": expiry_minutes,
+            "channel": "email"
+        }
+
+    if request.channel == "whatsapp":
+        if not request.phone_number:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Phone number is required for WhatsApp verification"
+            )
+
+        existing_number = await db.users.find_one({"whatsapp_number": request.phone_number})
+        if existing_number:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Phone number already registered"
+            )
+
+        existing = await db.registration_whatsapp_otps.find_one({"phone_number": request.phone_number})
+        if existing:
+            last_requested = _as_utc(existing.get("requested_at"))
+            if last_requested and isinstance(last_requested, datetime):
+                earliest_next = last_requested + timedelta(minutes=cooldown_minutes)
+                if earliest_next > now:
+                    raise HTTPException(
+                        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                        detail="Please wait a few minutes before requesting another code"
+                    )
+
+        otp = _generate_numeric_otp(6)
+        try:
+            result = await twilio_whatsapp_service.send_template_message(
+                to=request.phone_number,
+                content_variables={"1": otp},
+            )
+        except TwilioWhatsAppServiceError:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Failed to send WhatsApp OTP"
+            )
+
+        otp_hash = get_password_hash(otp)
+        otp_expires = now + timedelta(minutes=expiry_minutes)
+        await db.registration_whatsapp_otps.update_one(
+            {"phone_number": request.phone_number},
+            {"$set": {
+                "phone_number": request.phone_number,
+                "otp_hash": otp_hash,
+                "otp_expires": otp_expires,
+                "requested_at": now,
+                "updated_at": now,
+                "twilio_sid": result.get("sid")
+            }},
+            upsert=True
         )
 
-    if not email_ok:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to send OTP email"
-        )
+        return {
+            "message": "OTP sent to the WhatsApp number.",
+            "expires_in_minutes": expiry_minutes,
+            "channel": "whatsapp"
+        }
 
-    otp_hash = get_password_hash(otp)
-    otp_expires = now + timedelta(minutes=expiry_minutes)
-
-    await db.registration_otps.update_one(
-        {"email": request.email},
-        {"$set": {
-            "email": request.email,
-            "otp_hash": otp_hash,
-            "otp_expires": otp_expires,
-            "requested_at": now,
-            "updated_at": now
-        }},
-        upsert=True
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="Unsupported channel"
     )
-
-    return {
-        "message": "OTP sent to the email address.",
-        "expires_in_minutes": expiry_minutes
-    }
 
 @router.post("/verify-registration-otp")
 async def verify_registration_otp(request: VerifyRegistrationOtpRequest):
     """
-    Verify that the provided OTP is correct and not expired for the email.
+    Verify that the provided OTP is correct and not expired for email or WhatsApp.
     On success, delete the OTP record.
     """
     db = get_database()
 
-    record = await db.registration_otps.find_one({"email": request.email})
-    if not record:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid code or expired"
-        )
+    if request.channel == "email":
+        if not request.email:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email is required for email verification"
+            )
 
-    otp_hash = record.get("otp_hash")
-    otp_expires = record.get("otp_expires")
-    otp_expires_utc = _as_utc(otp_expires)
-    if not otp_hash or not otp_expires_utc or otp_expires_utc < datetime.now(timezone.utc):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid code or expired"
-        )
+        record = await db.registration_otps.find_one({"email": request.email})
+        if not record:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid code or expired"
+            )
 
-    if not verify_password(request.otp, otp_hash):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid code or expired"
-        )
+        otp_hash = record.get("otp_hash")
+        otp_expires = record.get("otp_expires")
+        otp_expires_utc = _as_utc(otp_expires)
+        if not otp_hash or not otp_expires_utc or otp_expires_utc < datetime.now(timezone.utc):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid code or expired"
+            )
 
-    await db.registration_otps.delete_one({"email": request.email})
+        if not verify_password(request.otp, otp_hash):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid code or expired"
+            )
 
-    return {"verified": True}
+        await db.registration_otps.delete_one({"email": request.email})
+
+        return {"verified": True, "channel": "email"}
+
+    if request.channel == "whatsapp":
+        if not request.phone_number:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Phone number is required for WhatsApp verification"
+            )
+
+        record = await db.registration_whatsapp_otps.find_one({"phone_number": request.phone_number})
+        if not record:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid code or expired"
+            )
+
+        otp_expires = _as_utc(record.get("otp_expires"))
+        if not otp_expires or otp_expires < datetime.now(timezone.utc):
+            await db.registration_whatsapp_otps.delete_one({"phone_number": request.phone_number})
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid code or expired"
+            )
+
+        otp_hash = record.get("otp_hash")
+        if not otp_hash:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid code or expired"
+            )
+
+        if not verify_password(request.otp, otp_hash):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid code or expired"
+            )
+
+        await db.registration_whatsapp_otps.delete_one({"phone_number": request.phone_number})
+
+        return {"verified": True, "channel": "whatsapp"}
+
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="Unsupported channel"
+    )
 
 @router.post("/login/json", response_model=Token)
 async def login_json(login_data: LoginRequest):
