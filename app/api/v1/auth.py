@@ -60,14 +60,12 @@ class ForgotPasswordRequest(BaseModel):
 
 class RequestRegistrationOtpRequest(BaseModel):
     """Request an OTP before registration (email or WhatsApp)."""
-    channel: Literal["email", "whatsapp"] = "email"
     email: Optional[EmailStr] = None
     phone_number: Optional[str] = Field(None, pattern=r"^\+[1-9]\d{7,14}$")
     username: Optional[str] = None
 
 class VerifyRegistrationOtpRequest(BaseModel):
     """Verify a registration OTP for email or WhatsApp."""
-    channel: Literal["email", "whatsapp"] = "email"
     email: Optional[EmailStr] = None
     phone_number: Optional[str] = Field(None, pattern=r"^\+[1-9]\d{7,14}$")
     otp: str = Field(..., min_length=4, max_length=10)
@@ -293,7 +291,13 @@ async def request_registration_otp(request: RequestRegistrationOtpRequest):
     expiry_minutes = 10
     cooldown_minutes = 0.5
 
-    if request.channel == "email":
+    channel = None
+    if request.phone_number:
+        channel = "whatsapp"
+    elif request.email:
+        channel = "email"
+
+    if channel == "email":
         if not request.email:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -358,7 +362,7 @@ async def request_registration_otp(request: RequestRegistrationOtpRequest):
             "channel": "email"
         }
 
-    if request.channel == "whatsapp":
+    if channel == "whatsapp":
         if not request.phone_number:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -429,7 +433,13 @@ async def verify_registration_otp(request: VerifyRegistrationOtpRequest):
     """
     db = get_database()
 
-    if request.channel == "email":
+    channel = None
+    if request.phone_number:
+        channel = "whatsapp"
+    elif request.email:
+        channel = "email"
+
+    if channel == "email":
         if not request.email:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -462,7 +472,7 @@ async def verify_registration_otp(request: VerifyRegistrationOtpRequest):
 
         return {"verified": True, "channel": "email"}
 
-    if request.channel == "whatsapp":
+    if channel == "whatsapp":
         if not request.phone_number:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

@@ -66,7 +66,6 @@ class Settings(BaseSettings):
     # Twilio settings
     TWILIO_ACCOUNT_SID: Optional[str] = None
     TWILIO_AUTH_TOKEN: Optional[str] = None
-    TWILIO_VERIFY_SERVICE_SID: Optional[str] = None
     TWILIO_WHATSAPP_FROM: Optional[str] = None
     TWILIO_WHATSAPP_CONTENT_SID: Optional[str] = None
 
