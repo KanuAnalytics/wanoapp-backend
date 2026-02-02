@@ -536,11 +536,12 @@ async def login_json(login_data: LoginRequest):
     """Login endpoint - accepts JSON"""
     db = get_database()
     
-    # Find user by username or email
+    # Find user by username, email, or phone number
     user = await db.users.find_one({
         "$or": [
             {"username": login_data.username},
-            {"email": login_data.username}  # Allow login with email too
+            {"email": login_data.username},  # Allow login with email too
+            {"phone_number": login_data.username}
         ]
     })
     
@@ -752,11 +753,12 @@ async def forgot_password(request: ForgotPasswordRequest):
     """
     db = get_database()
 
-    # Find user by username or email (case-insensitive for email)
+    # Find user by username, email, or phone number
     user = await db.users.find_one({
         "$or": [
             {"username": request.username_or_email},
-            {"email": request.username_or_email}
+            {"email": request.username_or_email},
+            {"phone_number": request.username_or_email}
         ]
     })
 
@@ -780,24 +782,43 @@ async def forgot_password(request: ForgotPasswordRequest):
                 detail=f"Please wait a few minutes before requesting another OTP"
             )
 
-    # Generate & send OTP via email service
-    try:
-        email_ok, otp = await email_service.send_password_reset_otp(
-            to_email=user["email"],
-            username=user["username"]
-        )
-    except Exception as e:
-        logging.exception("Error while sending password reset OTP")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to send OTP email"
-        )
+    use_whatsapp = False
+    if not user.get("email"):
+        use_whatsapp = True
+    elif request.username_or_email == user.get("phone_number"):
+        use_whatsapp = True
 
-    if not email_ok:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to send OTP email"
-        )
+    # Generate & send OTP via WhatsApp or email
+    if use_whatsapp:
+        otp = _generate_numeric_otp(6)
+        try:
+            await twilio_whatsapp_service.send_template_message(
+                to=user["phone_number"],
+                content_variables={"1": otp},
+            )
+        except TwilioWhatsAppServiceError:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to send OTP WhatsApp message"
+            )
+    else:
+        try:
+            email_ok, otp = await email_service.send_password_reset_otp(
+                to_email=user["email"],
+                username=user["username"]
+            )
+        except Exception:
+            logging.exception("Error while sending password reset OTP")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to send OTP email"
+            )
+
+        if not email_ok:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to send OTP email"
+            )
 
     # Persist hashed OTP and expiry
     expiry_minutes = 30
@@ -819,7 +840,7 @@ async def forgot_password(request: ForgotPasswordRequest):
 
     # Always a generic message (prevents user enumeration)
     return {
-        "message": "If the account exists, an OTP has been sent to the registered email.",
+        "message": "If the account exists, an OTP has been sent to the registered contact.",
         "expires_in_minutes": expiry_minutes,
     }
 
@@ -837,7 +858,8 @@ async def verify_reset_otp(request: VerifyResetOtpRequest):
     user = await db.users.find_one({
         "$or": [
             {"username": request.username_or_email},
-            {"email": request.username_or_email}
+            {"email": request.username_or_email},
+            {"phone_number": request.username_or_email}
         ]
     })
 
@@ -869,7 +891,8 @@ async def reset_password(request: ResetPasswordRequest):
     user = await db.users.find_one({
         "$or": [
             {"username": request.username_or_email},
-            {"email": request.username_or_email}
+            {"email": request.username_or_email},
+            {"phone_number": request.username_or_email}
         ]
     })
 
