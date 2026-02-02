@@ -8,6 +8,8 @@ from sendgrid.helpers.mail import Mail, Email, To, Content
 from app.core.config import settings
 import logging
 import secrets
+from datetime import datetime
+from typing import Iterable
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +27,22 @@ class EmailService:
         """Generate a cryptographically secure numeric OTP of the given length."""
         digits = "0123456789"
         return "".join(secrets.choice(digits) for _ in range(length))
+
+    def _format_report_value(self, value: object) -> str:
+        """Format report values for email output."""
+        if value is None:
+            return "N/A"
+        if isinstance(value, str) and not value.strip():
+            return "N/A"
+        if isinstance(value, datetime):
+            return value.strftime("%Y-%m-%d %H:%M:%S UTC")
+        return str(value)
+
+    def _normalize_recipients(self, to_email: str | Iterable[str]) -> list[str]:
+        """Normalize recipient list from a string or iterable."""
+        if isinstance(to_email, str):
+            return [email.strip() for email in to_email.split(",") if email.strip()]
+        return [email.strip() for email in to_email if email and email.strip()]
     
     async def send_verification_email(self, to_email: str, username: str, verification_token: str):
         """Send verification email to user"""
@@ -188,5 +206,85 @@ class EmailService:
         except Exception as e:
             logger.error(f"Failed to send password reset OTP: {str(e)}")
             return False, otp_code
+
+    async def send_report_notification(
+        self,
+        to_email: str | Iterable[str],
+        creator: dict,
+        reporter: dict,
+        video: dict,
+        video_link: str
+    ) -> bool:
+        """Send a report notification email with creator, reporter, and video details."""
+        recipients = self._normalize_recipients(to_email)
+        if not recipients:
+            logger.warning("Report notification email not sent: recipient email missing.")
+            return False
+
+        if not self.is_configured:
+            logger.warning("SendGrid not configured. Skipping report notification email.")
+            return True
+
+        creator_username = self._format_report_value(creator.get("username"))
+        creator_display_name = self._format_report_value(creator.get("display_name"))
+        creator_email = self._format_report_value(creator.get("email"))
+        creator_phone = self._format_report_value(creator.get("phone_number"))
+
+        reporter_username = self._format_report_value(reporter.get("username"))
+        reporter_display_name = self._format_report_value(reporter.get("display_name"))
+        reporter_email = self._format_report_value(reporter.get("email"))
+        reporter_phone = self._format_report_value(reporter.get("phone_number"))
+
+        video_description = self._format_report_value(video.get("description"))
+
+        subject = f"New report submitted by {reporter_display_name}"
+        html_content = f"""
+        <html>
+            <body style="font-family: Arial, sans-serif; max-width: 680px; margin: 0 auto;">
+                <h2 style="color: #333;">New video report submitted</h2>
+                <p>A user has submitted a report. Details are below.</p>
+
+                <h3 style="color: #333;">Video</h3>
+                <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
+                    <tr><td style="padding: 6px 0; font-weight: bold;">Description</td><td>{video_description}</td></tr>
+                    <tr><td style="padding: 6px 0; font-weight: bold;">Link</td><td><a href="{video_link}">{video_link}</a></td></tr>
+                </table>
+
+                <h3 style="color: #333;">Creator</h3>
+                <table style="width: 100%; border-collapse: collapse;">
+                    <tr><td style="padding: 6px 0; font-weight: bold;">Username</td><td>{creator_username}</td></tr>
+                    <tr><td style="padding: 6px 0; font-weight: bold;">Display name</td><td>{creator_display_name}</td></tr>
+                    <tr><td style="padding: 6px 0; font-weight: bold;">Email</td><td>{creator_email}</td></tr>
+                    <tr><td style="padding: 6px 0; font-weight: bold;">Phone</td><td>{creator_phone}</td></tr>
+                </table>
+
+                <h3 style="color: #333;">Reporter</h3>
+                <table style="width: 100%; border-collapse: collapse;">
+                    <tr><td style="padding: 6px 0; font-weight: bold;">Username</td><td>{reporter_username}</td></tr>
+                    <tr><td style="padding: 6px 0; font-weight: bold;">Display name</td><td>{reporter_display_name}</td></tr>
+                    <tr><td style="padding: 6px 0; font-weight: bold;">Email</td><td>{reporter_email}</td></tr>
+                    <tr><td style="padding: 6px 0; font-weight: bold;">Phone</td><td>{reporter_phone}</td></tr>
+                </table>
+
+                <p style="color: #999; font-size: 12px; margin-top: 24px;">
+                    This is an automated notification from WanoApp.
+                </p>
+            </body>
+        </html>
+        """
+
+        try:
+            for recipient in recipients:
+                to_email_obj = To(recipient)
+                content = Content("text/html", html_content)
+                mail = Mail(self.from_email, to_email_obj, subject, content)
+                response = self.sg.send(mail)
+                logger.info(
+                    f"Report notification email sent to {recipient}. Status code: {response.status_code}"
+                )
+            return True
+        except Exception as e:
+            logger.error(f"Failed to send report notification email: {str(e)}")
+            return False
 
 email_service = EmailService()

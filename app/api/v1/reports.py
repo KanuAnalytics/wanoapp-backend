@@ -11,6 +11,7 @@ from datetime import datetime
 from app.models.report import VideoReport, ReportCreate, ReportResponse
 from app.core.database import get_database
 from app.api.deps import get_current_active_user
+from app.services.email_service import email_service
 import logging
 
 logger = logging.getLogger(__name__)
@@ -111,6 +112,24 @@ async def report_video(
     report_doc["_id"] = report_id
     report_doc["video_id"] = video_id
     report_doc["reporter_id"] = current_user
+
+    # Send report notification email (non-blocking)
+    try:
+        creator = await db.users.find_one({"_id": video.get("creator_id")})
+        reporter = await db.users.find_one({"_id": ObjectId(current_user)})
+        if creator and reporter:
+            video_link = f"https://share.wanoafrica.com/pages/feed?videoId={video_id}&single=true"
+            await email_service.send_report_notification(
+                to_email="eilmer@wanoafrica.com",
+                creator=creator,
+                reporter=reporter,
+                video=video,
+                video_link=video_link
+            )
+        else:
+            logger.warning("Report notification email skipped: creator or reporter not found.")
+    except Exception as e:
+        logger.warning(f"Report notification email failed: {str(e)}")
     
     return ReportResponse(**report_doc)
 
