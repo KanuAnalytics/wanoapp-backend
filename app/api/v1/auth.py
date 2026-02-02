@@ -86,7 +86,8 @@ class ResetPasswordRequest(BaseModel):
 
 class RegisterRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=30)
-    email: EmailStr
+    email: Optional[EmailStr] = None
+    phone_number: Optional[str] = Field(None, pattern=r"^\+[1-9]\d{7,14}$")
     password: str = Field(..., min_length=6)
     display_name: str = Field(..., min_length=1, max_length=100)
     localization: dict
@@ -138,6 +139,12 @@ async def register(request: RegisterRequest):
     """Register a new user and return access token"""
     db = get_database()
 
+    if not request.email and not request.phone_number:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Either email or phone number is required"
+        )
+
     # --- Profanity and banned-word check (username + display name) ---
     username_probability = predict_prob([request.username])[0]
     display_probability = predict_prob([request.display_name])[0]
@@ -157,24 +164,28 @@ async def register(request: RegisterRequest):
             detail="Display name contains inappropriate language"
         )
 
-    # Check if username or email already exists
-    existing_user = await db.users.find_one({
-        "$or": [
-            {"username": request.username},
-            {"email": request.email}
-        ]
-    })
-    
-    if existing_user:
-        if existing_user["username"] == request.username:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Username already registered"
-            )
-        else:
+    # Check if username already exists
+    existing_username = await db.users.find_one({"username": request.username})
+    if existing_username:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username already registered"
+        )
+
+    if request.email:
+        existing_email = await db.users.find_one({"email": request.email})
+        if existing_email:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Email already registered"
+            )
+
+    if request.phone_number:
+        existing_phone = await db.users.find_one({"phone_number": request.phone_number})
+        if existing_phone:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Phone number already registered"
             )
 
     # Password policy: must contain at least one uppercase letter and one digit
@@ -184,13 +195,16 @@ async def register(request: RegisterRequest):
             detail="Password must contain at least one uppercase letter and one number"
         )
 
-    # Generate verification token
-    verification_data = create_verification_token(request.email)
+    # Generate verification token (email registrations only)
+    verification_data = None
+    if request.email:
+        verification_data = create_verification_token(request.email)
     
     # Create user document with default localization
     user_doc = {
         "username": request.username,
         "email": request.email,
+        "phone_number": request.phone_number,
         "display_name": request.display_name,
         "password_hash": get_password_hash(request.password),
         "user_type": "standard",
@@ -199,8 +213,8 @@ async def register(request: RegisterRequest):
         "updated_at": datetime.now(timezone.utc),
         "is_active": True,
         "is_verified": False,
-        "verification_token": verification_data["token"],
-        "verification_token_expires": verification_data["expires"],
+        "verification_token": verification_data["token"] if verification_data else None,
+        "verification_token_expires": verification_data["expires"] if verification_data else None,
         "verified_at": None,
         "followers_count": 0,
         "following_count": 0,
@@ -247,19 +261,20 @@ async def register(request: RegisterRequest):
     
     # Send verification email (non-blocking)
     verification_email_sent = False
-    try:
-        email_sent = await email_service.send_verification_email(
-            request.email,
-            request.username,
-            verification_data["token"]
-        )
-        verification_email_sent = email_sent
-        
-        if not email_sent:
-            logger.warning(f"Failed to send verification email to {request.email}, but user was created successfully")
-    except Exception as e:
-        logger.error(f"Error sending verification email: {e}")
-        # Don't fail registration if email fails
+    if request.email and verification_data:
+        try:
+            email_sent = await email_service.send_verification_email(
+                request.email,
+                request.username,
+                verification_data["token"]
+            )
+            verification_email_sent = email_sent
+            
+            if not email_sent:
+                logger.warning(f"Failed to send verification email to {request.email}, but user was created successfully")
+        except Exception as e:
+            logger.error(f"Error sending verification email: {e}")
+            # Don't fail registration if email fails
     
     return RegisterResponse(
         access_token=access_token,

@@ -117,7 +117,8 @@ class CompleteUserResponse(BaseModel):
     # Basic fields
     id: str = Field(alias="_id")
     username: str
-    email: EmailStr
+    email: Optional[EmailStr] = None
+    phone_number: Optional[str] = None
     display_name: str
     bio: Optional[str] = None
     profile_picture: Optional[HttpUrl] = None
@@ -203,7 +204,8 @@ class UserUpdate(BaseModel):
 class UserResponse(BaseModel):
     id: str = Field(alias="_id")
     username: str
-    email: str
+    email: Optional[EmailStr] = None
+    phone_number: Optional[str] = None
     display_name: str
     user_type: UserType
     is_verified: bool = False
@@ -292,7 +294,8 @@ class UserPatchResponse(BaseModel):
     """Response model for PATCH user endpoint"""
     id: str = Field(alias="_id")
     username: str
-    email: EmailStr
+    email: Optional[EmailStr] = None
+    phone_number: Optional[str] = None
     display_name: str
     bio: Optional[str] = None
     profile_picture: Optional[str] = None
