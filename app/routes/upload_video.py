@@ -1,17 +1,26 @@
 #app/routes/upload_video.py
 
 
-from fastapi import File, UploadFile, HTTPException, APIRouter, Query
+from typing import Optional
+from fastapi import Depends, File, UploadFile, HTTPException, APIRouter, Query, status
 from fastapi.responses import JSONResponse
 import httpx
+from app.api.deps import get_verified_user
 from app.core.config import Settings
 from app.core.database import get_database
 from app.models.upload_video import CheckStatusReq
 from app.services.sqs_publisher import push_video_processing_job
-from app.services.upload_DO import upload_to_spaces, allowed_file, secure_filename, get_content_type, is_image_file, generate_presigned_upload_url, generate_stream_direct_upload_url, get_stream_video_status
+from app.services.upload_DO import generate_cf_tus_upload_url, upload_to_spaces, allowed_file, secure_filename, get_content_type, is_image_file, generate_presigned_upload_url, generate_stream_direct_upload_url, get_stream_video_status
 import asyncio
 from app.core.config import settings
+from pydantic import BaseModel
+
 router = APIRouter(prefix="/video", tags=["Upload Video"])
+
+class PresignRequest(BaseModel):
+    filename: str
+    fileSize: int
+    folder: Optional[str] = 'videos'
 
 @router.post("/upload")
 async def upload_video(video: UploadFile = File(...), isAudio: bool = False, isImage: bool = False):
@@ -66,18 +75,26 @@ async def upload_video(video: UploadFile = File(...), isAudio: bool = False, isI
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
     
-@router.get("/presigned-upload")
+@router.post("/presigned-upload")
 async def get_presigned_upload_url(
-    filename: str = Query(..., description="Original filename, e.g. myvideo.mp4"),
-    folder: str = Query("videos", description="Folder in DO Spaces: videos, audio, profile-pictures")
+    payload: PresignRequest,
 ):
     """
     Get a pre-signed upload URL for DigitalOcean Spaces.
     Automatically determines content type.
     """
     try:
-        result = generate_stream_direct_upload_url(filename=filename, folder=folder)
-        return result
+        MAX_FILE_SIZE = 200 * 1024 * 1024
+        
+        if(payload.fileSize >= MAX_FILE_SIZE):
+            result = generate_cf_tus_upload_url(filename=payload.filename, fileSize=payload.fileSize, folder=payload.folder)
+        else:
+            result =  generate_stream_direct_upload_url(filename=payload.filename, folder=payload.folder)
+        return {
+            "status": 200,
+            "message": "Pre-signed upload URL generated successfully",
+            "data": result
+        }
     except Exception as e:
         print(str(e))
         raise HTTPException(status_code=500, detail=str(e))
