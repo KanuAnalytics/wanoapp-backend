@@ -1,6 +1,7 @@
 #app/services/upload_DO.py
 
 
+import base64
 import boto3
 from botocore.exceptions import ClientError
 import os
@@ -292,4 +293,50 @@ def get_stream_video_status(uid: str):
     return {
         "uid": result.get("uid"),
         "readyToStream": result.get("readyToStream"),
+    }
+
+
+def generate_cf_tus_upload_url(filename: str, fileSize: int, folder: str = "videos"):
+    """
+    Generate a TUS upload URL for Cloudflare Stream.
+    Returns dict with upload_url and media_id.
+    """
+
+    account_id = settings.CLOUDFLARE_ACCOUNT_ID
+    api_token = settings.CLOUDFLARE_STREAM_API_TOKEN
+
+    if not account_id or not api_token:
+        raise RuntimeError("Cloudflare Stream account ID or API token not configured")
+
+    url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/stream?direct_user=true"
+    
+    safe_filename = os.path.basename(filename) or "unnamed"
+    # This is just to namespace/organize metadata, has no folder structure effect in Stream
+    video_name = f"{folder}/{uuid.uuid4()}_{safe_filename}"
+    
+    encoded_name = base64.b64encode(video_name.encode()).decode()
+
+    headers = {
+        "Authorization": f"Bearer {api_token}",
+        "Tus-Resumable": "1.0.0",
+        "Upload-Metadata": f"name {encoded_name}",
+        "Upload-Length": str(fileSize)    # required by TUS spec
+    }
+
+    res = requests.post(url, headers=headers)
+
+    if res.status_code not in (201, 204):
+        raise RuntimeError(f"Failed to create TUS upload URL: {res.text}")
+
+    upload_url = res.headers.get("Location")
+    media_id = res.headers.get("stream-media-id")
+    
+    
+    playback_url = f"https://videodelivery.net/{media_id}/manifest/video.m3u8"
+
+    return {
+        "upload_url": upload_url,
+        "stream_uid": media_id,
+        "file_url": playback_url,
+        "name": video_name,
     }
