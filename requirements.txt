@@ -30,6 +30,7 @@ redis==5.0.1
 
 # Add this line to requirements.txt
 sendgrid==6.10.0
+twilio==9.0.4
 
 # Image processing
 pillow==10.1.0

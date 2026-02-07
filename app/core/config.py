@@ -6,7 +6,7 @@ app/core/config.py
 
 
 from pydantic_settings import BaseSettings
-from typing import List
+from typing import List, Optional
 import os
 
 class Settings(BaseSettings):
@@ -62,6 +62,12 @@ class Settings(BaseSettings):
     SENDGRID_FROM_EMAIL: str
     FRONTEND_URL: str = "http://localhost:3000"  # For verification link
     EMAIL_VERIFICATION_TOKEN_EXPIRE_HOURS: int = 24
+
+    # Twilio settings
+    TWILIO_ACCOUNT_SID: Optional[str] = None
+    TWILIO_AUTH_TOKEN: Optional[str] = None
+    TWILIO_WHATSAPP_FROM: Optional[str] = None
+    TWILIO_WHATSAPP_CONTENT_SID: Optional[str] = None
 
 
     # DigitalOcean Spaces

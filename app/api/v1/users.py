@@ -9,7 +9,7 @@ import re
 import json
 from bson.json_util import dumps
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Body, HTTPException, Depends, status, Query
+from fastapi import APIRouter, Body, HTTPException, Depends, status, Query, BackgroundTasks
 from enum import Enum
 from bson import ObjectId
 from datetime import datetime
@@ -23,6 +23,7 @@ from app.models.video import VideoUrls
 from app.services.email_service import email_service
 import logging
 from app.services.metrics_service import metrics_buffer
+from app.services.expo import send_push_message
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +86,9 @@ class RelationshipType(str, Enum):
     followers = "followers"
     following = "following"
 
+class PushTokenRequest(BaseModel):
+    expo_push_token: str = Field(..., min_length=1)
+
 class UserCreate(BaseModel):
     username: str
     email: EmailStr
@@ -113,7 +117,8 @@ class CompleteUserResponse(BaseModel):
     # Basic fields
     id: str = Field(alias="_id")
     username: str
-    email: EmailStr
+    email: Optional[EmailStr] = None
+    phone_number: Optional[str] = None
     display_name: str
     bio: Optional[str] = None
     profile_picture: Optional[HttpUrl] = None
@@ -199,7 +204,8 @@ class UserUpdate(BaseModel):
 class UserResponse(BaseModel):
     id: str = Field(alias="_id")
     username: str
-    email: str
+    email: Optional[EmailStr] = None
+    phone_number: Optional[str] = None
     display_name: str
     user_type: UserType
     is_verified: bool = False
@@ -288,7 +294,8 @@ class UserPatchResponse(BaseModel):
     """Response model for PATCH user endpoint"""
     id: str = Field(alias="_id")
     username: str
-    email: EmailStr
+    email: Optional[EmailStr] = None
+    phone_number: Optional[str] = None
     display_name: str
     bio: Optional[str] = None
     profile_picture: Optional[str] = None
@@ -499,6 +506,46 @@ async def patch_user_profile(
     
     return UserPatchResponse(**updated_user)
 
+@router.post("/me/push-token")
+async def add_push_token(
+    payload: PushTokenRequest,
+    current_user: str = Depends(get_current_active_user),
+):
+    """Add a device Expo push token to the current user (deduped)."""
+    db = get_database()
+    token = payload.expo_push_token.strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="Invalid push token")
+
+    await db.users.update_many(
+        {"_id": {"$ne": ObjectId(current_user)}, "expo_push_tokens": token},
+        {"$pull": {"expo_push_tokens": token}},
+    )
+    await db.users.update_one(
+        {"_id": ObjectId(current_user)},
+        {"$addToSet": {"expo_push_tokens": token}, "$set": {"updated_at": datetime.utcnow()}},
+    )
+
+    return {"message": "Push token added"}
+
+@router.delete("/me/push-token")
+async def remove_push_token(
+    payload: PushTokenRequest,
+    current_user: str = Depends(get_current_active_user),
+):
+    """Remove a device Expo push token from the current user."""
+    db = get_database()
+    token = payload.expo_push_token.strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="Invalid push token")
+
+    await db.users.update_one(
+        {"_id": ObjectId(current_user)},
+        {"$pull": {"expo_push_tokens": token}, "$set": {"updated_at": datetime.utcnow()}},
+    )
+
+    return {"message": "Push token removed"}
+
 @router.delete("/delete", status_code=status.HTTP_204_NO_CONTENT)
 async def permanently_delete_user(
     current_user: str = Depends(get_current_active_user),
@@ -690,6 +737,9 @@ def unblock_user(
 async def get_user_complete(
     user_id: str,
     include_videos: bool = Query(False, description="Include user's recent videos"),
+    include_liked: bool = Query(False, description="Include user's liked videos details"),
+    video_skip: int = Query(0, ge=0, description="Skip N recent videos when include_videos is true"),
+    video_limit: int = Query(200, ge=1, le=200, description="Limit recent videos when include_videos is true"),
     current_user: str = Depends(get_current_active_user)
 ):
     """
@@ -719,14 +769,21 @@ async def get_user_complete(
         )
     
     # Get video details for bookmarked and liked videos
-    bookmarked_video_details = await get_video_details(
-        db, 
-        user.get("bookmarked_videos", [])
-    )
-    liked_video_details = await get_video_details(
-        db, 
-        user.get("liked_videos", [])
-    )
+    if current_user == user_id:
+        bookmarked_video_details = await get_video_details(
+            db, 
+            user.get("bookmarked_videos", [])
+        )
+    else:
+        bookmarked_video_details = []
+
+    if include_liked:
+        liked_video_details = await get_video_details(
+            db, 
+            user.get("liked_videos", [])
+        )
+    else:
+        liked_video_details = []
     
     like_count = await metrics_buffer.get_user_videos_like_count(user_id)
     
@@ -811,7 +868,7 @@ async def get_user_complete(
 
             complete_blocked = CompleteUserResponse(**deleted_user)
 
-            return UserWithDetailsResponse(
+            response = UserWithDetailsResponse(
                 user=complete_blocked,
                 is_following=False,
                 is_followed_by=False,
@@ -821,16 +878,19 @@ async def get_user_complete(
                 can_unblock=is_blocked_by_me,
                 blocked=is_blocked_by_them or is_blocked_by_me,
             )
-        else:   
+            return response
+        else:
             # Calculate mutual followers
             current_user_data = await db.users.find_one(
                 {"_id": current_user_oid},
                 {"followers": 1}
             )
             if current_user_data:
-                user_followers_set = set(user.get("followers", []))
-                current_followers_set = set(current_user_data.get("followers", []))
-                mutual_followers_count = len(user_followers_set.intersection(current_followers_set))
+                # mutuals disabled for now
+                # user_followers_set = set(user.get("followers", []))
+                # current_followers_set = set(current_user_data.get("followers", []))
+                # mutual_followers_count = len(user_followers_set.intersection(current_followers_set))
+                mutual_followers_count = 0
             else:
                 mutual_followers_count = 0
     else:
@@ -861,7 +921,7 @@ async def get_user_complete(
                 }
             ]
             }
-        ).sort("created_at", -1).limit(5)
+        ).sort("created_at", -1).skip(video_skip).limit(video_limit)
         
         recent_videos = []
         async for video in videos_cursor:
@@ -1430,7 +1490,8 @@ async def update_user(
 @router.post("/{user_id}/follow", status_code=status.HTTP_200_OK)
 async def follow_user(
     user_id: str,
-    current_user: str = Depends(get_current_active_user)
+    current_user: str = Depends(get_current_active_user),
+    background_tasks: BackgroundTasks = None,
 ):
     """Follow a user"""
     db = get_database()
@@ -1474,6 +1535,21 @@ async def follow_user(
             "$inc": {"followers_count": 1}
         }
     )
+
+    if background_tasks is not None:
+        display_name = current_user_doc.get("display_name") or current_user_doc.get("username") or "Someone"
+        username = current_user_doc.get("username") or "unknown"
+        profile_image = current_user_doc.get("profile_picture")
+        recipient_tokens = target_user.get("expo_push_tokens") or []
+        for token in recipient_tokens:
+            background_tasks.add_task(
+                send_push_message,
+                token,
+                "Tap to view their profile",
+                {"follower_id": str(current_user)},
+                f"{display_name}(@{username}) started following you",
+                profile_image,
+            )
     
     return {"message": "Successfully followed user"}
 
