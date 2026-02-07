@@ -174,20 +174,22 @@
 """
 Updates for app/api/v1/comments.py
 """
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status, BackgroundTasks
 from typing import List, Optional
 from datetime import datetime
 from bson import ObjectId
 from app.core.database import get_database
 from app.api.deps import get_current_active_user
 from app.models.comment import CommentCreate, CommentUpdate, CommentResponse
+from app.services.expo import send_push_message
 
 router = APIRouter()
 
 @router.post("/", response_model=CommentResponse)
 async def create_comment(
     comment: CommentCreate,
-    current_user: str = Depends(get_current_active_user)
+    current_user: str = Depends(get_current_active_user),
+    background_tasks: BackgroundTasks = None,
 ):
     """Create a new comment or reply"""
     db = get_database()
@@ -209,6 +211,7 @@ async def create_comment(
         )
     
     # If it's a reply, verify parent comment exists
+    parent_comment = None
     if comment.parent_id:
         parent_comment = await db.comments.find_one({"_id": ObjectId(comment.parent_id)})
         if not parent_comment:
@@ -252,6 +255,47 @@ async def create_comment(
         {"_id": ObjectId(comment.video_id)},
         {"$inc": {"comments_count": 1}}
     )
+
+    if background_tasks is not None:
+        display_name = user.get("display_name") or user.get("username") or "Someone"
+        comment_text = (comment.content or "").strip()
+        comment_preview = comment_text[:30] + ("..." if len(comment_text) > 30 else "")
+        thumbnail_url = (video.get("urls") or {}).get("thumbnail")
+
+        creator_id = video.get("creator_id")
+        if creator_id and str(creator_id) != str(current_user):
+            recipient = await db.users.find_one(
+                {"_id": ObjectId(creator_id)},
+                {"expo_push_tokens": 1},
+            )
+            recipient_tokens = (recipient or {}).get("expo_push_tokens") or []
+            for token in recipient_tokens:
+                background_tasks.add_task(
+                    send_push_message,
+                    token,
+                    comment_preview,
+                    {"video_id": comment.video_id, "commenter_id": str(current_user)},
+                    f"{display_name} commented on your video",
+                    thumbnail_url,
+                )
+
+        if parent_comment:
+            parent_user_id = parent_comment.get("user_id")
+            if parent_user_id and str(parent_user_id) != str(current_user) and str(parent_user_id) != str(creator_id):
+                parent_user = await db.users.find_one(
+                    {"_id": ObjectId(parent_user_id)},
+                    {"expo_push_tokens": 1},
+                )
+                parent_tokens = (parent_user or {}).get("expo_push_tokens") or []
+                for token in parent_tokens:
+                    background_tasks.add_task(
+                        send_push_message,
+                        token,
+                        comment_preview,
+                        {"video_id": comment.video_id, "commenter_id": str(current_user), "parent_comment_id": str(parent_comment["_id"])},
+                        f"{display_name} replied to your comment",
+                        thumbnail_url,
+                    )
     
     # Convert ObjectIds to strings for response
     response_doc = {
