@@ -27,6 +27,7 @@ class VideoPost(BaseModel):
     video_type: Optional[VideoType] = VideoType.REGULAR
     privacy: VideoPrivacy = VideoPrivacy.PUBLIC
     remoteUrl: str
+    remoteUrl_CF:str
     thumbnail: Optional[str] = 'https://wano-africadev.lon1.digitaloceanspaces.com/wanoafrica-dospaces-key/profile-pictures/thumbnail_placeholder.png'
     duration: Optional[float] = 0.0
     start: Optional[float] = 0.0
@@ -35,6 +36,7 @@ class VideoPost(BaseModel):
     comments_enabled: bool = True
     categoryId: Optional[str] = None
     subcategoryId: Optional[str] = None
+    isReadyToStream: Optional[bool] = False
 
 class VideoCreate(BaseModel):
     title: Optional[str] = None
@@ -75,6 +77,7 @@ class VideoResponse(BaseModel):
     start: float = 0.0
     end: Optional[float] = None
     remoteUrl: Optional[str] = None
+    remoteUrl_CF: Optional[str] = None
     
     is_following: Optional[bool] = None
     is_liked: Optional[bool] = None  
@@ -98,6 +101,7 @@ async def post_video(
             "description": input.description,
             "video_type": "regular",
             "privacy": input.privacy,
+            "isReadyToStream": input.isReadyToStream,
             "metadata": {
                 "duration": input.duration,
                 "width": 1080,  # You might want to detect this from the actual video
@@ -119,6 +123,7 @@ async def post_video(
             "end": input.end,
             "duration": input.duration,
             "remoteUrl": input.remoteUrl,
+            "remoteUrl_CF":input.remoteUrl_CF,
             "type": 'video',
             # Standard fields
             "hashtags": [],
@@ -143,7 +148,7 @@ async def post_video(
         }
         
         # Insert into database
-        await db.videos.insert_one(video_doc)
+        result = await db.videos.insert_one(video_doc)
         
         # Update user's video count
         await db.users.update_one(
@@ -152,7 +157,7 @@ async def post_video(
         )
         
         # This is a placeholder implementation
-        return {"message": "Video posted successfully"}
+        return {"message": "Video posted successfully", "video_id": str(result.inserted_id)}
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

@@ -77,8 +77,19 @@ class Settings(BaseSettings):
     DO_SPACES_CDN_URL: str
     DO_SPACES_SECRET_KEY: str
     
+    #Cloudflare
+    CLOUDFLARE_ACCOUNT_ID: str
+    CLOUDFLARE_STREAM_API_TOKEN: str
+    CLOUDFLARE_STREAM_API_BASE: str
+    
     #service URL
     VIDEO_SERVICE_URL: str
+    
+    #AWS SQS
+    AWS_REGION: str
+    AWS_ACCESS_KEY_ID: str
+    AWS_SECRET_ACCESS_KEY: str
+    SQS_VIDEO_QUEUE_URL: str
     
     class Config:
         env_file = ".env"

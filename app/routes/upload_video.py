@@ -1,10 +1,26 @@
 #app/routes/upload_video.py
 
 
-from fastapi import File, UploadFile, HTTPException, APIRouter, Query
+from typing import Optional
+from fastapi import Depends, File, UploadFile, HTTPException, APIRouter, Query, status
 from fastapi.responses import JSONResponse
-from app.services.upload_DO import upload_to_spaces, allowed_file, secure_filename, get_content_type, is_image_file, generate_presigned_upload_url
+import httpx
+from app.api.deps import get_verified_user
+from app.core.config import Settings
+from app.core.database import get_database
+from app.models.upload_video import CheckStatusReq
+from app.services.sqs_publisher import push_video_processing_job
+from app.services.upload_DO import generate_cf_tus_upload_url, upload_to_spaces, allowed_file, secure_filename, get_content_type, is_image_file, generate_presigned_upload_url, generate_stream_direct_upload_url, get_stream_video_status
+import asyncio
+from app.core.config import settings
+from pydantic import BaseModel
+
 router = APIRouter(prefix="/video", tags=["Upload Video"])
+
+class PresignRequest(BaseModel):
+    filename: str
+    fileSize: int
+    folder: Optional[str] = 'videos'
 
 @router.post("/upload")
 async def upload_video(video: UploadFile = File(...), isAudio: bool = False, isImage: bool = False):
@@ -59,17 +75,146 @@ async def upload_video(video: UploadFile = File(...), isAudio: bool = False, isI
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
     
-@router.get("/presigned-upload")
+@router.post("/presigned-upload")
 async def get_presigned_upload_url(
-    filename: str = Query(..., description="Original filename, e.g. myvideo.mp4"),
-    folder: str = Query("videos", description="Folder in DO Spaces: videos, audio, profile-pictures")
+    payload: PresignRequest,
 ):
     """
     Get a pre-signed upload URL for DigitalOcean Spaces.
     Automatically determines content type.
     """
     try:
-        result = generate_presigned_upload_url(filename=filename, folder=folder)
-        return result
+        MAX_FILE_SIZE = 200 * 1024 * 1024
+        
+        if(payload.fileSize >= MAX_FILE_SIZE):
+            result = generate_cf_tus_upload_url(filename=payload.filename, fileSize=payload.fileSize, folder=payload.folder)
+        else:
+            result =  generate_stream_direct_upload_url(filename=payload.filename, folder=payload.folder)
+        return {
+            "status": 200,
+            "message": "Pre-signed upload URL generated successfully",
+            "data": result
+        }
+    except Exception as e:
+        print(str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+    
+async def call_video_service_check_status_api(uId: str, videoId: str):
+        """
+        Call the second backend's GraphQL API
+        """
+        # GraphQL endpoint URL of your second backend
+        SERVICE_API_URL = settings.VIDEO_SERVICE_URL  # Update this URL
+        
+        # Prepare the GraphQL mutation query
+        
+        
+        mutation = """
+        mutation CheckStreamStatus($input: VideoStatusInput!) {
+            checkStreamStatus(input: $input)
+        }
+        """
+        
+        # Convert the input to include user_id
+        variables = {
+            "input": {
+                "videoId":videoId,
+                "uId": uId
+            }
+        }
+        
+        # Prepare the request payload
+        payload = {
+            "query": mutation,
+            "variables": variables
+        }
+        
+        # Make the HTTP request to the second backend with longer timeout
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.post(
+                    SERVICE_API_URL,
+                    json=payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        # Add any authentication headers if needed
+                        # "Authorization": f"Bearer {token}",
+                    },
+                    timeout=600.0  # 10 minutes timeout for long-running operations
+                )
+                
+                # Check if the request was successful
+                response.raise_for_status()
+                
+                # Parse the response
+                response_data = response.json()
+                
+                # Check for GraphQL errors
+                if "errors" in response_data:
+                    error_messages = [error.get("message", "Unknown error") for error in response_data["errors"]]
+                    raise Exception(f"GraphQL errors: {', '.join(error_messages)}")
+                
+                # Extract the data from the response
+                if "data" in response_data and "checkStreamStatus" in response_data["data"]:
+                    print("Response Data:", response_data["data"]["checkStreamStatus"])
+                    return response_data["data"]["checkStreamStatus"]
+                else:
+                    raise Exception("Invalid response format from service API")
+                    
+            except httpx.TimeoutException:
+                raise Exception("Request to service API timed out")
+            except httpx.HTTPStatusError as e:
+                raise Exception(f"HTTP error from service API: {e.response.status_code}")
+            except Exception as e:
+                raise Exception(f"Error calling service API: {str(e)}")
+
+
+async def call_video_service_check_status_api_background(uId: str, videoId: str):
+        """
+        Background task to call the second backend's GraphQL API
+        This runs independently and doesn't block the main response
+        """
+        try:
+            print("Starting background video compilation task for u_id", uId)
+            await call_video_service_check_status_api(uId, videoId)
+            # Optionally: Store success status in database, send notification, etc.
+            print(f"Video status completed successfully for uid: {uId}")
+            
+        except Exception as e:
+            # Handle errors in background task
+            # Optionally: Store error status in database, send error notification, etc.
+            print(f"Video compilation failed for uid {uId}: {str(e)}")
+            # You might want to log this properly or store in database
+    
+@router.get("/{uid}")
+def video_status(
+    uid:str
+    ):
+    try:
+        print("Fetching status for UID:", uid)
+        status = get_stream_video_status(uid)
+        print("Status fetched:", status)
+        return status
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@router.post('/check-stream-status')
+async def check_stream_status(input: CheckStatusReq):
+    """
+    Check the processing status of a Cloudflare Stream video by its UID.
+    Polls until readyToStream is true, then updates the videos collection.
+    """
+    try:
+        uId = input.uId
+        videoId = input.videoId
+        print("Initiating status check for UID:", uId)
+        
+        push_video_processing_job(
+            videoId=videoId,
+            uId=uId,
+        )
+        # Start background task to call the video service API
+        # asyncio.create_task(call_video_service_check_status_api_background(uId, videoId))
+        return {"message": "Video status check initiated in background"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

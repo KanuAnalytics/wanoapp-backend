@@ -365,7 +365,15 @@ async def get_video_details(db, video_ids: List[ObjectId]) -> List[VideoDetail]:
     # Get videos from database
     cursor = db.videos.find({
         "_id": {"$in": video_ids},
-        "is_active": True
+        "is_active": True,
+        "$and": [
+                        {
+            "$or": [
+                {"isReadyToStream": True},
+                {"isReadyToStream": {"$exists": False}}
+                ]
+            }
+            ]
     })
     
     # Create a mapping to preserve order
@@ -901,9 +909,17 @@ async def get_user_complete(
     if include_videos:
         videos_cursor = db.videos.find(
             {
-                "creator_id": ObjectId(user_id),
-                "is_active": True,
-                "privacy": "public"
+            "creator_id": ObjectId(user_id),
+            "is_active": True,
+            "privacy": "public",
+            "$and": [
+                {
+                "$or": [
+                    {"isReadyToStream": True},
+                    {"isReadyToStream": {"$exists": False}}
+                ]
+                }
+            ]
             }
         ).sort("created_at", -1).skip(video_skip).limit(video_limit)
         
@@ -1002,7 +1018,18 @@ async def get_user_detailed_stats(
     
     # Aggregate video statistics
     pipeline = [
-        {"$match": {"creator_id": ObjectId(user_id), "is_active": True}},
+        {"$match": {
+            "creator_id": ObjectId(user_id), 
+            "is_active": True,
+            "$and": [
+                        {
+            "$or": [
+                {"isReadyToStream": True},
+                {"isReadyToStream": {"$exists": False}}
+                ]
+            }
+            ]
+            }},
         {
             "$group": {
                 "_id": None,
