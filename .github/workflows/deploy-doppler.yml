@@ -1,26 +1,24 @@
 name: Deploy Doppler
 
 env:
-  IMAGE_NAME: wano-africa-be-test
-  CONTAINER_NAME: wano-africa-be-test
-  REMOTE_DIR: /wano-africa-be-test
+  IMAGE_NAME: wano-africa-be
+  CONTAINER_NAME: wano-africa-be
+  REMOTE_DIR: /wano-africa-be
 
 on:
   workflow_dispatch:
   push:
     branches:
-      - test  
+      - dev  
 
 jobs:
   build-and-deploy:
     runs-on: [self-hosted, server]
     env:
       DOPPLER_PROJECT: wano-app
-      DOPPLER_CONFIG: stg
-      DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN_STG }}
+      DOPPLER_CONFIG: dev
+      DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN_DEV }}
       DOCKER_TAG: ${{ github.sha }}
-      COMPOSE_PROJECT_NAME: wano-africa-be-stg   # 👈 and this
-      
 
     steps:
       - name: Checkout code
@@ -30,10 +28,10 @@ jobs:
         uses: dopplerhq/cli-action@v3
 
       - name: Fetch secrets from Doppler
-        run: doppler secrets download --no-file --format env | sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' > .env.stage.test
+        run: doppler secrets download --no-file --format env | sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' > .env.stage.dev
         
       - name: Copy .env to Remote Directory
-        run: cp .env.stage.test ./.env
+        run: cp .env.stage.dev ./.env
 
       - name: Set up Docker
         uses: docker/setup-buildx-action@v1
