@@ -6,7 +6,7 @@ services:
     image: ${IMAGE_NAME}:${DOCKER_TAG}
     container_name: ${CONTAINER_NAME}
     ports:
-      - "8001:8000"  # Map container port 3000 to host port 3000
+      - "8000:8000"  # Map container port 3000 to host port 3000
     env_file:
       - .env
     restart: always
