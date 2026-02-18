@@ -20,7 +20,6 @@ from app.core.security import get_password_hash, create_verification_token
 from app.api.deps import get_current_active_user, get_optional_active_user
 from pydantic import BaseModel, Field, EmailStr, HttpUrl, validator
 from app.models.video import VideoUrls
-from app.services.email_service import email_service
 import logging
 from app.services.metrics_service import metrics_buffer
 from app.services.expo import send_push_message
@@ -1326,20 +1325,6 @@ async def create_user(user: UserCreate):
     
     result = await db.users.insert_one(user_doc)
     user_doc["_id"] = str(result.inserted_id)
-    
-    # Send verification email (non-blocking)
-    try:
-        email_sent = await email_service.send_verification_email(
-            user.email,
-            user.username,
-            verification_data["token"]
-        )
-        
-        if not email_sent:
-            logger.warning(f"Failed to send verification email to {user.email}, but user was created successfully")
-    except Exception as e:
-        logger.error(f"Error sending verification email: {e}")
-        # Don't fail registration if email fails
     
     return UserResponse(**user_doc)
 
