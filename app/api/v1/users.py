@@ -17,7 +17,7 @@ from app.models.base import PyObjectId
 from app.models.user import StandardUser, ArtistUser, AdvertiserUser, AdminUser, UserType
 from app.core.database import get_database
 from app.core.security import get_password_hash, create_verification_token
-from app.api.deps import get_current_active_user
+from app.api.deps import get_current_active_user, get_optional_active_user
 from pydantic import BaseModel, Field, EmailStr, HttpUrl, validator
 from app.models.video import VideoUrls
 from app.services.email_service import email_service
@@ -732,7 +732,7 @@ async def get_user_complete(
     include_liked: bool = Query(False, description="Include user's liked videos details"),
     video_skip: int = Query(0, ge=0, description="Skip N recent videos when include_videos is true"),
     video_limit: int = Query(200, ge=1, le=200, description="Limit recent videos when include_videos is true"),
-    current_user: str = Depends(get_current_active_user)
+    current_user: Optional[str] = Depends(get_optional_active_user)
 ):
     """
     Get complete user data with ALL fields
@@ -798,95 +798,98 @@ async def get_user_complete(
     # Create base response
     complete_user = CompleteUserResponse(**user_data)
     
-    # Calculate relationship status
-    current_user_oid = ObjectId(current_user)
-    is_following = current_user_oid in user.get("followers", [])
-    is_followed_by = current_user_oid in user.get("following", [])
-    
-    # Calculate mutual followers
-    if current_user != user_id:
-         # 🔒 Blocking check (current user’s perspective)
+    # Calculate relationship status only when authenticated.
+    is_following = False
+    is_followed_by = False
+    mutual_followers_count = 0
+
+    if current_user:
         current_user_oid = ObjectId(current_user)
+        is_following = current_user_oid in user.get("followers", [])
+        is_followed_by = current_user_oid in user.get("following", [])
 
-        # Fetch current user’s blocking info
-        current_user_data = await db.users.find_one(
-            {"_id": current_user_oid},
-            {"blocked_users": 1, "blocked_by": 1}
-        )
+        # Calculate mutual followers
+        if current_user != user_id:
+             # 🔒 Blocking check (current user’s perspective)
+            current_user_oid = ObjectId(current_user)
 
-        if not current_user_data:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Current user not found"
-            )
-
-        blocked_users = current_user_data.get("blocked_users", [])
-        blocked_by = current_user_data.get("blocked_by", [])
-
-        is_blocked_by_me = ObjectId(user_id) in blocked_users
-        is_blocked_by_them = ObjectId(user_id) in blocked_by
-
-        if is_blocked_by_me or is_blocked_by_them:
-            # Return a sanitized "deleted account" representation when there's a blocking relationship
-            deleted_user = {
-                **user,
-                "_id": str(user["_id"]),
-                "username": f"deleted_user",
-                "email": f"deleted_user@wanoafrica.com",
-                "display_name": "Deleted Account",
-                "bio": None,
-                "profile_picture": None,
-                "cover_picture": None,
-                "is_active": False,
-                "is_verified": False,
-                "verification_token": None,
-                "verification_token_expires": None,
-                "verified_at": None,
-                "localization": user.get("localization", {}),
-                "theme": None,
-                "features": {},
-                "tags": [],
-                "bookmarked_videos": [],
-                "liked_videos": [],
-                "following": [],
-                "followers": [],
-                "followers_count": 0,
-                "following_count": 0,
-                "videos_count": 0,
-                "likes_count": 0,
-                "created_at": user.get("created_at") or datetime.utcnow(),
-                "updated_at": datetime.utcnow()
-            }
-
-            complete_blocked = CompleteUserResponse(**deleted_user)
-
-            response = UserWithDetailsResponse(
-                user=complete_blocked,
-                is_following=False,
-                is_followed_by=False,
-                mutual_followers_count=0,
-                recent_videos=[],
-                views=0,
-                can_unblock=is_blocked_by_me,
-                blocked=is_blocked_by_them or is_blocked_by_me,
-            )
-            return response
-        else:
-            # Calculate mutual followers
+            # Fetch current user’s blocking info
             current_user_data = await db.users.find_one(
                 {"_id": current_user_oid},
-                {"followers": 1}
+                {"blocked_users": 1, "blocked_by": 1}
             )
-            if current_user_data:
-                # mutuals disabled for now
-                # user_followers_set = set(user.get("followers", []))
-                # current_followers_set = set(current_user_data.get("followers", []))
-                # mutual_followers_count = len(user_followers_set.intersection(current_followers_set))
-                mutual_followers_count = 0
+
+            if not current_user_data:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Current user not found"
+                )
+
+            blocked_users = current_user_data.get("blocked_users", [])
+            blocked_by = current_user_data.get("blocked_by", [])
+
+            is_blocked_by_me = ObjectId(user_id) in blocked_users
+            is_blocked_by_them = ObjectId(user_id) in blocked_by
+
+            if is_blocked_by_me or is_blocked_by_them:
+                # Return a sanitized "deleted account" representation when there's a blocking relationship
+                deleted_user = {
+                    **user,
+                    "_id": str(user["_id"]),
+                    "username": f"deleted_user",
+                    "email": f"deleted_user@wanoafrica.com",
+                    "display_name": "Deleted Account",
+                    "bio": None,
+                    "profile_picture": None,
+                    "cover_picture": None,
+                    "is_active": False,
+                    "is_verified": False,
+                    "verification_token": None,
+                    "verification_token_expires": None,
+                    "verified_at": None,
+                    "localization": user.get("localization", {}),
+                    "theme": None,
+                    "features": {},
+                    "tags": [],
+                    "bookmarked_videos": [],
+                    "liked_videos": [],
+                    "following": [],
+                    "followers": [],
+                    "followers_count": 0,
+                    "following_count": 0,
+                    "videos_count": 0,
+                    "likes_count": 0,
+                    "created_at": user.get("created_at") or datetime.utcnow(),
+                    "updated_at": datetime.utcnow()
+                }
+
+                complete_blocked = CompleteUserResponse(**deleted_user)
+
+                response = UserWithDetailsResponse(
+                    user=complete_blocked,
+                    is_following=False,
+                    is_followed_by=False,
+                    mutual_followers_count=0,
+                    recent_videos=[],
+                    views=0,
+                    can_unblock=is_blocked_by_me,
+                    blocked=is_blocked_by_them or is_blocked_by_me,
+                )
+                return response
             else:
-                mutual_followers_count = 0
-    else:
-        mutual_followers_count = 0
+                # Calculate mutual followers
+                current_user_data = await db.users.find_one(
+                    {"_id": current_user_oid},
+                    {"followers": 1}
+                )
+                if current_user_data:
+                    # mutuals disabled for now
+                    # user_followers_set = set(user.get("followers", []))
+                    # current_followers_set = set(current_user_data.get("followers", []))
+                    # mutual_followers_count = len(user_followers_set.intersection(current_followers_set))
+                    mutual_followers_count = 0
+                else:
+                    mutual_followers_count = 0
     
     # Prepare response
     response_data = {
