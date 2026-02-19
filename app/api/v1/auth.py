@@ -126,7 +126,6 @@ class RegisterResponse(BaseModel):
     username: str
     is_verified: bool
     is_new_user: bool = True  # Indicates this is a new registration
-    verification_email_sent: bool = False  # Indicates if verification email was sent
 
 # Manual banned word list (expand as needed)
 BANNED_WORDS = {
@@ -259,31 +258,13 @@ async def register(request: RegisterRequest):
         expires_delta=access_token_expires
     )
     
-    # Send verification email (non-blocking)
-    verification_email_sent = False
-    if request.email and verification_data:
-        try:
-            email_sent = await email_service.send_verification_email(
-                request.email,
-                request.username,
-                verification_data["token"]
-            )
-            verification_email_sent = email_sent
-            
-            if not email_sent:
-                logger.warning(f"Failed to send verification email to {request.email}, but user was created successfully")
-        except Exception as e:
-            logger.error(f"Error sending verification email: {e}")
-            # Don't fail registration if email fails
-    
     return RegisterResponse(
         access_token=access_token,
         token_type="bearer",
         user_id=user_id,
         username=request.username,
         is_verified=False,  # New users are not verified initially
-        is_new_user=True,
-        verification_email_sent=verification_email_sent
+        is_new_user=True
     )
 
 @router.post("/request-registration-otp")
@@ -715,14 +696,7 @@ async def resend_verification(request: ResendVerificationRequest):
         }
     )
     
-    # Send email
-    await email_service.send_verification_email(
-        request.email,
-        user["username"],
-        verification_data["token"]
-    )
-    
-    return {"message": "Verification email sent"}
+    return {"message": "Verification token refreshed"}
 
 @router.get("/check-verification/{username}")
 async def check_verification_status(username: str):

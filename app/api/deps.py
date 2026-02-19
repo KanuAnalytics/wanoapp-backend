@@ -1,7 +1,7 @@
 #app/api/deps.py
 
 from typing import Optional
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Query
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from app.core.config import settings
@@ -9,6 +9,10 @@ from app.core.database import get_database
 from bson import ObjectId
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/v1/auth/login")
+oauth2_scheme_optional = OAuth2PasswordBearer(
+    tokenUrl="api/v1/auth/login",
+    auto_error=False,
+)
 
 async def get_current_user(token: str = Depends(oauth2_scheme)):
     """Get current authenticated user"""
@@ -40,6 +44,34 @@ async def get_current_active_user(current_user: str = Depends(get_current_user))
         )
     
     return current_user
+
+async def get_optional_active_user(
+    auth_required: bool = Query(True, alias="authenticated"),
+    token: Optional[str] = Depends(oauth2_scheme_optional),
+):
+    """Optionally authenticate user; when authenticated=false, allow anonymous access."""
+    if not auth_required:
+        return None
+
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    user_id = await get_current_user(token)
+
+    db = get_database()
+    user = await db.users.find_one({"_id": ObjectId(user_id), "is_active": True})
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Inactive user"
+        )
+
+    return user_id
 
 async def get_verified_user(current_user: str = Depends(get_current_active_user)):
     """Get current user and verify they have verified email"""

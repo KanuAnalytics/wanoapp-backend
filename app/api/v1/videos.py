@@ -10,7 +10,7 @@ from bson import ObjectId
 from datetime import datetime
 from app.models.video import Video, VideoType, VideoPrivacy
 from app.core.database import get_database
-from app.api.deps import get_current_active_user, get_verified_user
+from app.api.deps import get_current_active_user, get_optional_active_user, get_verified_user
 from app.services.expo import send_push_message
 from app.services.metrics_service import metrics_buffer
 from pydantic import BaseModel,HttpUrl, Field
@@ -301,7 +301,7 @@ async def search_videos(
 @router.get("/{video_id}", response_model=VideoResponse)
 async def get_video(
     video_id: str,
-    current_user: str = Depends(get_current_active_user),
+    current_user: Optional[str] = Depends(get_optional_active_user),
     background_tasks: BackgroundTasks = None,
 ):
     """Get a specific video by ID and increment view count"""
@@ -371,16 +371,19 @@ async def get_video(
                 thumbnail_url,
             )
     
-    # Get current user data
-    user_doc = await db.users.find_one({"_id": ObjectId(current_user)})
+    is_liked = False
+    is_following = False
+    if current_user:
+        # Get current user data
+        user_doc = await db.users.find_one({"_id": ObjectId(current_user)}) or {}
 
-    # Check if current user has liked this video
-    is_liked = ObjectId(video_id) in (user_doc.get("liked_videos") or [])
-    
-    # Check if current user is following the video creator
-    creator_doc = await db.users.find_one({"_id": video["creator_id"]})
-    current_user_oid = ObjectId(current_user)
-    is_following = current_user_oid in creator_doc.get("followers", [])
+        # Check if current user has liked this video
+        is_liked = ObjectId(video_id) in (user_doc.get("liked_videos") or [])
+
+        # Check if current user is following the video creator
+        creator_doc = await db.users.find_one({"_id": video["creator_id"]}) or {}
+        current_user_oid = ObjectId(current_user)
+        is_following = current_user_oid in (creator_doc.get("followers") or [])
     
     video["_id"] = str(video["_id"])
     video["creator_id"] = str(video["creator_id"])

@@ -1,7 +1,7 @@
 from typing import List, Optional
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from app.core.database import get_database
-from app.api.deps import get_current_active_user
+from app.api.deps import get_optional_active_user
 from app.services.metrics_service import metrics_buffer
 from pydantic import BaseModel
 from bson import ObjectId
@@ -28,7 +28,7 @@ class FeedVideo(BaseModel):
 
 @router.get("/", response_model=List[FeedVideo])
 async def get_feed(
-    current_user: str = Depends(get_current_active_user),
+    current_user: Optional[str] = Depends(get_optional_active_user),
     skip: int = 0,
     limit: int = 20,
     user_id: Optional[str] = None,
@@ -39,24 +39,36 @@ async def get_feed(
     """Get personalized video feed, videos from a specific user, or saved videos"""
     db = get_database()
 
-    user_doc = await db.users.find_one(
-        {"_id": ObjectId(current_user)},
-        {
-            "liked_videos": 1,
-            "blocked_users": 1,
-            "blocked_by": 1,
-            "following": 1,
-            "localization": 1,
-        },
-    )
+    user_doc = None
+    liked_video_ids = set()
+    blocked_users = []
+    blocked_by = []
+    following_ids = set()
 
-    liked_video_ids = set(str(v) for v in user_doc.get("liked_videos", []))
-    blocked_users = user_doc.get("blocked_users", [])
-    blocked_by = user_doc.get("blocked_by", [])
-    following_ids = set(str(v) for v in user_doc.get("following", []))
+    if current_user:
+        user_doc = await db.users.find_one(
+            {"_id": ObjectId(current_user)},
+            {
+                "liked_videos": 1,
+                "blocked_users": 1,
+                "blocked_by": 1,
+                "following": 1,
+                "localization": 1,
+            },
+        ) or {}
+
+        liked_video_ids = set(str(v) for v in user_doc.get("liked_videos", []))
+        blocked_users = user_doc.get("blocked_users", [])
+        blocked_by = user_doc.get("blocked_by", [])
+        following_ids = set(str(v) for v in user_doc.get("following", []))
 
     # Single unified pipeline that handles all scenarios
     if saved:
+        if not current_user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required to access saved videos",
+            )
         # For saved videos, start from users collection
         target_user_id = user_id if user_id else current_user
         pipeline = [
@@ -108,16 +120,15 @@ async def get_feed(
                     "privacy": "public",
                 }
             )
-        else:
+        elif current_user:
             # Get personalized feed
-            user = await db.users.find_one({"_id": ObjectId(current_user)})
             exclude_creator_ids = []
             if exclude_following:
-                user_following_ids = user.get("following", [])
+                user_following_ids = user_doc.get("following", []) if user_doc else []
                 if user_following_ids:
                     exclude_creator_ids = [ObjectId(uid) for uid in user_following_ids]
-            user_country = user.get("localization", {}).get("country", "NG")
-            user_languages = user.get("localization", {}).get("languages", ["en"])
+            user_country = (user_doc or {}).get("localization", {}).get("country", "NG")
+            user_languages = (user_doc or {}).get("localization", {}).get("languages", ["en"])
 
             match_conditions.update(
                 {
@@ -138,6 +149,13 @@ async def get_feed(
                     **match_conditions.get("creator_id", {}),
                     "$nin": list(exclude_ids),
                 }
+        else:
+            # Anonymous feed: show public, active videos only
+            match_conditions.update(
+                {
+                    "privacy": "public",
+                }
+            )
 
         # 🔥 Direct sort: use the string from `sorted_by` as the field
         # Default: newest first (created_at descending)
