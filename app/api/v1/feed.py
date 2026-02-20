@@ -141,53 +141,67 @@ async def get_feed(
                 }
             )
 
-        # 🔥 Direct sort: use the string from `sorted_by` as the field
-        # Default: newest first (created_at descending)
+        # sorted_by takes priority. If not provided, newest first remains default.
+        # When exclude_following=False and sorted_by is missing, randomize the pool
+        # but keep newest videos first in the final feed order.
+        randomize_feed = not exclude_following and sorted_by is None
         sort_stage = {sorted_by: -1} if sorted_by else {"created_at": -1}
 
-        pipeline = [
-            {"$match": match_conditions},
-            {"$sort": sort_stage},
-            {"$skip": skip},
-            {"$limit": limit},
-            {
-                "$lookup": {
-                    "from": "users",
-                    "localField": "creator_id",
-                    "foreignField": "_id",
-                    "as": "creator",
-                }
-            },
-            {
-                "$unwind": {
-                    "path": "$creator",
-                    "preserveNullAndEmptyArrays": True,
-                }
-            },
-            {
-                "$project": {
-                    "_id": {"$toString": "$_id"},
-                    "creator_id": {"$toString": "$creator_id"},
-                    "title": 1,
-                    "description": 1,
-                    "views_count": 1,
-                    "likes_count": 1,
-                    "created_at": {
-                        "$dateToString": {
-                            "format": "%Y-%m-%dT%H:%M:%S.%LZ",
-                            "date": "$created_at",
-                        }
-                    },
-                    "thumbnail": "$urls.thumbnail",
-                    "is_active": 1,
-                    "user": {
-                        "username": "$creator.username",
-                        "display_name": "$creator.display_name",
-                        "profile_picture": "$creator.profile_picture",
-                    },
-                }
-            },
-        ]
+        pipeline = [{"$match": match_conditions}]
+
+        if randomize_feed:
+            pipeline.extend(
+                [
+                    {"$sample": {"size": 100}},
+                    {"$sort": {"created_at": -1}},
+                ]
+            )
+        else:
+            pipeline.append({"$sort": sort_stage})
+
+        pipeline.extend(
+            [
+                {"$skip": skip},
+                {"$limit": limit},
+                {
+                    "$lookup": {
+                        "from": "users",
+                        "localField": "creator_id",
+                        "foreignField": "_id",
+                        "as": "creator",
+                    }
+                },
+                {
+                    "$unwind": {
+                        "path": "$creator",
+                        "preserveNullAndEmptyArrays": True,
+                    }
+                },
+                {
+                    "$project": {
+                        "_id": {"$toString": "$_id"},
+                        "creator_id": {"$toString": "$creator_id"},
+                        "title": 1,
+                        "description": 1,
+                        "views_count": 1,
+                        "likes_count": 1,
+                        "created_at": {
+                            "$dateToString": {
+                                "format": "%Y-%m-%dT%H:%M:%S.%LZ",
+                                "date": "$created_at",
+                            }
+                        },
+                        "thumbnail": "$urls.thumbnail",
+                        "is_active": 1,
+                        "user": {
+                            "username": "$creator.username",
+                            "display_name": "$creator.display_name",
+                            "profile_picture": "$creator.profile_picture",
+                        },
+                    }
+                },
+            ]
+        )
         cursor = db.videos.aggregate(pipeline)
 
     videos = []
