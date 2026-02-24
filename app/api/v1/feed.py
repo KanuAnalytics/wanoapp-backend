@@ -15,6 +15,7 @@ class FeedVideo(BaseModel):
     title: Optional[str]
     description: Optional[str] = None
     thumbnail: Optional[str] = None
+    remoteUrl: Optional[str] = None
     views_count: int
     likes_count: int
     is_ad: bool = False
@@ -242,7 +243,7 @@ async def get_feed(
                 thumbnail=video.get("thumbnail"),
                 views_count=video.get("views_count", 0),
                 likes_count=video.get("likes_count", 0),
-                remoteUrl=video.get("remoteUrl", 0),
+                remoteUrl=video.get("remoteUrl"),
                 is_ad=False,
                 buffered_views=buffered["views"],
                 buffered_likes=buffered["likes"],
