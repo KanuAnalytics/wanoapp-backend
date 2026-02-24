@@ -217,6 +217,7 @@ async def get_feed(
                             "username": "$creator.username",
                             "display_name": "$creator.display_name",
                             "profile_picture": "$creator.profile_picture",
+                            "is_active": "$creator.is_active"
                         },
                     }
                 },
