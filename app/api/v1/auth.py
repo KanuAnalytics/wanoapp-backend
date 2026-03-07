@@ -746,14 +746,14 @@ async def forgot_password(request: ForgotPasswordRequest):
     # Optional: simple rate limiting to prevent abuse
     now = datetime.now(timezone.utc)
     cooldown_minutes = 1
-    last_requested = user.get("password_reset_requested_at")
+    last_requested = _as_utc(user.get("password_reset_requested_at"))
     if last_requested and isinstance(last_requested, datetime):
         earliest_next = last_requested + timedelta(minutes=cooldown_minutes)
         if earliest_next > now:
             # Too many requests
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=f"Please wait a few minutes before requesting another OTP"
+                detail="Please wait a few minutes before requesting another OTP"
             )
 
     use_whatsapp = False
@@ -782,7 +782,7 @@ async def forgot_password(request: ForgotPasswordRequest):
                 username=user["username"]
             )
         except Exception:
-            logging.exception("Error while sending password reset OTP")
+            logger.exception("Error while sending password reset OTP")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to send OTP email"
