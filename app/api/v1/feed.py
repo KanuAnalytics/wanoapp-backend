@@ -16,6 +16,7 @@ class FeedVideo(BaseModel):
     description: Optional[str] = None
     thumbnail: Optional[str] = None
     remoteUrl: Optional[str] = None
+    remoteUrl_CF: Optional[str] = None
     views_count: int
     likes_count: int
     is_ad: bool = False
@@ -24,6 +25,7 @@ class FeedVideo(BaseModel):
     buffered_likes: int = 0
     user: dict = {}
     has_liked: bool = False
+    is_bookmarked: bool = False
     is_following: bool = False
 
 
@@ -42,6 +44,7 @@ async def get_feed(
 
     user_doc = None
     liked_video_ids = set()
+    bookmarked_video_ids = set()
     blocked_users = []
     blocked_by = []
     following_ids = set()
@@ -51,6 +54,7 @@ async def get_feed(
             {"_id": ObjectId(current_user)},
             {
                 "liked_videos": 1,
+                "bookmarked_videos": 1,
                 "blocked_users": 1,
                 "blocked_by": 1,
                 "following": 1,
@@ -59,6 +63,7 @@ async def get_feed(
         ) or {}
 
         liked_video_ids = set(str(v) for v in user_doc.get("liked_videos", []))
+        bookmarked_video_ids = set(str(v) for v in user_doc.get("bookmarked_videos", []))
         blocked_users = user_doc.get("blocked_users", [])
         blocked_by = user_doc.get("blocked_by", [])
         following_ids = set(str(v) for v in user_doc.get("following", []))
@@ -186,6 +191,7 @@ async def get_feed(
                     "title": 1,
                     "description": 1,
                     "remoteUrl": 1,
+                    "remoteUrl_CF": 1,
                     "views_count": 1,
                     "likes_count": 1,
                     "created_at": {
@@ -214,6 +220,7 @@ async def get_feed(
         video = doc.get("videos", doc) if saved else doc
         video_id = str(video["_id"])
         has_liked = video_id in liked_video_ids
+        is_bookmarked = video_id in bookmarked_video_ids
         is_following = str(video["creator_id"]) in following_ids
         # Get buffered counts
         buffered = await metrics_buffer.get_buffered_counts(video_id)
@@ -228,11 +235,13 @@ async def get_feed(
                 views_count=video.get("views_count", 0),
                 likes_count=video.get("likes_count", 0),
                 remoteUrl=video.get("remoteUrl"),
+                remoteUrl_CF=video.get("remoteUrl_CF"),
                 is_ad=False,
                 buffered_views=buffered["views"],
                 buffered_likes=buffered["likes"],
                 user=user_info,
                 has_liked=has_liked,
+                is_bookmarked=is_bookmarked,
                 is_following=is_following,
             )
         )
