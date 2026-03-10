@@ -1,6 +1,7 @@
 ﻿# WanoApp Backend
 
 Backend API for WanoApp - A localized video sharing platform for African markets.
+#deploy test
 
 ## Tech Stack
 - FastAPI
