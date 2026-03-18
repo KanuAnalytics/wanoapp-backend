@@ -19,6 +19,7 @@ class FeedVideo(BaseModel):
     remoteUrl_CF: Optional[str] = None
     views_count: int
     likes_count: int
+    comments_count: int = 0
     is_ad: bool = False
     # Include buffered counts
     buffered_views: int = 0
@@ -35,6 +36,7 @@ async def get_feed(
     skip: int = 0,
     limit: int = 20,
     user_id: Optional[str] = None,
+    video_id: Optional[str] = None,
     saved: bool = False,
     exclude_following: bool = False,
     sorted_by: Optional[str] = None,
@@ -194,6 +196,7 @@ async def get_feed(
                     "remoteUrl_CF": 1,
                     "views_count": 1,
                     "likes_count": 1,
+                    "comments_count": 1,
                     "created_at": {
                         "$dateToString": {
                             "format": "%Y-%m-%dT%H:%M:%S.%LZ",
@@ -218,22 +221,23 @@ async def get_feed(
     async for doc in cursor:
         # For saved videos, video data is in doc["videos"], otherwise it's directly in doc
         video = doc.get("videos", doc) if saved else doc
-        video_id = str(video["_id"])
-        has_liked = video_id in liked_video_ids
-        is_bookmarked = video_id in bookmarked_video_ids
+        feed_video_id = str(video["_id"])
+        has_liked = feed_video_id in liked_video_ids
+        is_bookmarked = feed_video_id in bookmarked_video_ids
         is_following = str(video["creator_id"]) in following_ids
         # Get buffered counts
-        buffered = await metrics_buffer.get_buffered_counts(video_id)
+        buffered = await metrics_buffer.get_buffered_counts(feed_video_id)
         user_info = video.get("user", {})
         videos.append(
             FeedVideo(
-                id=video_id,
+                id=feed_video_id,
                 creator_id=str(video["creator_id"]),
                 title=video.get("title"),
                 description=video.get("description"),
                 thumbnail=video.get("thumbnail"),
                 views_count=video.get("views_count", 0),
                 likes_count=video.get("likes_count", 0),
+                comments_count=video.get("comments_count", 0),
                 remoteUrl=video.get("remoteUrl"),
                 remoteUrl_CF=video.get("remoteUrl_CF"),
                 is_ad=False,
@@ -245,6 +249,96 @@ async def get_feed(
                 is_following=is_following,
             )
         )
+
+    if video_id and skip == 0:
+        if not ObjectId.is_valid(video_id):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid video_id format",
+            )
+
+        featured_pipeline = [
+            {
+                "$match": {
+                    "_id": ObjectId(video_id),
+                    "is_active": True,
+                    "$or": [
+                        {"isReadyToStream": True},
+                        {"isReadyToStream": {"$exists": False}},
+                    ],
+                }
+            },
+            {
+                "$lookup": {
+                    "from": "users",
+                    "localField": "creator_id",
+                    "foreignField": "_id",
+                    "as": "creator",
+                }
+            },
+            {
+                "$unwind": {
+                    "path": "$creator",
+                    "preserveNullAndEmptyArrays": True,
+                }
+            },
+            {
+                "$project": {
+                    "_id": {"$toString": "$_id"},
+                    "creator_id": {"$toString": "$creator_id"},
+                    "title": 1,
+                    "description": 1,
+                    "remoteUrl": 1,
+                    "remoteUrl_CF": 1,
+                    "views_count": 1,
+                    "likes_count": 1,
+                    "comments_count": 1,
+                    "thumbnail": "$urls.thumbnail",
+                    "privacy": 1,
+                    "user": {
+                        "username": "$creator.username",
+                        "display_name": "$creator.display_name",
+                        "profile_picture": "$creator.profile_picture",
+                        "is_active": "$creator.is_active",
+                    },
+                }
+            },
+        ]
+
+        featured_doc = await db.videos.aggregate(featured_pipeline).to_list(length=1)
+        if featured_doc:
+            featured = featured_doc[0]
+            if featured.get("privacy") == "public" or (
+                current_user and str(featured.get("creator_id")) == current_user
+            ):
+                featured_id = str(featured["_id"])
+                buffered = await metrics_buffer.get_buffered_counts(featured_id)
+
+                videos = [v for v in videos if v.id != featured_id]
+                videos.insert(
+                    0,
+                    FeedVideo(
+                        id=featured_id,
+                        creator_id=str(featured["creator_id"]),
+                        title=featured.get("title"),
+                        description=featured.get("description"),
+                        thumbnail=featured.get("thumbnail"),
+                        views_count=featured.get("views_count", 0),
+                        likes_count=featured.get("likes_count", 0),
+                        comments_count=featured.get("comments_count", 0),
+                        remoteUrl=featured.get("remoteUrl"),
+                        remoteUrl_CF=featured.get("remoteUrl_CF"),
+                        is_ad=False,
+                        buffered_views=buffered["views"],
+                        buffered_likes=buffered["likes"],
+                        user=featured.get("user", {}),
+                        has_liked=featured_id in liked_video_ids,
+                        is_bookmarked=featured_id in bookmarked_video_ids,
+                        is_following=str(featured["creator_id"]) in following_ids,
+                    ),
+                )
+                if len(videos) > limit:
+                    videos = videos[:limit]
 
     # Insert ads (1:20 ratio) - only for personalized feed, not for specific user videos or saved videos
     if not user_id and not saved and len(videos) >= 20:
