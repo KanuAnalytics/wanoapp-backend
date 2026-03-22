@@ -294,14 +294,6 @@ async def request_registration_otp(request: RequestRegistrationOtpRequest):
     """
     db = get_database()
 
-    if request.username:
-        existing_username = await db.users.find_one({"username": request.username})
-        if existing_username:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Username already taken"
-            )
-
     now = datetime.now(timezone.utc)
     expiry_minutes = 10
     cooldown_minutes = 0.5
@@ -341,7 +333,7 @@ async def request_registration_otp(request: RequestRegistrationOtpRequest):
         try:
             email_ok, otp = await email_service.send_registration_otp(
                 to_email=request.email,
-                username=request.username
+                username=request.username or request.email,
             )
         except Exception:
             logger.exception("Error while sending registration OTP")
