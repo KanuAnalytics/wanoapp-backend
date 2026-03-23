@@ -764,14 +764,19 @@ async def forgot_password(request: ForgotPasswordRequest):
     # Optional: simple rate limiting to prevent abuse
     now = datetime.now(timezone.utc)
     cooldown_minutes = 1
+
     last_requested = user.get("password_reset_requested_at")
+
     if last_requested and isinstance(last_requested, datetime):
+        if last_requested.tzinfo is None:
+            last_requested = last_requested.replace(tzinfo=timezone.utc)
+
         earliest_next = last_requested + timedelta(minutes=cooldown_minutes)
+
         if earliest_next > now:
-            # Too many requests
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=f"Please wait a few minutes before requesting another OTP"
+                detail="Please wait a few minutes before requesting another OTP"
             )
 
     use_whatsapp = False
