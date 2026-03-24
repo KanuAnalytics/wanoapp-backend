@@ -91,6 +91,11 @@ class Settings(BaseSettings):
     AWS_SECRET_ACCESS_KEY: str
     SQS_VIDEO_QUEUE_URL: str
     
+    #google-sign
+    GOOGLE_WEB_CLIENT_ID:str
+    GOOGLE_IOS_CLIENT_ID:str
+    GOOGLE_ANDROID_CLIENT_ID:str
+    
     class Config:
         env_file = ".env"
         case_sensitive = True

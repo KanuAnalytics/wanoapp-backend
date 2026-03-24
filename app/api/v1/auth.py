@@ -13,6 +13,7 @@ from jose import jwt
 from app.core.config import settings
 from app.core.database import get_database
 from app.core.security import verify_password, get_password_hash, create_access_token, create_verification_token
+from app.services.auth.google_auth import generate_unique_username, verify_google_token
 from app.services.email_service import email_service
 from app.services.twilio_whatsapp_service import twilio_whatsapp_service, TwilioWhatsAppServiceError
 from pydantic import BaseModel, EmailStr, validator, Field
@@ -82,6 +83,9 @@ class ResetPasswordRequest(BaseModel):
     username_or_email: str = Field(..., min_length=3, max_length=100)
     otp: str = Field(..., min_length=6, max_length=6)
     new_password: str = Field(..., min_length=6, max_length=128)
+
+class GoogleLoginRequest(BaseModel):
+    id_token: str
 
 
 class RegisterRequest(BaseModel):
@@ -565,6 +569,133 @@ async def login_json(login_data: LoginRequest):
         "user_type": user.get("user_type")
     }
 
+
+
+@router.post("/google-login")
+async def google_login(data: GoogleLoginRequest):
+    db = get_database()
+
+    # 🔥 1. Verify token
+    google_data = await verify_google_token(data.id_token)
+    
+    print("token verified?", google_data)
+
+    email = google_data.get("email")
+    name = google_data.get("name") or email.split("@")[0]
+    google_id = google_data.get("sub")
+
+    if not email:
+        raise HTTPException(
+            status_code=400,
+            detail="Google account has no email"
+        )
+
+    # 🔥 2. Find existing user
+    user = await db.users.find_one({
+        "$or": [
+            {"email": email},
+            {"google_id": google_id}
+        ]
+    })
+    print("user Found ??", user)
+
+    # 🔥 3. If new user → create (aligned with your schema)
+    if not user:
+
+        username = await generate_unique_username(
+            db,
+            email.split("@")[0]
+        )
+        
+        print("Creating new user", username)
+
+        user_doc = {
+            "username": username,
+            "email": email,
+            "phone_number": None,
+            "display_name": name,
+
+            # 🔥 IMPORTANT: no password for Google users
+            "password_hash": None,
+
+            "google_id": google_id,
+            "auth_provider": "google",
+
+            "user_type": "standard",
+
+            # 🔥 Required fields from your system
+            "localization": {
+                "country": "unknown",
+                "language": "en"
+            },
+
+            "created_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc),
+
+            "is_active": True,
+            "is_verified": True,  # Google = verified
+
+            # 🔥 No verification needed
+            "verification_token": None,
+            "verification_token_expires": None,
+            "verified_at": datetime.now(timezone.utc),
+
+            # 🔥 Default stats
+            "followers_count": 0,
+            "following_count": 0,
+            "videos_count": 0,
+            "likes_count": 0,
+
+            "features": {},
+            "video_upload_limit": 90,
+            "can_upload_music": False,
+            "can_create_ads": False,
+            "theme": None,
+
+            "bookmarked_videos": [],
+            "liked_videos": [],
+            "following": [],
+            "followers": [],
+
+            "gender": None,
+            "date_of_birth": None,
+            "tags": [],
+            "bio": None,
+            "profile_picture": google_data.get("picture"),
+            "cover_picture": None
+        }
+
+        result = await db.users.insert_one(user_doc)
+        user = await db.users.find_one({"_id": result.inserted_id})
+
+    # 🔥 4. Link google_id if missing
+    if user and not user.get("google_id"):
+        
+        print("linking user", user)
+        await db.users.update_one(
+            {"_id": user["_id"]},
+            {"$set": {"google_id": google_id}}
+        )
+
+    # 🔥 5. Create JWT (same as your login)
+    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+
+    access_token = create_access_token(
+        data={"sub": str(user["_id"])},
+        expires_delta=access_token_expires
+    )
+    
+    print("access toke: ",access_token)
+
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user_id": str(user["_id"]),
+        "username": user["username"],
+        "is_verified": True,
+        "user_type": user.get("user_type", "standard"),
+        "is_new_user": False  # optional
+    }
 # @router.post("/register")
 # async def register(
 #     username: str,
