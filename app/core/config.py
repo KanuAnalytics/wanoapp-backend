@@ -1,4 +1,4 @@
-﻿"""
+"""
 
 app/core/config.py
 

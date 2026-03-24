@@ -1,37 +1,42 @@
 from typing import List, Optional
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from app.core.database import get_database
-from app.api.deps import get_current_active_user
+from app.api.deps import get_optional_active_user
 from app.services.metrics_service import metrics_buffer
 from pydantic import BaseModel
 from bson import ObjectId
 import random
 
 router = APIRouter()
-
+#deploy
 class FeedVideo(BaseModel):
     id: str
     creator_id: str
     title: Optional[str]
     description: Optional[str] = None
     thumbnail: Optional[str] = None
+    remoteUrl: Optional[str] = None
+    remoteUrl_CF: Optional[str] = None
     views_count: int
     likes_count: int
+    comments_count: int = 0
     is_ad: bool = False
     # Include buffered counts
     buffered_views: int = 0
     buffered_likes: int = 0
     user: dict = {}
     has_liked: bool = False
+    is_bookmarked: bool = False
     is_following: bool = False
 
 
 @router.get("/", response_model=List[FeedVideo])
 async def get_feed(
-    current_user: str = Depends(get_current_active_user),
+    current_user: Optional[str] = Depends(get_optional_active_user),
     skip: int = 0,
     limit: int = 20,
     user_id: Optional[str] = None,
+    video_id: Optional[str] = None,
     saved: bool = False,
     exclude_following: bool = False,
     sorted_by: Optional[str] = None,
@@ -39,24 +44,39 @@ async def get_feed(
     """Get personalized video feed, videos from a specific user, or saved videos"""
     db = get_database()
 
-    user_doc = await db.users.find_one(
-        {"_id": ObjectId(current_user)},
-        {
-            "liked_videos": 1,
-            "blocked_users": 1,
-            "blocked_by": 1,
-            "following": 1,
-            "localization": 1,
-        },
-    )
+    user_doc = None
+    liked_video_ids = set()
+    bookmarked_video_ids = set()
+    blocked_users = []
+    blocked_by = []
+    following_ids = set()
 
-    liked_video_ids = set(str(v) for v in user_doc.get("liked_videos", []))
-    blocked_users = user_doc.get("blocked_users", [])
-    blocked_by = user_doc.get("blocked_by", [])
-    following_ids = set(str(v) for v in user_doc.get("following", []))
+    if current_user:
+        user_doc = await db.users.find_one(
+            {"_id": ObjectId(current_user)},
+            {
+                "liked_videos": 1,
+                "bookmarked_videos": 1,
+                "blocked_users": 1,
+                "blocked_by": 1,
+                "following": 1,
+                "localization": 1,
+            },
+        ) or {}
+
+        liked_video_ids = set(str(v) for v in user_doc.get("liked_videos", []))
+        bookmarked_video_ids = set(str(v) for v in user_doc.get("bookmarked_videos", []))
+        blocked_users = user_doc.get("blocked_users", [])
+        blocked_by = user_doc.get("blocked_by", [])
+        following_ids = set(str(v) for v in user_doc.get("following", []))
 
     # Single unified pipeline that handles all scenarios
     if saved:
+        if not current_user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required to access saved videos",
+            )
         # For saved videos, start from users collection
         target_user_id = user_id if user_id else current_user
         pipeline = [
@@ -108,16 +128,15 @@ async def get_feed(
                     "privacy": "public",
                 }
             )
-        else:
+        elif current_user:
             # Get personalized feed
-            user = await db.users.find_one({"_id": ObjectId(current_user)})
             exclude_creator_ids = []
             if exclude_following:
-                user_following_ids = user.get("following", [])
+                user_following_ids = user_doc.get("following", []) if user_doc else []
                 if user_following_ids:
                     exclude_creator_ids = [ObjectId(uid) for uid in user_following_ids]
-            user_country = user.get("localization", {}).get("country", "NG")
-            user_languages = user.get("localization", {}).get("languages", ["en"])
+            user_country = (user_doc or {}).get("localization", {}).get("country", "NG")
+            user_languages = (user_doc or {}).get("localization", {}).get("languages", ["en"])
 
             match_conditions.update(
                 {
@@ -138,13 +157,16 @@ async def get_feed(
                     **match_conditions.get("creator_id", {}),
                     "$nin": list(exclude_ids),
                 }
+        else:
+            # Anonymous feed: show public, active videos only
+            match_conditions.update(
+                {
+                    "privacy": "public",
+                }
+            )
 
-        # 🔥 Direct sort: use the string from `sorted_by` as the field
-        # Default: newest first (created_at descending)
         sort_stage = {sorted_by: -1} if sorted_by else {"created_at": -1}
         
-        print("Match conditions:", match_conditions)
-
         pipeline = [
             {"$match": match_conditions},
             {"$sort": sort_stage},
@@ -170,8 +192,11 @@ async def get_feed(
                     "creator_id": {"$toString": "$creator_id"},
                     "title": 1,
                     "description": 1,
+                    "remoteUrl": 1,
+                    "remoteUrl_CF": 1,
                     "views_count": 1,
                     "likes_count": 1,
+                    "comments_count": 1,
                     "created_at": {
                         "$dateToString": {
                             "format": "%Y-%m-%dT%H:%M:%S.%LZ",
@@ -184,39 +209,136 @@ async def get_feed(
                         "username": "$creator.username",
                         "display_name": "$creator.display_name",
                         "profile_picture": "$creator.profile_picture",
+                        "is_active": "$creator.is_active"
                     },
                 }
             },
         ]
+
         cursor = db.videos.aggregate(pipeline)
 
     videos = []
     async for doc in cursor:
         # For saved videos, video data is in doc["videos"], otherwise it's directly in doc
         video = doc.get("videos", doc) if saved else doc
-        video_id = str(video["_id"])
-        has_liked = video_id in liked_video_ids
+        feed_video_id = str(video["_id"])
+        has_liked = feed_video_id in liked_video_ids
+        is_bookmarked = feed_video_id in bookmarked_video_ids
         is_following = str(video["creator_id"]) in following_ids
         # Get buffered counts
-        buffered = await metrics_buffer.get_buffered_counts(video_id)
+        buffered = await metrics_buffer.get_buffered_counts(feed_video_id)
         user_info = video.get("user", {})
         videos.append(
             FeedVideo(
-                id=video_id,
+                id=feed_video_id,
                 creator_id=str(video["creator_id"]),
                 title=video.get("title"),
                 description=video.get("description"),
                 thumbnail=video.get("thumbnail"),
                 views_count=video.get("views_count", 0),
                 likes_count=video.get("likes_count", 0),
+                comments_count=video.get("comments_count", 0),
+                remoteUrl=video.get("remoteUrl"),
+                remoteUrl_CF=video.get("remoteUrl_CF"),
                 is_ad=False,
                 buffered_views=buffered["views"],
                 buffered_likes=buffered["likes"],
                 user=user_info,
                 has_liked=has_liked,
+                is_bookmarked=is_bookmarked,
                 is_following=is_following,
             )
         )
+
+    if video_id and skip == 0:
+        if not ObjectId.is_valid(video_id):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid video_id format",
+            )
+
+        featured_pipeline = [
+            {
+                "$match": {
+                    "_id": ObjectId(video_id),
+                    "is_active": True,
+                    "$or": [
+                        {"isReadyToStream": True},
+                        {"isReadyToStream": {"$exists": False}},
+                    ],
+                }
+            },
+            {
+                "$lookup": {
+                    "from": "users",
+                    "localField": "creator_id",
+                    "foreignField": "_id",
+                    "as": "creator",
+                }
+            },
+            {
+                "$unwind": {
+                    "path": "$creator",
+                    "preserveNullAndEmptyArrays": True,
+                }
+            },
+            {
+                "$project": {
+                    "_id": {"$toString": "$_id"},
+                    "creator_id": {"$toString": "$creator_id"},
+                    "title": 1,
+                    "description": 1,
+                    "remoteUrl": 1,
+                    "remoteUrl_CF": 1,
+                    "views_count": 1,
+                    "likes_count": 1,
+                    "comments_count": 1,
+                    "thumbnail": "$urls.thumbnail",
+                    "privacy": 1,
+                    "user": {
+                        "username": "$creator.username",
+                        "display_name": "$creator.display_name",
+                        "profile_picture": "$creator.profile_picture",
+                        "is_active": "$creator.is_active",
+                    },
+                }
+            },
+        ]
+
+        featured_doc = await db.videos.aggregate(featured_pipeline).to_list(length=1)
+        if featured_doc:
+            featured = featured_doc[0]
+            if featured.get("privacy") == "public" or (
+                current_user and str(featured.get("creator_id")) == current_user
+            ):
+                featured_id = str(featured["_id"])
+                buffered = await metrics_buffer.get_buffered_counts(featured_id)
+
+                videos = [v for v in videos if v.id != featured_id]
+                videos.insert(
+                    0,
+                    FeedVideo(
+                        id=featured_id,
+                        creator_id=str(featured["creator_id"]),
+                        title=featured.get("title"),
+                        description=featured.get("description"),
+                        thumbnail=featured.get("thumbnail"),
+                        views_count=featured.get("views_count", 0),
+                        likes_count=featured.get("likes_count", 0),
+                        comments_count=featured.get("comments_count", 0),
+                        remoteUrl=featured.get("remoteUrl"),
+                        remoteUrl_CF=featured.get("remoteUrl_CF"),
+                        is_ad=False,
+                        buffered_views=buffered["views"],
+                        buffered_likes=buffered["likes"],
+                        user=featured.get("user", {}),
+                        has_liked=featured_id in liked_video_ids,
+                        is_bookmarked=featured_id in bookmarked_video_ids,
+                        is_following=str(featured["creator_id"]) in following_ids,
+                    ),
+                )
+                if len(videos) > limit:
+                    videos = videos[:limit]
 
     # Insert ads (1:20 ratio) - only for personalized feed, not for specific user videos or saved videos
     if not user_id and not saved and len(videos) >= 20:
