@@ -216,7 +216,7 @@ def generate_stream_direct_upload_url(filename: str, folder: str = "videos"):
     # Docs: you can send e.g. {"maxDurationSeconds": 3600, "expiry": "2025-01-01T00:00:00Z"} etc.
     # We'll keep it minimal.
     payload = {
-        "maxDurationSeconds": 210,
+        "maxDurationSeconds": 330,
         "meta": {
             "name": video_name,
         },
