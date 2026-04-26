@@ -8,6 +8,8 @@ router = APIRouter()
 
 class VersionResponse(BaseModel):
     appVersionNumber: str
+    showReviewAndroid: bool = False
+    showReviewIos: bool = False
 
 
 @router.get("/version", response_model=VersionResponse)
@@ -17,7 +19,7 @@ async def get_app_version():
 
     doc = await db.config.find_one(
         {},
-        projection={"appVersionNumber": 1},
+        projection={"appVersionNumber": 1, "showReviewAndroid": 1, "showReviewIos": 1},
         sort=[("_id", -1)],
     )
 
@@ -27,4 +29,8 @@ async def get_app_version():
     raw_version = doc.get("appVersionNumber")
     normalized_version = raw_version.strip('"') if isinstance(raw_version, str) else str(raw_version)
 
-    return VersionResponse(appVersionNumber=normalized_version)
+    return VersionResponse(
+        appVersionNumber=normalized_version,
+        showReviewAndroid=doc.get("showReviewAndroid", False),
+        showReviewIos=doc.get("showReviewIos", False),
+    )
