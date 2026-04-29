@@ -53,6 +53,11 @@ class UserBase(BaseModel):
     videos_count: int = Field(default=0, ge=0)
     likes_count: int = Field(default=0, ge=0)
     
+    # Socials
+    facebook_username: Optional[str] = None
+    instagram_username: Optional[str] = None
+    tiktok_username: Optional[str] = None
+    
     # New fields for blocking functionality
     blocked_users: List[PyObjectId] = Field(
         default_factory=list, description="Users that this user has blocked"
