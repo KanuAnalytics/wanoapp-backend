@@ -697,7 +697,7 @@ def block_user(
             detail="Error blocking user"
         )
         
-@router.post('/unblock_user/{target_user}', status_code=status.HTTP_204_NO_CONTENT)
+@router.get('/unblock_user/{target_user}', status_code=status.HTTP_204_NO_CONTENT)
 def unblock_user(
     target_user: str,
     current_user: str = Depends(get_current_active_user)):
@@ -731,6 +731,88 @@ def unblock_user(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error unblocking user"
         )
+        
+@router.get("/{user_id}/private-videos")
+async def get_user_private_videos(
+    user_id: str,
+    current_user: str = Depends(get_current_active_user)
+):
+    db = get_database()
+
+    # 🔐 Validate ObjectId
+    if not ObjectId.is_valid(user_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid user ID format"
+        )
+
+    # 🔒 Auth check
+    if current_user != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to view private videos"
+        )
+
+    # ✅ Fetch private videos
+    videos_cursor = db.videos.find(
+        {
+            "creator_id": ObjectId(user_id),
+            "privacy": "private",
+            "is_active": True,
+            "$and": [
+                {
+                    "$or": [
+                        {"isReadyToStream": True},
+                        {"isReadyToStream": {"$exists": False}}
+                    ]
+                }
+            ]
+        }
+    ).sort("created_at", -1)
+
+    private_videos = []
+
+    async for video in videos_cursor:
+        private_videos.append({
+            "_id": str(video["_id"]),
+            "creator_id": str(video["creator_id"]),
+            "title": video.get("title"),
+            "description": video.get("description"),
+            "video_type": video.get("video_type"),
+            "privacy": video.get("privacy"),
+            "isReadyToStream": video.get("isReadyToStream"),
+            "metadata": video.get("metadata"),
+            "urls": video.get("urls"),
+            "categoryId": video.get("categoryId"),
+            "subcategoryId": video.get("subcategoryId"),
+            "start": video.get("start"),
+            "end": video.get("end"),
+            "duration": video.get("duration"),
+            "type": video.get("type"),
+            "hashtags": video.get("hashtags", []),
+            "categories": video.get("categories", []),
+            "remix_enabled": video.get("remix_enabled"),
+            "comments_enabled": video.get("comments_enabled"),
+            "created_at": video.get("created_at"),
+            "updated_at": video.get("updated_at"),
+            "is_active": video.get("is_active"),
+            "views_count": video.get("views_count"),
+            "likes_count": video.get("likes_count"),
+            "comments_count": video.get("comments_count"),
+            "shares_count": video.get("shares_count"),
+            "bookmarks_count": video.get("bookmarks_count"),
+            "is_approved": video.get("is_approved"),
+            "is_flagged": video.get("is_flagged"),
+            "report_count": video.get("report_count"),
+            "is_remix": video.get("is_remix"),
+            "remix_count": video.get("remix_count"),
+            "country": video.get("country"),
+            "language": video.get("language"),
+        })
+
+    return {
+        "private_videos": private_videos
+    }
 
 @router.get("/{user_id}/complete", response_model=UserWithDetailsResponse)
 async def get_user_complete(
