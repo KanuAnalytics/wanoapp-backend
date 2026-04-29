@@ -158,6 +158,10 @@ class CompleteUserResponse(BaseModel):
     following: List[str] = Field(default_factory=list)
     followers: List[str] = Field(default_factory=list)
     
+    facebook_username: Optional[str] = None
+    instagram_username: Optional[str] = None
+    tiktok_username: Optional[str] = None
+    
     # Timestamps
     created_at: datetime
     updated_at: datetime
@@ -199,6 +203,9 @@ class UserUpdate(BaseModel):
     gender: Optional[str] = None
     date_of_birth: Optional[datetime] = None
     tags: Optional[List[str]] = None
+    facebook_username: Optional[str] = None
+    instagram_username: Optional[str] = None
+    tiktok_username: Optional[str] = None
 
 class UserResponse(BaseModel):
     id: str = Field(alias="_id")
@@ -218,6 +225,9 @@ class UserResponse(BaseModel):
     tags: List[str] = Field(default_factory=list)
     profile_picture: Optional[str] = None
     cover_picture: Optional[str] = None
+    facebook_username: Optional[str] = None
+    instagram_username: Optional[str] = None
+    tiktok_username: Optional[str] = None
     
     class Config:
         populate_by_name = True
