@@ -95,10 +95,13 @@ async def post_video(
         db = get_database()
         user = await db.users.find_one({"_id": ObjectId(current_user)})
         
+        description = (input.description or "").strip()
+        hashtags = re.findall(r"#(\w+)", description)
+
         video_doc = {
             "creator_id": ObjectId(current_user),
             "title": input.title,  # Can be updated later by user
-            "description": input.description,
+            "description": description,
             "video_type": "regular",
             "privacy": input.privacy,
             "isReadyToStream": input.isReadyToStream,
@@ -126,7 +129,7 @@ async def post_video(
             "remoteUrl_CF":input.remoteUrl_CF,
             "type": 'video',
             # Standard fields
-            "hashtags": [],
+            "hashtags": hashtags,
             "categories": [],
             "remix_enabled": True,
             "comments_enabled": input.comments_enabled,
