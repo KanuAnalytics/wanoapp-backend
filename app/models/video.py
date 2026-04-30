@@ -84,6 +84,7 @@ class Video(BaseDocument):
     report_count: int = Field(default=0, ge=0)
 
 
+    supports_landscape: bool = Field(default=False)
     FEid: Optional[str] = None
     start: float = Field(default=0.0)
     end: Optional[float] = None  # Will be set to duration if not specified
