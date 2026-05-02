@@ -38,6 +38,9 @@ pillow==10.1.0
 # HTTP client
 httpx==0.25.2
 
+# Recombee
+recombee-api-client==6.2.0
+
 # Validation
 email-validator==2.1.0
 phonenumbers==8.13.26
