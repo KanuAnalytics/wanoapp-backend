@@ -18,7 +18,7 @@ import re
 import json
 from bson.json_util import dumps
 from app.models.user import UserType
-from recombee_api_client.api_requests import AddDetailView, AddRating, DeleteRating, AddBookmark, DeleteBookmark
+from recombee_api_client.api_requests import AddDetailView, AddRating, DeleteRating, AddBookmark, DeleteBookmark, SetItemValues, Batch
 from app.services.recombee_service import recombee_client
 
 router = APIRouter()
@@ -161,7 +161,31 @@ async def post_video(
             {"$inc": {"videos_count": 1}}
         )
         
-        # This is a placeholder implementation
+        try:
+            item_id = str(result.inserted_id)
+            values = {
+                "creator_id": str(video_doc["creator_id"]),
+                "description": video_doc.get("description") or "",
+                "video_type": video_doc.get("video_type") or "",
+                "duration": float(video_doc.get("duration") or 0.0),
+                "thumbnail": video_doc.get("urls", {}).get("thumbnail") or "",
+                "views_count": 0,
+                "likes_count": 0,
+                "comments_count": 0,
+                "bookmarks_count": 0,
+                "hashtags": video_doc.get("hashtags") or [],
+                "is_active": True,
+                "supports_landscape": bool(video_doc.get("supports_landscape", False)),
+                "privacy": video_doc.get("privacy") or "public",
+                "created_at": video_doc["created_at"].isoformat(),
+            }
+            req = SetItemValues(item_id, values, cascade_create=True)
+            req.timeout = 10000
+            recombee_client.send(req)
+            await db.videos.update_one({"_id": result.inserted_id}, {"$set": {"recombee": True}})
+        except Exception:
+            pass
+
         return {"message": "Video posted successfully", "video_id": str(result.inserted_id)}
     except Exception as e:
         raise HTTPException(
