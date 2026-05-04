@@ -18,6 +18,9 @@ import re
 import json
 from bson.json_util import dumps
 from app.models.user import UserType
+from app.core.config import settings
+from recombee_api_client.api_client import RecombeeClient, Region
+from recombee_api_client.api_requests import AddDetailView
 
 router = APIRouter()
 
@@ -329,6 +332,15 @@ async def get_video(
     
     # Increment view count in buffer
     await metrics_buffer.increment_view(video_id)
+
+    if current_user:
+        try:
+            recombee_client = RecombeeClient(settings.RECOMBEE_DB_ID, settings.RECOMBEE_PRIVATE_TOKEN, region=Region.US_WEST)
+            req = AddDetailView(current_user, video_id, cascade_create=True)
+            req.timeout = 5000
+            recombee_client.send(req)
+        except Exception:
+            pass
     
     # Get buffered counts for immediate display
     buffered = await metrics_buffer.get_buffered_counts(video_id)
