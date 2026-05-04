@@ -18,6 +18,8 @@ import re
 import json
 from bson.json_util import dumps
 from app.models.user import UserType
+from recombee_api_client.api_requests import AddDetailView, AddRating, DeleteRating, AddBookmark, DeleteBookmark, SetItemValues, Batch
+from app.services.recombee_service import recombee_client
 
 router = APIRouter()
 
@@ -159,7 +161,31 @@ async def post_video(
             {"$inc": {"videos_count": 1}}
         )
         
-        # This is a placeholder implementation
+        try:
+            item_id = str(result.inserted_id)
+            values = {
+                "creator_id": str(video_doc["creator_id"]),
+                "description": video_doc.get("description") or "",
+                "video_type": video_doc.get("video_type") or "",
+                "duration": float(video_doc.get("duration") or 0.0),
+                "thumbnail": video_doc.get("urls", {}).get("thumbnail") or "",
+                "views_count": 0,
+                "likes_count": 0,
+                "comments_count": 0,
+                "bookmarks_count": 0,
+                "hashtags": video_doc.get("hashtags") or [],
+                "is_active": True,
+                "supports_landscape": bool(video_doc.get("supports_landscape", False)),
+                "privacy": video_doc.get("privacy") or "public",
+                "created_at": video_doc["created_at"].isoformat(),
+            }
+            req = SetItemValues(item_id, values, cascade_create=True)
+            req.timeout = 10000
+            recombee_client.send(req)
+            await db.videos.update_one({"_id": result.inserted_id}, {"$set": {"recombee": True}})
+        except Exception:
+            pass
+
         return {"message": "Video posted successfully", "video_id": str(result.inserted_id)}
     except Exception as e:
         raise HTTPException(
@@ -329,6 +355,15 @@ async def get_video(
     
     # Increment view count in buffer
     await metrics_buffer.increment_view(video_id)
+
+    if current_user:
+        try:
+
+            req = AddDetailView(current_user, video_id, cascade_create=True)
+            req.timeout = 5000
+            recombee_client.send(req)
+        except Exception:
+            pass
     
     # Get buffered counts for immediate display
     buffered = await metrics_buffer.get_buffered_counts(video_id)
@@ -556,6 +591,13 @@ async def like_video(
                 thumbnail_url,
             )
     
+    try:
+        req = AddRating(current_user, video_id, rating=1.0, cascade_create=True)
+        req.timeout = 5000
+        recombee_client.send(req)
+    except Exception:
+        pass
+
     return {
         "message": "Video liked successfully",
         "current_likes": buffered["likes"]
@@ -577,10 +619,17 @@ async def unlike_video(
     
     # Decrement like count in buffer
     await metrics_buffer.decrement_like(video_id)
-    
+
     # Get current buffered count for response
     buffered = await metrics_buffer.get_buffered_counts(video_id)
-    
+
+    try:
+        req = DeleteRating(current_user, video_id)
+        req.timeout = 5000
+        recombee_client.send(req)
+    except Exception:
+        pass
+
     return {
         "message": "Video unliked successfully",
         "current_likes": buffered["likes"]
@@ -635,6 +684,13 @@ async def bookmark_video(
                     thumbnail_url,
                 )
     
+    try:
+        req = AddBookmark(current_user, video_id, cascade_create=True)
+        req.timeout = 5000
+        recombee_client.send(req)
+    except Exception:
+        pass
+
     return {"message": "Video bookmarked successfully"}
 
 @router.delete("/{video_id}/bookmark", status_code=status.HTTP_200_OK)
@@ -657,4 +713,11 @@ async def unbookmark_video(
         {"$inc": {"bookmarks_count": -1}}
     )
     
+    try:
+        req = DeleteBookmark(current_user, video_id)
+        req.timeout = 5000
+        recombee_client.send(req)
+    except Exception:
+        pass
+
     return {"message": "Bookmark removed successfully"}
