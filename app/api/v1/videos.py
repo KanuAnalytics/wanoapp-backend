@@ -20,7 +20,7 @@ from bson.json_util import dumps
 from app.models.user import UserType
 from app.core.config import settings
 from recombee_api_client.api_client import RecombeeClient, Region
-from recombee_api_client.api_requests import AddDetailView
+from recombee_api_client.api_requests import AddDetailView, AddRating, DeleteRating
 
 router = APIRouter()
 
@@ -568,6 +568,14 @@ async def like_video(
                 thumbnail_url,
             )
     
+    try:
+        recombee_client = RecombeeClient(settings.RECOMBEE_DB_ID, settings.RECOMBEE_PRIVATE_TOKEN, region=Region.US_WEST)
+        req = AddRating(current_user, video_id, rating=1.0, cascade_create=True)
+        req.timeout = 5000
+        recombee_client.send(req)
+    except Exception:
+        pass
+
     return {
         "message": "Video liked successfully",
         "current_likes": buffered["likes"]
@@ -589,10 +597,18 @@ async def unlike_video(
     
     # Decrement like count in buffer
     await metrics_buffer.decrement_like(video_id)
-    
+
     # Get current buffered count for response
     buffered = await metrics_buffer.get_buffered_counts(video_id)
-    
+
+    try:
+        recombee_client = RecombeeClient(settings.RECOMBEE_DB_ID, settings.RECOMBEE_PRIVATE_TOKEN, region=Region.US_WEST)
+        req = DeleteRating(current_user, video_id)
+        req.timeout = 5000
+        recombee_client.send(req)
+    except Exception:
+        pass
+
     return {
         "message": "Video unliked successfully",
         "current_likes": buffered["likes"]
