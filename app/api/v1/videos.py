@@ -18,9 +18,8 @@ import re
 import json
 from bson.json_util import dumps
 from app.models.user import UserType
-from app.core.config import settings
-from recombee_api_client.api_client import RecombeeClient, Region
-from recombee_api_client.api_requests import AddDetailView, AddRating, DeleteRating, AddBookmark
+from recombee_api_client.api_requests import AddDetailView, AddRating, DeleteRating, AddBookmark, DeleteBookmark
+from app.services.recombee_service import recombee_client
 
 router = APIRouter()
 
@@ -335,7 +334,7 @@ async def get_video(
 
     if current_user:
         try:
-            recombee_client = RecombeeClient(settings.RECOMBEE_DB_ID, settings.RECOMBEE_PRIVATE_TOKEN, region=Region.US_WEST)
+
             req = AddDetailView(current_user, video_id, cascade_create=True)
             req.timeout = 5000
             recombee_client.send(req)
@@ -569,7 +568,6 @@ async def like_video(
             )
     
     try:
-        recombee_client = RecombeeClient(settings.RECOMBEE_DB_ID, settings.RECOMBEE_PRIVATE_TOKEN, region=Region.US_WEST)
         req = AddRating(current_user, video_id, rating=1.0, cascade_create=True)
         req.timeout = 5000
         recombee_client.send(req)
@@ -602,7 +600,6 @@ async def unlike_video(
     buffered = await metrics_buffer.get_buffered_counts(video_id)
 
     try:
-        recombee_client = RecombeeClient(settings.RECOMBEE_DB_ID, settings.RECOMBEE_PRIVATE_TOKEN, region=Region.US_WEST)
         req = DeleteRating(current_user, video_id)
         req.timeout = 5000
         recombee_client.send(req)
@@ -664,7 +661,6 @@ async def bookmark_video(
                 )
     
     try:
-        recombee_client = RecombeeClient(settings.RECOMBEE_DB_ID, settings.RECOMBEE_PRIVATE_TOKEN, region=Region.US_WEST)
         req = AddBookmark(current_user, video_id, cascade_create=True)
         req.timeout = 5000
         recombee_client.send(req)
@@ -693,4 +689,11 @@ async def unbookmark_video(
         {"$inc": {"bookmarks_count": -1}}
     )
     
+    try:
+        req = DeleteBookmark(current_user, video_id)
+        req.timeout = 5000
+        recombee_client.send(req)
+    except Exception:
+        pass
+
     return {"message": "Bookmark removed successfully"}

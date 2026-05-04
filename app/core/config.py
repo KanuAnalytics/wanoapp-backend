@@ -81,6 +81,10 @@ class Settings(BaseSettings):
     CLOUDFLARE_ACCOUNT_ID: str
     CLOUDFLARE_STREAM_API_TOKEN: str
     CLOUDFLARE_STREAM_API_BASE: str
+
+    # Recombee
+    RECOMBEE_DB_ID: str
+    RECOMBEE_PRIVATE_TOKEN: str
     
     #service URL
     VIDEO_SERVICE_URL: str
