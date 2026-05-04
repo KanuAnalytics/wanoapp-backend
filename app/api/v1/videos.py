@@ -18,7 +18,7 @@ import re
 import json
 from bson.json_util import dumps
 from app.models.user import UserType
-from recombee_api_client.api_requests import AddDetailView, AddRating, DeleteRating, AddBookmark, DeleteBookmark, SetItemValues, Batch
+from recombee_api_client.api_requests import AddDetailView, AddRating, DeleteRating, AddBookmark, DeleteBookmark, SetItemValues, Batch, DeleteItem
 from app.services.recombee_service import recombee_client
 
 router = APIRouter()
@@ -522,11 +522,18 @@ async def delete_video(
     )
 
     # Decrement creator’s video count ONLY if the creator deleted it
-    # Or if admin deleted it, decrement the *actual owner's* count
+    # Or if admin deleted it, decrement the *actual owner’s* count
     await db.users.update_one(
         {"_id": video["creator_id"]},
         {"$inc": {"videos_count": -1}}
     )
+
+    try:
+        req = DeleteItem(video_id)
+        req.timeout = 5000
+        recombee_client.send(req)
+    except Exception:
+        pass
 
     return {"message": "Video deleted successfully"}  # Optional for 204
 

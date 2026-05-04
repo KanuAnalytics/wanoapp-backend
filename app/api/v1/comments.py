@@ -182,6 +182,8 @@ from app.core.database import get_database
 from app.api.deps import get_current_active_user
 from app.models.comment import CommentCreate, CommentUpdate, CommentResponse
 from app.services.expo import send_push_message
+from recombee_api_client.api_requests import SetItemValues
+from app.services.recombee_service import recombee_client
 
 router = APIRouter()
 
@@ -255,6 +257,13 @@ async def create_comment(
         {"_id": ObjectId(comment.video_id)},
         {"$inc": {"comments_count": 1}}
     )
+
+    try:
+        req = SetItemValues(comment.video_id, {"comments_count": video.get("comments_count", 0) + 1}, cascade_create=False)
+        req.timeout = 5000
+        recombee_client.send(req)
+    except Exception:
+        pass
 
     if background_tasks is not None:
         display_name = user.get("display_name") or user.get("username") or "Someone"
@@ -610,7 +619,14 @@ async def delete_comment(
         {"_id": comment["video_id"]},
         {"$inc": {"comments_count": -1}}
     )
-    
+
+    try:
+        req = SetItemValues(str(comment["video_id"]), {"comments_count": max(0, video.get("comments_count", 0) - 1)}, cascade_create=False)
+        req.timeout = 5000
+        recombee_client.send(req)
+    except Exception:
+        pass
+
     return {"message": "Comment deleted successfully"}
 
 @router.post("/{comment_id}/like")
