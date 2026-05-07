@@ -18,7 +18,7 @@ import re
 import json
 from bson.json_util import dumps
 from app.models.user import UserType
-from recombee_api_client.api_requests import AddDetailView, AddRating, DeleteRating, AddBookmark, DeleteBookmark, SetItemValues, Batch, DeleteItem
+from recombee_api_client.api_requests import SetViewPortion, AddRating, DeleteRating, AddBookmark, DeleteBookmark, SetItemValues, Batch, DeleteItem
 from app.services.recombee_service import recombee_client
 
 router = APIRouter()
@@ -169,10 +169,6 @@ async def post_video(
                 "video_type": video_doc.get("video_type") or "",
                 "duration": float(video_doc.get("duration") or 0.0),
                 "thumbnail": video_doc.get("urls", {}).get("thumbnail") or "",
-                "views_count": 0,
-                "likes_count": 0,
-                "comments_count": 0,
-                "bookmarks_count": 0,
                 "hashtags": video_doc.get("hashtags") or [],
                 "is_active": True,
                 "supports_landscape": bool(video_doc.get("supports_landscape", False)),
@@ -332,6 +328,9 @@ async def get_video(
     video_id: str,
     current_user: Optional[str] = Depends(get_optional_active_user),
     background_tasks: BackgroundTasks = None,
+    recomm_id: Optional[str] = None,
+    portion: Optional[float] = None,
+    time_spent: Optional[float] = None,
 ):
     """Get a specific video by ID and increment view count"""
     db = get_database()
@@ -356,10 +355,14 @@ async def get_video(
     # Increment view count in buffer
     await metrics_buffer.increment_view(video_id)
 
-    if current_user:
+    if current_user and portion is not None:
         try:
-
-            req = AddDetailView(current_user, video_id, cascade_create=True)
+            kwargs = {"auto_presented": True, "cascade_create": True}
+            if recomm_id:
+                kwargs["recomm_id"] = recomm_id
+            if time_spent is not None:
+                kwargs["time_spent"] = time_spent
+            req = SetViewPortion(current_user, video_id, portion, **kwargs)
             req.timeout = 5000
             recombee_client.send(req)
         except Exception:
@@ -432,6 +435,7 @@ async def get_video(
     response.buffered_comments = buffered["comments"]
     response.is_following = is_following
     response.is_liked = is_liked
+
     return response
 
 @router.put("/{video_id}", response_model=VideoResponse)
@@ -541,7 +545,8 @@ async def delete_video(
 async def like_video(
     video_id: str,
     current_user: str = Depends(get_current_active_user),
-    background_tasks: BackgroundTasks = None
+    background_tasks: BackgroundTasks = None,
+    recomm_id: Optional[str] = None,
 ):
     """Like a video (buffered)"""
     db = get_database()
@@ -599,7 +604,7 @@ async def like_video(
             )
     
     try:
-        req = AddRating(current_user, video_id, rating=1.0, cascade_create=True)
+        req = AddRating(current_user, video_id, rating=1.0, cascade_create=True, recomm_id=recomm_id)
         req.timeout = 5000
         recombee_client.send(req)
     except Exception:
@@ -647,6 +652,7 @@ async def bookmark_video(
     video_id: str,
     current_user: str = Depends(get_current_active_user),
     background_tasks: BackgroundTasks = None,
+    recomm_id: Optional[str] = None,
 ):
     """Bookmark a video"""
     db = get_database()
@@ -692,7 +698,7 @@ async def bookmark_video(
                 )
     
     try:
-        req = AddBookmark(current_user, video_id, cascade_create=True)
+        req = AddBookmark(current_user, video_id, cascade_create=True, recomm_id=recomm_id)
         req.timeout = 5000
         recombee_client.send(req)
     except Exception:
