@@ -3,6 +3,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from app.core.database import get_database
 from app.api.deps import get_optional_active_user
 from app.services.metrics_service import metrics_buffer
+from app.services.recombee_service import recombee_client
+from recombee_api_client.api_requests import RecommendItemsToUser, RecommendNextItems
 from pydantic import BaseModel
 from bson import ObjectId
 import random
@@ -28,6 +30,7 @@ class FeedVideo(BaseModel):
     has_liked: bool = False
     is_bookmarked: bool = False
     is_following: bool = False
+    recomm_id: Optional[str] = None
 
 
 @router.get("/", response_model=List[FeedVideo])
@@ -354,5 +357,156 @@ async def get_feed(
             is_ad=True,
         )
         videos.insert(ad_position, ad)
+
+    return videos
+
+
+@router.get("/v2", response_model=List[FeedVideo])
+async def get_feed_v2(
+    scenario: str,
+    current_user: Optional[str] = Depends(get_optional_active_user),
+    limit: int = 20,
+    next_recomm_id: Optional[str] = None,
+    video_id: Optional[str] = None,
+):
+    db = get_database()
+
+    recombee_user_id = current_user or "temp-user"
+    recombee_limit = limit - 1 if video_id else limit
+
+    if next_recomm_id:
+        req = RecommendNextItems(next_recomm_id, recombee_limit)
+    else:
+        req = RecommendItemsToUser(
+            recombee_user_id,
+            recombee_limit,
+            scenario=scenario,
+            cascade_create=True,
+            filter="'is_active' == true AND 'privacy' == \"public\"",
+        )
+    req.timeout = 5000
+    result = recombee_client.send(req)
+    recomm_id = result.get("recommId")
+
+    recommended_ids = [ObjectId(r["id"]) for r in result.get("recomms", [])]
+
+    if not recommended_ids:
+        return []
+
+    user_doc = await db.users.find_one(
+        {"_id": ObjectId(current_user)},
+        {"liked_videos": 1, "bookmarked_videos": 1, "following": 1},
+    ) or {}
+
+    liked_video_ids = set(str(v) for v in user_doc.get("liked_videos", []))
+    bookmarked_video_ids = set(str(v) for v in user_doc.get("bookmarked_videos", []))
+    following_ids = set(str(v) for v in user_doc.get("following", []))
+
+    pipeline = [
+        {"$match": {"_id": {"$in": recommended_ids}}},
+        {
+            "$lookup": {
+                "from": "users",
+                "localField": "creator_id",
+                "foreignField": "_id",
+                "as": "creator",
+            }
+        },
+        {"$unwind": {"path": "$creator", "preserveNullAndEmptyArrays": True}},
+        {
+            "$project": {
+                "_id": {"$toString": "$_id"},
+                "creator_id": {"$toString": "$creator_id"},
+                "title": 1,
+                "description": 1,
+                "remoteUrl": 1,
+                "remoteUrl_CF": 1,
+                "views_count": 1,
+                "likes_count": 1,
+                "comments_count": 1,
+                "thumbnail": "$urls.thumbnail",
+                "user": {
+                    "username": "$creator.username",
+                    "display_name": "$creator.display_name",
+                    "profile_picture": "$creator.profile_picture",
+                    "is_active": "$creator.is_active",
+                },
+            }
+        },
+    ]
+
+    docs = await db.videos.aggregate(pipeline).to_list(length=limit)
+
+    # preserve Recombee order
+    doc_map = {doc["_id"]: doc for doc in docs}
+    ordered = [doc_map[str(oid)] for oid in recommended_ids if str(oid) in doc_map]
+
+    videos = []
+    for video in ordered:
+        feed_video_id = video["_id"]
+        buffered = await metrics_buffer.get_buffered_counts(feed_video_id)
+        videos.append(
+            FeedVideo(
+                id=feed_video_id,
+                creator_id=video["creator_id"],
+                title=video.get("title"),
+                description=video.get("description"),
+                thumbnail=video.get("thumbnail"),
+                views_count=video.get("views_count", 0),
+                likes_count=video.get("likes_count", 0),
+                comments_count=video.get("comments_count", 0),
+                remoteUrl=video.get("remoteUrl"),
+                remoteUrl_CF=video.get("remoteUrl_CF"),
+                buffered_views=buffered["views"],
+                buffered_likes=buffered["likes"],
+                user=video.get("user", {}),
+                has_liked=feed_video_id in liked_video_ids,
+                is_bookmarked=feed_video_id in bookmarked_video_ids,
+                is_following=str(video["creator_id"]) in following_ids,
+                recomm_id=recomm_id,
+            )
+        )
+
+    if video_id and ObjectId.is_valid(video_id):
+        featured_pipeline = [
+            {"$match": {"_id": ObjectId(video_id), "is_active": True}},
+            {"$lookup": {"from": "users", "localField": "creator_id", "foreignField": "_id", "as": "creator"}},
+            {"$unwind": {"path": "$creator", "preserveNullAndEmptyArrays": True}},
+            {"$project": {
+                "_id": {"$toString": "$_id"},
+                "creator_id": {"$toString": "$creator_id"},
+                "title": 1, "description": 1, "remoteUrl": 1, "remoteUrl_CF": 1,
+                "views_count": 1, "likes_count": 1, "comments_count": 1,
+                "thumbnail": "$urls.thumbnail", "privacy": 1,
+                "user": {"username": "$creator.username", "display_name": "$creator.display_name",
+                         "profile_picture": "$creator.profile_picture", "is_active": "$creator.is_active"},
+            }},
+        ]
+        featured_doc = await db.videos.aggregate(featured_pipeline).to_list(length=1)
+        if featured_doc:
+            f = featured_doc[0]
+            if f.get("privacy") == "public" or str(f.get("creator_id")) == current_user:
+                fid = f["_id"]
+                videos = [v for v in videos if v.id != fid]
+                videos.insert(0, FeedVideo(
+                    id=fid,
+                    creator_id=f["creator_id"],
+                    title=f.get("title"),
+                    description=f.get("description"),
+                    thumbnail=f.get("thumbnail"),
+                    views_count=f.get("views_count", 0),
+                    likes_count=f.get("likes_count", 0),
+                    comments_count=f.get("comments_count", 0),
+                    remoteUrl=f.get("remoteUrl"),
+                    remoteUrl_CF=f.get("remoteUrl_CF"),
+                    buffered_views=0,
+                    buffered_likes=0,
+                    user=f.get("user", {}),
+                    has_liked=fid in liked_video_ids,
+                    is_bookmarked=fid in bookmarked_video_ids,
+                    is_following=str(f["creator_id"]) in following_ids,
+                    recomm_id=recomm_id,
+                ))
+                videos = videos[:limit]
 
     return videos
