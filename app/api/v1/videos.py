@@ -169,10 +169,6 @@ async def post_video(
                 "video_type": video_doc.get("video_type") or "",
                 "duration": float(video_doc.get("duration") or 0.0),
                 "thumbnail": video_doc.get("urls", {}).get("thumbnail") or "",
-                "views_count": 0,
-                "likes_count": 0,
-                "comments_count": 0,
-                "bookmarks_count": 0,
                 "hashtags": video_doc.get("hashtags") or [],
                 "is_active": True,
                 "supports_landscape": bool(video_doc.get("supports_landscape", False)),
@@ -439,6 +435,7 @@ async def get_video(
     response.buffered_comments = buffered["comments"]
     response.is_following = is_following
     response.is_liked = is_liked
+
     return response
 
 @router.put("/{video_id}", response_model=VideoResponse)
