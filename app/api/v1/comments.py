@@ -182,7 +182,7 @@ from app.core.database import get_database
 from app.api.deps import get_current_active_user
 from app.models.comment import CommentCreate, CommentUpdate, CommentResponse
 from app.services.expo import send_push_message
-from recombee_api_client.api_requests import SetItemValues
+from recombee_api_client.api_requests import AddBookmark, DeleteBookmark
 from app.services.recombee_service import recombee_client
 
 router = APIRouter()
@@ -259,7 +259,7 @@ async def create_comment(
     )
 
     try:
-        req = SetItemValues(comment.video_id, {"comments_count": video.get("comments_count", 0) + 1}, cascade_create=False)
+        req = AddBookmark(current_user, comment.video_id, cascade_create=True)
         req.timeout = 5000
         recombee_client.send(req)
     except Exception:
@@ -621,7 +621,7 @@ async def delete_comment(
     )
 
     try:
-        req = SetItemValues(str(comment["video_id"]), {"comments_count": max(0, video.get("comments_count", 0) - 1)}, cascade_create=False)
+        req = DeleteBookmark(current_user, str(comment["video_id"]))
         req.timeout = 5000
         recombee_client.send(req)
     except Exception:
