@@ -82,7 +82,8 @@ class VideoResponse(BaseModel):
     remoteUrl_CF: Optional[str] = None
     
     is_following: Optional[bool] = None
-    is_liked: Optional[bool] = None  
+    is_liked: Optional[bool] = None
+    urls: Optional[dict] = None
 
     class Config:
         populate_by_name = True
