@@ -84,6 +84,7 @@ class VideoResponse(BaseModel):
     is_following: Optional[bool] = None
     is_liked: Optional[bool] = None
     urls: Optional[dict] = None
+    user: Optional[dict] = None
 
     class Config:
         populate_by_name = True
@@ -415,27 +416,31 @@ async def get_video(
     
     is_liked = False
     is_following = False
+    creator_doc = await db.users.find_one({"_id": video["creator_id"]}) or {}
+
     if current_user:
-        # Get current user data
         user_doc = await db.users.find_one({"_id": ObjectId(current_user)}) or {}
-
-        # Check if current user has liked this video
         is_liked = ObjectId(video_id) in (user_doc.get("liked_videos") or [])
-
-        # Check if current user is following the video creator
-        creator_doc = await db.users.find_one({"_id": video["creator_id"]}) or {}
         current_user_oid = ObjectId(current_user)
         is_following = current_user_oid in (creator_doc.get("followers") or [])
-    
+
+    user_info = {
+        "username": creator_doc.get("username"),
+        "display_name": creator_doc.get("display_name"),
+        "profile_picture": creator_doc.get("profile_picture"),
+        "is_active": creator_doc.get("is_active"),
+    }
+
     video["_id"] = str(video["_id"])
     video["creator_id"] = str(video["creator_id"])
-    
+
     response = VideoResponse(**video)
     response.buffered_views = buffered["views"]
     response.buffered_likes = buffered["likes"]
     response.buffered_comments = buffered["comments"]
     response.is_following = is_following
     response.is_liked = is_liked
+    response.user = user_info
 
     return response
 
