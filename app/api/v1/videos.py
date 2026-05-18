@@ -333,6 +333,7 @@ async def get_video(
     recomm_id: Optional[str] = None,
     portion: Optional[float] = None,
     time_spent: Optional[float] = None,
+    auto_presented: bool = False,
 ):
     """Get a specific video by ID and increment view count"""
     db = get_database()
@@ -359,7 +360,7 @@ async def get_video(
 
     if current_user and portion is not None:
         try:
-            kwargs = {"auto_presented": True, "cascade_create": True}
+            kwargs = {"auto_presented": auto_presented, "cascade_create": True}
             if recomm_id:
                 kwargs["recomm_id"] = recomm_id
             if time_spent is not None:
