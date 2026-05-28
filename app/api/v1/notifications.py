@@ -9,7 +9,8 @@ from bson import ObjectId
 from bson.json_util import dumps
 from app.core.database import get_database
 from app.api.deps import get_current_active_user
-from fastapi import Depends
+from fastapi import Depends, Query
+from typing import Optional
 
 router = APIRouter()
 
@@ -17,13 +18,18 @@ router = APIRouter()
 async def get_notifications(
     skip: int = 0,
     limit: int = 10,
+    type: Optional[str] = Query(None, description="Filter by notification type"),
     current_user: str = Depends(get_current_active_user),
 ):
     """Get notifications for the current user (fresh user/post info via lookup)"""
     db = get_database()
 
+    match = {"recipient_id": ObjectId(current_user)}
+    if type:
+        match["type"] = type
+
     pipeline = [
-        {"$match": {"recipient_id": ObjectId(current_user)}},
+        {"$match": match},
         {"$sort": {"date": -1}},
         {"$skip": skip},
         {"$limit": limit},
