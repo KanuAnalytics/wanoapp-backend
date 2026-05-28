@@ -58,6 +58,7 @@ async def create_indexes():
         # Notification indexes
         await db.db.notifications.create_index([("recipient_id", 1), ("date", -1)])
         await db.db.notifications.create_index([("type", 1), ("user_id", 1), ("post_id", 1)])
+        await db.db.notifications.create_index([("comment_id", 1)])
 
         logger.info("Database indexes created")
     except Exception as e:
