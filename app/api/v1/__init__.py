@@ -21,6 +21,7 @@ from app.api.v1.music import router as music_router
 from app.api.v1.categories import router as categories_router
 from app.api.v1.config import router as config_router
 from app.api.v1.recombee import router as recombee_router
+from app.api.v1.notifications import router as notifications_router
 
 
 
@@ -37,3 +38,4 @@ api_router.include_router(music_router, prefix="/music", tags=["music"])
 api_router.include_router(categories_router, prefix="/categories", tags=["categories"])
 api_router.include_router(config_router, prefix="/config", tags=["config"])
 api_router.include_router(recombee_router, prefix="/recombee", tags=["recombee"])
+api_router.include_router(notifications_router, prefix="/notifications", tags=["notifications"])
