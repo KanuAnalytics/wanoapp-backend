@@ -41,6 +41,20 @@ async def get_notifications(
             "as": "post",
         }},
         {"$unwind": {"path": "$post", "preserveNullAndEmptyArrays": True}},
+        {"$lookup": {
+            "from": "comments",
+            "localField": "comment_id",
+            "foreignField": "_id",
+            "as": "comment",
+        }},
+        {"$unwind": {"path": "$comment", "preserveNullAndEmptyArrays": True}},
+        {"$lookup": {
+            "from": "comments",
+            "localField": "comment.parent_id",
+            "foreignField": "_id",
+            "as": "parent_comment",
+        }},
+        {"$unwind": {"path": "$parent_comment", "preserveNullAndEmptyArrays": True}},
         {"$project": {
             "_id": {"$toString": "$_id"},
             "type": 1,
@@ -54,6 +68,20 @@ async def get_notifications(
             "post": {
                 "id": {"$toString": "$post._id"},
                 "thumbnail": "$post.urls.thumbnail",
+                "comment": {
+                    "$cond": [
+                        {"$eq": ["$type", "comment_reply"]},
+                        "$parent_comment.content",
+                        "$comment.content",
+                    ]
+                },
+                "reply": {
+                    "$cond": [
+                        {"$eq": ["$type", "comment_reply"]},
+                        "$comment.content",
+                        None,
+                    ]
+                },
             },
         }},
     ]
