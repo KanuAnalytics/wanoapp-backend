@@ -258,6 +258,23 @@ async def create_comment(
         {"$inc": {"comments_count": 1}}
     )
 
+    if parent_comment:
+        notif_recipient = parent_comment.get("user_id")
+        notif_type = "comment_reply"
+    else:
+        notif_recipient = video.get("creator_id")
+        notif_type = "comment"
+
+    if notif_recipient and str(notif_recipient) != str(current_user):
+        await db.notifications.insert_one({
+            "recipient_id": ObjectId(notif_recipient),
+            "type": notif_type,
+            "user_id": ObjectId(current_user),
+            "post_id": ObjectId(comment.video_id),
+            "comment_id": result.inserted_id,
+            "date": datetime.utcnow(),
+        })
+
     try:
         req = AddBookmark(current_user, comment.video_id, cascade_create=True)
         req.timeout = 5000
@@ -619,6 +636,10 @@ async def delete_comment(
         {"_id": comment["video_id"]},
         {"$inc": {"comments_count": -1}}
     )
+
+    await db.notifications.delete_one({
+        "comment_id": ObjectId(comment_id),
+    })
 
     try:
         req = DeleteBookmark(current_user, str(comment["video_id"]))

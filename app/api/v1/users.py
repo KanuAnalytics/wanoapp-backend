@@ -1521,6 +1521,14 @@ async def follow_user(
         }
     )
 
+    await db.notifications.insert_one({
+        "recipient_id": ObjectId(user_id),
+        "type": "follow",
+        "user_id": ObjectId(current_user),
+        "post_id": None,
+        "date": datetime.utcnow(),
+    })
+
     if background_tasks is not None:
         display_name = current_user_doc.get("display_name") or current_user_doc.get("username") or "Someone"
         username = current_user_doc.get("username") or "unknown"
@@ -1571,7 +1579,13 @@ async def unfollow_user(
             "$inc": {"followers_count": -1}
         }
     )
-    
+
+    await db.notifications.delete_one({
+        "type": "follow",
+        "recipient_id": ObjectId(user_id),
+        "user_id": ObjectId(current_user),
+    })
+
     return {"message": "Successfully unfollowed user"}
 
 @router.get("/me/profile", response_model=UserResponse)

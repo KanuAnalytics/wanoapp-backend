@@ -610,6 +610,16 @@ async def like_video(
                 thumbnail_url,
             )
     
+    creator_id = (video or {}).get("creator_id")
+    if creator_id and str(creator_id) != str(current_user):
+        await db.notifications.insert_one({
+            "recipient_id": ObjectId(creator_id),
+            "type": "like",
+            "user_id": ObjectId(current_user),
+            "post_id": ObjectId(video_id),
+            "date": datetime.utcnow(),
+        })
+
     try:
         req = AddRating(current_user, video_id, rating=1.0, cascade_create=True, recomm_id=recomm_id)
         req.timeout = 5000
@@ -641,6 +651,12 @@ async def unlike_video(
 
     # Get current buffered count for response
     buffered = await metrics_buffer.get_buffered_counts(video_id)
+
+    await db.notifications.delete_one({
+        "type": "like",
+        "user_id": ObjectId(current_user),
+        "post_id": ObjectId(video_id),
+    })
 
     try:
         req = DeleteRating(current_user, video_id)
