@@ -65,6 +65,13 @@ async def get_notifications(
                 "username": "$user.username",
                 "profile_picture": "$user.profile_picture",
             },
+            "is_following": {
+                "$cond": [
+                    {"$eq": ["$type", "follow"]},
+                    {"$in": ["$recipient_id", {"$ifNull": ["$user.followers", []]}]},
+                    "$$REMOVE",
+                ]
+            },
             "post": {
                 "id": {"$toString": "$post._id"},
                 "thumbnail": "$post.urls.thumbnail",
