@@ -10,6 +10,8 @@ class VersionResponse(BaseModel):
     appVersionNumber: str
     showReviewAndroid: bool = False
     showReviewIos: bool = False
+    showUpdateAndroid: bool = False
+    showUpdateIos: bool = False
 
 
 @router.get("/version", response_model=VersionResponse)
@@ -33,4 +35,6 @@ async def get_app_version():
         appVersionNumber=normalized_version,
         showReviewAndroid=doc.get("showReviewAndroid", False),
         showReviewIos=doc.get("showReviewIos", False),
+        showUpdateAndroid=doc.get("showUpdateAndroid", False),
+        showUpdateIos=doc.get("showUpdateIos", False),
     )
