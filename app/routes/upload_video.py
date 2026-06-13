@@ -74,6 +74,29 @@ async def upload_video(video: UploadFile = File(...), isAudio: bool = False, isI
             
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
+@router.post("/v2/presigned-upload")
+async def get_presigned_upload_url(
+    payload: PresignRequest,
+):
+    """
+    Get a pre-signed upload URL for DigitalOcean Spaces.
+    Automatically determines content type.
+    """
+    try:
+        MAX_FILE_SIZE = 200 * 1024 * 1024
+        
+        # if(payload.fileSize >= MAX_FILE_SIZE):
+        result = generate_cf_tus_upload_url(filename=payload.filename, fileSize=payload.fileSize, folder=payload.folder)
+        # else:
+        #     result =  generate_stream_direct_upload_url(filename=payload.filename, folder=payload.folder)
+        return {
+            "status": 200,
+            "message": "Pre-signed upload URL generated successfully",
+            "data": result
+        }
+    except Exception as e:
+        print(str(e))
+        raise HTTPException(status_code=500, detail=str(e))
     
 @router.post("/presigned-upload")
 async def get_presigned_upload_url(
