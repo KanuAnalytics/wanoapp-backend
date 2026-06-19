@@ -8,6 +8,8 @@ router = APIRouter()
 
 class VersionResponse(BaseModel):
     appVersionNumber: str
+    appVersionIos: str | None = None
+    appVersionAndroid: str | None = None
     showReviewAndroid: bool = False
     showReviewIos: bool = False
     showUpdateAndroid: bool = False
@@ -21,7 +23,15 @@ async def get_app_version():
 
     doc = await db.config.find_one(
         {},
-        projection={"appVersionNumber": 1, "showReviewAndroid": 1, "showReviewIos": 1},
+        projection={
+            "appVersionNumber": 1,
+            "appVersionIos": 1,
+            "appVersionAndroid": 1,
+            "showReviewAndroid": 1,
+            "showReviewIos": 1,
+            "showUpdateAndroid": 1,
+            "showUpdateIos": 1,
+        },
         sort=[("_id", -1)],
     )
 
@@ -33,6 +43,8 @@ async def get_app_version():
 
     return VersionResponse(
         appVersionNumber=normalized_version,
+        appVersionIos=doc.get("appVersionIos"),
+        appVersionAndroid=doc.get("appVersionAndroid"),
         showReviewAndroid=doc.get("showReviewAndroid", False),
         showReviewIos=doc.get("showReviewIos", False),
         showUpdateAndroid=doc.get("showUpdateAndroid", False),
