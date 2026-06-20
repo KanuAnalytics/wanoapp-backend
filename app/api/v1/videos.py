@@ -39,6 +39,9 @@ class VideoPost(BaseModel):
     categoryId: Optional[str] = None
     subcategoryId: Optional[str] = None
     isReadyToStream: Optional[bool] = False
+    width: Optional[int] = None
+    height: Optional[int] = None
+    supports_landscape: Optional[bool] = None
 
 class VideoCreate(BaseModel):
     title: Optional[str] = None
@@ -111,8 +114,8 @@ async def post_video(
             "isReadyToStream": input.isReadyToStream,
             "metadata": {
                 "duration": input.duration,
-                "width": 1080,  # You might want to detect this from the actual video
-                "height": 1920,
+                "width": input.width if input.width is not None else 1080,
+                "height": input.height if input.height is not None else 1920,
                 "fps": 30.0,
                 "file_size": 0  # You can calculate this during upload
             },
@@ -154,6 +157,9 @@ async def post_video(
             "language": user.get("localization", {}).get("languages", ["en"])[0]
         }
         
+        if input.supports_landscape is not None:
+            video_doc["supports_landscape"] = input.supports_landscape
+
         # Insert into database
         result = await db.videos.insert_one(video_doc)
         
