@@ -25,7 +25,7 @@ def extract_cf_video_id(remote_url_cf: str) -> str | None:
 
 
 async def fetch_cf_dimensions(video_id: str) -> tuple[int, int] | None:
-    url = f"{settings.CLOUDFLARE_STREAM_API_BASE}/{settings.CLOUDFLARE_ACCOUNT_ID}/stream/{video_id}"
+    url = f"{settings.CLOUDFLARE_STREAM_API_BASE}/accounts/{settings.CLOUDFLARE_ACCOUNT_ID}/stream/{video_id}"
     headers = {"Authorization": f"Bearer {settings.CLOUDFLARE_STREAM_API_TOKEN}"}
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.get(url, headers=headers)
@@ -85,7 +85,7 @@ async def ingest_videos():
 @router.post("/backfill-hashtags")
 async def backfill_hashtags():
     db = get_database()
-    videos = await db.videos.find({}).sort("created_at", -1).skip(0).to_list(length=300)
+    videos = await db.videos.find({"supports_landscape": {"$exists": False}}).sort("created_at", -1).skip(0).to_list(length=1100)
 
     updated = 0
     cf_failed = 0

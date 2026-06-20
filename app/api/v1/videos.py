@@ -88,6 +88,7 @@ class VideoResponse(BaseModel):
     is_liked: Optional[bool] = None
     urls: Optional[dict] = None
     user: Optional[dict] = None
+    supports_landscape: bool = False
 
     class Config:
         populate_by_name = True

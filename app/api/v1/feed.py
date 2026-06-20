@@ -31,6 +31,7 @@ class FeedVideo(BaseModel):
     is_bookmarked: bool = False
     is_following: bool = False
     recomm_id: Optional[str] = None
+    supports_landscape: bool = False
 
 
 @router.get("/", response_model=List[FeedVideo])
@@ -208,6 +209,7 @@ async def get_feed(
                     },
                     "thumbnail": "$urls.thumbnail",
                     "is_active": 1,
+                    "supports_landscape": 1,
                     "user": {
                         "username": "$creator.username",
                         "display_name": "$creator.display_name",
@@ -250,6 +252,7 @@ async def get_feed(
                 has_liked=has_liked,
                 is_bookmarked=is_bookmarked,
                 is_following=is_following,
+                supports_landscape=video.get("supports_landscape", False),
             )
         )
 
@@ -298,6 +301,7 @@ async def get_feed(
                     "comments_count": 1,
                     "thumbnail": "$urls.thumbnail",
                     "privacy": 1,
+                    "supports_landscape": 1,
                     "user": {
                         "username": "$creator.username",
                         "display_name": "$creator.display_name",
@@ -338,6 +342,7 @@ async def get_feed(
                         has_liked=featured_id in liked_video_ids,
                         is_bookmarked=featured_id in bookmarked_video_ids,
                         is_following=str(featured["creator_id"]) in following_ids,
+                        supports_landscape=featured.get("supports_landscape", False),
                     ),
                 )
                 if len(videos) > limit:
@@ -425,6 +430,7 @@ async def get_feed_v2(
                 "likes_count": 1,
                 "comments_count": 1,
                 "thumbnail": "$urls.thumbnail",
+                "supports_landscape": 1,
                 "user": {
                     "username": "$creator.username",
                     "display_name": "$creator.display_name",
@@ -464,6 +470,7 @@ async def get_feed_v2(
                 is_bookmarked=feed_video_id in bookmarked_video_ids,
                 is_following=str(video["creator_id"]) in following_ids,
                 recomm_id=recomm_id,
+                supports_landscape=video.get("supports_landscape", False),
             )
         )
 
@@ -477,7 +484,7 @@ async def get_feed_v2(
                 "creator_id": {"$toString": "$creator_id"},
                 "title": 1, "description": 1, "remoteUrl": 1, "remoteUrl_CF": 1,
                 "views_count": 1, "likes_count": 1, "comments_count": 1,
-                "thumbnail": "$urls.thumbnail", "privacy": 1,
+                "thumbnail": "$urls.thumbnail", "privacy": 1, "supports_landscape": 1,
                 "user": {"username": "$creator.username", "display_name": "$creator.display_name",
                          "profile_picture": "$creator.profile_picture", "is_active": "$creator.is_active"},
             }},
@@ -506,6 +513,7 @@ async def get_feed_v2(
                     is_bookmarked=fid in bookmarked_video_ids,
                     is_following=str(f["creator_id"]) in following_ids,
                     recomm_id=recomm_id,
+                    supports_landscape=f.get("supports_landscape", False),
                 ))
                 videos = videos[:limit]
 
