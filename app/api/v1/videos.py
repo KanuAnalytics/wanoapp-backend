@@ -19,7 +19,7 @@ import json
 from bson.json_util import dumps
 from app.models.user import UserType
 from recombee_api_client.api_requests import SetViewPortion, AddRating, DeleteRating, AddBookmark, DeleteBookmark, SetItemValues, Batch, DeleteItem
-from app.services.recombee_service import recombee_client
+from app.services.recombee_service import recombee_send
 
 router = APIRouter()
 
@@ -186,7 +186,7 @@ async def post_video(
             }
             req = SetItemValues(item_id, values, cascade_create=True)
             req.timeout = 10000
-            recombee_client.send(req)
+            await recombee_send(req)
             await db.videos.update_one({"_id": result.inserted_id}, {"$set": {"recombee": True}})
         except Exception:
             pass
@@ -374,7 +374,7 @@ async def get_video(
                 kwargs["time_spent"] = time_spent
             req = SetViewPortion(current_user, video_id, portion, **kwargs)
             req.timeout = 5000
-            recombee_client.send(req)
+            await recombee_send(req)
         except Exception:
             pass
     
@@ -549,7 +549,7 @@ async def delete_video(
     try:
         req = DeleteItem(video_id)
         req.timeout = 5000
-        recombee_client.send(req)
+        await recombee_send(req)
     except Exception:
         pass
 
@@ -630,7 +630,7 @@ async def like_video(
     try:
         req = AddRating(current_user, video_id, rating=1.0, cascade_create=True, recomm_id=recomm_id)
         req.timeout = 5000
-        recombee_client.send(req)
+        await recombee_send(req)
     except Exception:
         pass
 
@@ -668,7 +668,7 @@ async def unlike_video(
     try:
         req = DeleteRating(current_user, video_id)
         req.timeout = 5000
-        recombee_client.send(req)
+        await recombee_send(req)
     except Exception:
         pass
 
@@ -730,7 +730,7 @@ async def bookmark_video(
     try:
         req = AddBookmark(current_user, video_id, cascade_create=True, recomm_id=recomm_id)
         req.timeout = 5000
-        recombee_client.send(req)
+        await recombee_send(req)
     except Exception:
         pass
 
@@ -759,7 +759,7 @@ async def unbookmark_video(
     try:
         req = DeleteBookmark(current_user, video_id)
         req.timeout = 5000
-        recombee_client.send(req)
+        await recombee_send(req)
     except Exception:
         pass
 

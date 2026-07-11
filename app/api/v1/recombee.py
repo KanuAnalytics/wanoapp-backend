@@ -7,7 +7,7 @@ import json
 import re
 import httpx
 import asyncio
-from app.services.recombee_service import recombee_client
+from app.services.recombee_service import recombee_send
 
 router = APIRouter()
 
@@ -71,7 +71,7 @@ async def ingest_videos():
         req.timeout = 30000
         requests.append(req)
 
-    recombee_client.send(Batch(requests))
+    await recombee_send(Batch(requests))
 
     ingested_ids = [video["_id"] for video in videos]
     await db.videos.update_many(
