@@ -79,7 +79,8 @@ class MetricsBuffer:
                 await self._flush_video_metrics(video_id)
             # Or if total updates exceed batch size
             elif self.total_updates >= self.batch_size:
-                await self.flush_all()
+                # Already holding self._lock - must use unlocked variant to avoid deadlock
+                await self._flush_all_unlocked()
 
     async def increment_like(self, video_id: str):
         """Increment like count for a video"""
@@ -90,7 +91,8 @@ class MetricsBuffer:
             if self.likes_buffer[video_id] >= self.metrics_threshold["likes"]:
                 await self._flush_video_metrics(video_id)
             elif self.total_updates >= self.batch_size:
-                await self.flush_all()
+                # Already holding self._lock - must use unlocked variant to avoid deadlock
+                await self._flush_all_unlocked()
 
     async def decrement_like(self, video_id: str):
         """Decrement like count for a video"""
@@ -111,7 +113,8 @@ class MetricsBuffer:
             if self.comments_buffer[video_id] >= self.metrics_threshold["comments"]:
                 await self._flush_video_metrics(video_id)
             elif self.total_updates >= self.batch_size:
-                await self.flush_all()
+                # Already holding self._lock - must use unlocked variant to avoid deadlock
+                await self._flush_all_unlocked()
                 
     async def get_user_videos_like_count(self, user_id: str) -> int:
         """Get total likes count across all videos of a user"""
@@ -160,56 +163,60 @@ class MetricsBuffer:
                 logger.error(f"Error flushing metrics for video {video_id}: {e}")
 
     async def flush_all(self):
-        """Flush all buffered metrics to database"""
+        """Flush all buffered metrics to database (acquires lock)"""
         async with self._lock:
-            db = get_database()
-            
-            # Collect all video IDs that need updates
-            video_ids = set()
-            video_ids.update(self.views_buffer.keys())
-            video_ids.update(self.likes_buffer.keys())
-            video_ids.update(self.comments_buffer.keys())
-            
-            if not video_ids:
-                return
-            
-            # Batch update operations
-            bulk_operations = []
-            
-            for video_id in video_ids:
-                update_doc = {}
-                
-                if video_id in self.views_buffer and self.views_buffer[video_id] != 0:
-                    update_doc["views_count"] = self.views_buffer[video_id]
-                    
-                if video_id in self.likes_buffer and self.likes_buffer[video_id] != 0:
-                    update_doc["likes_count"] = self.likes_buffer[video_id]
-                    
-                if video_id in self.comments_buffer and self.comments_buffer[video_id] != 0:
-                    update_doc["comments_count"] = self.comments_buffer[video_id]
-                
-                if update_doc:
-                    bulk_operations.append(
-                        UpdateOne(
-                            {"_id": ObjectId(video_id)},
-                            {"$inc": update_doc}
-                        )
+            await self._flush_all_unlocked()
+
+    async def _flush_all_unlocked(self):
+        """Flush all buffered metrics to database. Caller MUST hold self._lock."""
+        db = get_database()
+
+        # Collect all video IDs that need updates
+        video_ids = set()
+        video_ids.update(self.views_buffer.keys())
+        video_ids.update(self.likes_buffer.keys())
+        video_ids.update(self.comments_buffer.keys())
+
+        if not video_ids:
+            return
+
+        # Batch update operations
+        bulk_operations = []
+
+        for video_id in video_ids:
+            update_doc = {}
+
+            if video_id in self.views_buffer and self.views_buffer[video_id] != 0:
+                update_doc["views_count"] = self.views_buffer[video_id]
+
+            if video_id in self.likes_buffer and self.likes_buffer[video_id] != 0:
+                update_doc["likes_count"] = self.likes_buffer[video_id]
+
+            if video_id in self.comments_buffer and self.comments_buffer[video_id] != 0:
+                update_doc["comments_count"] = self.comments_buffer[video_id]
+
+            if update_doc:
+                bulk_operations.append(
+                    UpdateOne(
+                        {"_id": ObjectId(video_id)},
+                        {"$inc": update_doc}
                     )
-            
-            # Execute bulk update
-            if bulk_operations:
-                try:
-                    result = await db.videos.bulk_write(bulk_operations)
-                    logger.info(f"Flushed {len(bulk_operations)} video metrics updates")
-                except Exception as e:
-                    logger.error(f"Error in bulk flush: {e}")
-            
-            # Clear buffers
-            self.views_buffer.clear()
-            self.likes_buffer.clear()
-            self.comments_buffer.clear()
-            self.total_updates = 0
-            self.last_flush = datetime.utcnow()
+                )
+
+        # Execute bulk update
+        if bulk_operations:
+            try:
+                result = await db.videos.bulk_write(bulk_operations)
+                logger.info(f"Flushed {len(bulk_operations)} video metrics updates")
+            except Exception as e:
+                logger.error(f"Error in bulk flush: {e}")
+
+        # Clear buffers
+        self.views_buffer.clear()
+        self.likes_buffer.clear()
+        self.comments_buffer.clear()
+        self.total_updates = 0
+        self.last_flush = datetime.utcnow()
 
     async def _periodic_flush(self):
         """Background task to periodically flush metrics"""
