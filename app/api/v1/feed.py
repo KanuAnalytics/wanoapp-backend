@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from app.core.database import get_database
 from app.api.deps import get_optional_active_user
 from app.services.metrics_service import metrics_buffer
-from app.services.recombee_service import recombee_client
+from app.services.recombee_service import recombee_send
 from recombee_api_client.api_requests import RecommendItemsToUser, RecommendNextItems
 from pydantic import BaseModel
 from bson import ObjectId
@@ -390,7 +390,7 @@ async def get_feed_v2(
             filter="'is_active' == true AND 'privacy' == \"public\"",
         )
     req.timeout = 5000
-    result = recombee_client.send(req)
+    result = await recombee_send(req)
     recomm_id = result.get("recommId")
 
     recommended_ids = [ObjectId(r["id"]) for r in result.get("recomms", [])]

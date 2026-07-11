@@ -4,8 +4,12 @@ app/main.py
 """
 
 
+import asyncio
+import traceback
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, PlainTextResponse
 from contextlib import asynccontextmanager
 import logging
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -99,6 +103,50 @@ app = FastAPI(
     lifespan=lifespan,
     debug=settings.DEBUG
 )
+
+# Request timeout: any request exceeding this is cancelled, logged, and returns 504.
+# Prevents hung awaits (deadlocks, dead connections) from spinning forever invisibly.
+REQUEST_TIMEOUT_SECONDS = 30
+# Paths where long-running requests are legitimate (large file uploads)
+TIMEOUT_EXEMPT_PREFIXES = ("/video/upload",)
+
+
+@app.middleware("http")
+async def timeout_middleware(request, call_next):
+    if request.url.path.startswith(TIMEOUT_EXEMPT_PREFIXES):
+        return await call_next(request)
+    try:
+        return await asyncio.wait_for(call_next(request), timeout=REQUEST_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        logger.error(
+            f"REQUEST TIMEOUT ({REQUEST_TIMEOUT_SECONDS}s): "
+            f"{request.method} {request.url.path}"
+            f"{'?' + request.url.query if request.url.query else ''}"
+        )
+        return JSONResponse({"detail": "Request timed out"}, status_code=504)
+
+
+@app.get("/debug/tasks", response_class=PlainTextResponse)
+async def dump_tasks():
+    """
+    Dump the current stack of every asyncio task in the event loop.
+    Use this while a request is hanging to see the exact line each
+    coroutine is parked on (e.g. waiting on a lock, DB call, network).
+    TODO: put behind admin auth before this becomes a permanent fixture.
+    """
+    out = []
+    tasks = asyncio.all_tasks()
+    out.append(f"total tasks: {len(tasks)}\n")
+    for task in tasks:
+        out.append(f"--- {task.get_name()} | done={task.done()} ---")
+        frames = task.get_stack(limit=8)
+        if not frames:
+            out.append("  (no stack — task done or not started)")
+        for f in frames:
+            out.append("".join(traceback.format_stack(f, limit=1)).rstrip())
+        out.append("")
+    return "\n".join(out)
+
 
 # Add CORS middleware
 app.add_middleware(
