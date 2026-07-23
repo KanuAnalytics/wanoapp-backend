@@ -154,8 +154,9 @@ async def get_feed(
             if exclude_creator_ids:
                 match_conditions["creator_id"] = {"$nin": exclude_creator_ids}
 
-            # Exclude videos from blocked users
+            # Exclude videos from blocked users and the current user's own videos
             exclude_ids = set(blocked_users + blocked_by)
+            exclude_ids.add(ObjectId(current_user))
             if exclude_ids:
                 match_conditions["creator_id"] = {
                     **match_conditions.get("creator_id", {}),
