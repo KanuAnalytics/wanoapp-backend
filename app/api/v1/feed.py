@@ -1,4 +1,5 @@
 from typing import List, Optional
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status
 from app.core.database import get_database
 from app.api.deps import get_optional_active_user
@@ -32,6 +33,7 @@ class FeedVideo(BaseModel):
     is_following: bool = False
     recomm_id: Optional[str] = None
     supports_landscape: bool = False
+    created_at: Optional[datetime] = None
 
 
 @router.get("/", response_model=List[FeedVideo])
@@ -202,12 +204,7 @@ async def get_feed(
                     "views_count": 1,
                     "likes_count": 1,
                     "comments_count": 1,
-                    "created_at": {
-                        "$dateToString": {
-                            "format": "%Y-%m-%dT%H:%M:%S.%LZ",
-                            "date": "$created_at",
-                        }
-                    },
+                    "created_at": 1,
                     "thumbnail": "$urls.thumbnail",
                     "is_active": 1,
                     "supports_landscape": 1,
@@ -254,6 +251,7 @@ async def get_feed(
                 is_bookmarked=is_bookmarked,
                 is_following=is_following,
                 supports_landscape=video.get("supports_landscape", False),
+                created_at=video.get("created_at"),
             )
         )
 
@@ -303,6 +301,7 @@ async def get_feed(
                     "thumbnail": "$urls.thumbnail",
                     "privacy": 1,
                     "supports_landscape": 1,
+                    "created_at": 1,
                     "user": {
                         "username": "$creator.username",
                         "display_name": "$creator.display_name",
@@ -344,6 +343,7 @@ async def get_feed(
                         is_bookmarked=featured_id in bookmarked_video_ids,
                         is_following=str(featured["creator_id"]) in following_ids,
                         supports_landscape=featured.get("supports_landscape", False),
+                        created_at=featured.get("created_at"),
                     ),
                 )
                 if len(videos) > limit:
@@ -432,6 +432,7 @@ async def get_feed_v2(
                 "comments_count": 1,
                 "thumbnail": "$urls.thumbnail",
                 "supports_landscape": 1,
+                "created_at": 1,
                 "user": {
                     "username": "$creator.username",
                     "display_name": "$creator.display_name",
@@ -472,6 +473,7 @@ async def get_feed_v2(
                 is_following=str(video["creator_id"]) in following_ids,
                 recomm_id=recomm_id,
                 supports_landscape=video.get("supports_landscape", False),
+                created_at=video.get("created_at"),
             )
         )
 
@@ -486,6 +488,7 @@ async def get_feed_v2(
                 "title": 1, "description": 1, "remoteUrl": 1, "remoteUrl_CF": 1,
                 "views_count": 1, "likes_count": 1, "comments_count": 1,
                 "thumbnail": "$urls.thumbnail", "privacy": 1, "supports_landscape": 1,
+                "created_at": 1,
                 "user": {"username": "$creator.username", "display_name": "$creator.display_name",
                          "profile_picture": "$creator.profile_picture", "is_active": "$creator.is_active"},
             }},
@@ -515,6 +518,7 @@ async def get_feed_v2(
                     is_following=str(f["creator_id"]) in following_ids,
                     recomm_id=recomm_id,
                     supports_landscape=f.get("supports_landscape", False),
+                    created_at=f.get("created_at"),
                 ))
                 videos = videos[:limit]
 
