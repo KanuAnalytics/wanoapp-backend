@@ -388,6 +388,7 @@ async def get_feed_v2(
             recombee_limit,
             scenario=scenario,
             cascade_create=True,
+            rotation_rate=0.5,
             filter="'is_active' == true AND 'privacy' == \"public\"",
         )
     req.timeout = 5000
