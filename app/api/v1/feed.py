@@ -136,11 +136,13 @@ async def get_feed(
             )
         elif current_user:
             # Get personalized feed
-            exclude_creator_ids = []
+            # Exclude blocked users, the current user's own videos, and (optionally) followed creators
+            exclude_creator_ids = set(blocked_users + blocked_by)
+            exclude_creator_ids.add(ObjectId(current_user))
             if exclude_following:
                 user_following_ids = user_doc.get("following", []) if user_doc else []
-                if user_following_ids:
-                    exclude_creator_ids = [ObjectId(uid) for uid in user_following_ids]
+                exclude_creator_ids.update(ObjectId(uid) for uid in user_following_ids)
+
             user_country = (user_doc or {}).get("localization", {}).get("country", "NG")
             user_languages = (user_doc or {}).get("localization", {}).get("languages", ["en"])
 
@@ -154,16 +156,7 @@ async def get_feed(
                 }
             )
             if exclude_creator_ids:
-                match_conditions["creator_id"] = {"$nin": exclude_creator_ids}
-
-            # Exclude videos from blocked users and the current user's own videos
-            exclude_ids = set(blocked_users + blocked_by)
-            exclude_ids.add(ObjectId(current_user))
-            if exclude_ids:
-                match_conditions["creator_id"] = {
-                    **match_conditions.get("creator_id", {}),
-                    "$nin": list(exclude_ids),
-                }
+                match_conditions["creator_id"] = {"$nin": list(exclude_creator_ids)}
         else:
             # Anonymous feed: show public, active videos only
             match_conditions.update(
