@@ -319,13 +319,20 @@ async def cloudflare_stream_webhook(request: Request, background_tasks: Backgrou
     except Exception as e:
         print(f"Failed to set is_ready_to_stream on Recombee item {video['_id']}: {e}")
 
+    creator = await db.users.find_one(
+        {"_id": video["creator_id"]},
+        {"expo_push_tokens": 1},
+    )
+    tokens = (creator or {}).get("expo_push_tokens") or []
+    thumbnail_url = (video.get("urls") or {}).get("thumbnail")
+
     if str(video["creator_id"]) != FIRST_VIDEO_WELCOME_COMMENTER_ID:
         total_videos = await db.videos.count_documents({"creator_id": video["creator_id"]})
         # This is the video that just became ready, so 1 total means it's their first.
         # Counting is_active-agnostic on purpose - once welcomed, always welcomed,
         # even if this first video later gets deleted.
         if total_videos == 1:
-            await db.comments.insert_one({
+            welcome_comment = await db.comments.insert_one({
                 "video_id": video["_id"],
                 "user_id": ObjectId(FIRST_VIDEO_WELCOME_COMMENTER_ID),
                 "user_display_name": FIRST_VIDEO_WELCOME_COMMENTER_DISPLAY_NAME,
@@ -347,12 +354,30 @@ async def cloudflare_stream_webhook(request: Request, background_tasks: Backgrou
                 {"$inc": {"comments_count": 1}},
             )
 
-    creator = await db.users.find_one(
-        {"_id": video["creator_id"]},
-        {"expo_push_tokens": 1},
-    )
-    tokens = (creator or {}).get("expo_push_tokens") or []
-    thumbnail_url = (video.get("urls") or {}).get("thumbnail")
+            # Same notification + push shape create_comment uses for a real
+            # user's comment (app/api/v1/comments.py) - recipient is always the
+            # creator here since we already skip when they *are* the commenter.
+            await db.notifications.insert_one({
+                "recipient_id": video["creator_id"],
+                "type": "comment",
+                "user_id": ObjectId(FIRST_VIDEO_WELCOME_COMMENTER_ID),
+                "post_id": video["_id"],
+                "comment_id": welcome_comment.inserted_id,
+                "date": datetime.utcnow(),
+            })
+
+            comment_preview = FIRST_VIDEO_WELCOME_COMMENT[:30] + (
+                "..." if len(FIRST_VIDEO_WELCOME_COMMENT) > 30 else ""
+            )
+            for token in tokens:
+                background_tasks.add_task(
+                    send_push_message,
+                    token,
+                    comment_preview,
+                    {"video_id": str(video["_id"]), "commenter_id": FIRST_VIDEO_WELCOME_COMMENTER_ID},
+                    f"{FIRST_VIDEO_WELCOME_COMMENTER_DISPLAY_NAME} commented on your video",
+                    thumbnail_url,
+                )
 
     for token in tokens:
         background_tasks.add_task(

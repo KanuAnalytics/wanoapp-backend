@@ -3,16 +3,55 @@ Notifications endpoints
 
 app/api/v1/notifications.py
 """
+import asyncio
 import json
-from fastapi import APIRouter
+from fastapi import APIRouter, BackgroundTasks
 from bson import ObjectId
 from bson.json_util import dumps
 from app.core.database import get_database
 from app.api.deps import get_current_active_user
+from app.services.expo import send_push_batch
 from fastapi import Depends, Query
-from typing import Optional
+from typing import List, Optional
 
 router = APIRouter()
+
+BROADCAST_TITLE = "Meet the new Wano 👀"
+BROADCAST_BODY = "A whole new look. A whole new experience.\n\nUpdate Wano now →"
+PUSH_BATCH_SIZE = 100  # Expo's max messages per request
+
+
+async def _run_broadcast():
+    db = get_database()
+    cursor = db.users.find(
+        {"expo_push_tokens": {"$exists": True, "$ne": []}},
+        {"expo_push_tokens": 1},
+    )
+
+    tokens: List[str] = []
+    async for user in cursor:
+        tokens.extend(user.get("expo_push_tokens") or [])
+
+    for i in range(0, len(tokens), PUSH_BATCH_SIZE):
+        # send_push_batch is a blocking `requests` call - run it off the event
+        # loop so a 10k-user broadcast doesn't stall the whole server for
+        # everyone else while it works through ~100 sequential HTTP requests.
+        await asyncio.to_thread(
+            send_push_batch, tokens[i:i + PUSH_BATCH_SIZE], BROADCAST_BODY, BROADCAST_TITLE
+        )
+
+    print(f"broadcast_notification: done, total_tokens={len(tokens)}")
+
+
+@router.post("/broadcast")
+async def broadcast_notification(background_tasks: BackgroundTasks):
+    """
+    Push-only broadcast to every registered device across all users.
+    Does NOT write to db.notifications - this never shows up in the app's
+    in-app notification list, it's a push notification only.
+    """
+    background_tasks.add_task(_run_broadcast)
+    return {"message": "Broadcast started in background"}
 
 @router.get("/")
 async def get_notifications(
