@@ -10,6 +10,7 @@ import re
 from fastapi import BackgroundTasks, Depends, File, UploadFile, HTTPException, APIRouter, Query, Request, status
 from fastapi.responses import JSONResponse
 import httpx
+from bson import ObjectId
 from app.api.deps import get_verified_user
 from app.core.config import Settings
 from app.core.database import get_database
@@ -24,6 +25,13 @@ from app.core.config import settings
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/video", tags=["Upload Video"])
+
+FIRST_VIDEO_WELCOME_COMMENTER_ID = "6845fdb76cd85e35c8f722f6"
+FIRST_VIDEO_WELCOME_COMMENTER_DISPLAY_NAME = "Wano Team"
+FIRST_VIDEO_WELCOME_COMMENT = (
+    "First video on Wano! \U0001F30D\U0001F525 Every voice adds something. "
+    "Thanks for adding yours. Keep creating, keep sharing, keep being you."
+)
 
 class PresignRequest(BaseModel):
     filename: str
@@ -310,6 +318,34 @@ async def cloudflare_stream_webhook(request: Request, background_tasks: Backgrou
         await recombee_send(req)
     except Exception as e:
         print(f"Failed to set is_ready_to_stream on Recombee item {video['_id']}: {e}")
+
+    if str(video["creator_id"]) != FIRST_VIDEO_WELCOME_COMMENTER_ID:
+        total_videos = await db.videos.count_documents({"creator_id": video["creator_id"]})
+        # This is the video that just became ready, so 1 total means it's their first.
+        # Counting is_active-agnostic on purpose - once welcomed, always welcomed,
+        # even if this first video later gets deleted.
+        if total_videos == 1:
+            await db.comments.insert_one({
+                "video_id": video["_id"],
+                "user_id": ObjectId(FIRST_VIDEO_WELCOME_COMMENTER_ID),
+                "user_display_name": FIRST_VIDEO_WELCOME_COMMENTER_DISPLAY_NAME,
+                "content": FIRST_VIDEO_WELCOME_COMMENT,
+                "parent_id": None,
+                "likes_count": 0,
+                "replies_count": 0,
+                "liked_by": [],
+                "is_edited": False,
+                "edited_at": None,
+                "is_pinned": False,
+                "is_hearted": False,
+                "created_at": datetime.utcnow(),
+                "updated_at": datetime.utcnow(),
+                "is_active": True,
+            })
+            await db.videos.update_one(
+                {"_id": video["_id"]},
+                {"$inc": {"comments_count": 1}},
+            )
 
     creator = await db.users.find_one(
         {"_id": video["creator_id"]},
