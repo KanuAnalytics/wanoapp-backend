@@ -20,6 +20,9 @@ from bson.json_util import dumps
 from app.models.user import UserType
 from recombee_api_client.api_requests import SetViewPortion, AddRating, DeleteRating, AddBookmark, DeleteBookmark, SetItemValues, Batch, DeleteItem
 from app.services.recombee_service import recombee_send
+from app.services.upload_DO import extract_stream_uid, delete_stream_video
+
+DELETED_VIDEO_PLACEHOLDER_URL = "https://videodelivery.net/fc6b3da74765fa42f7a2cde3de5b2967/manifest/video.m3u8"
 
 router = APIRouter()
 
@@ -533,10 +536,16 @@ async def delete_video(
             detail="You do not have permission to delete this video"
         )
 
-    # Soft delete video
+    # Soft delete video, and swap in the "deleted" placeholder stream so any
+    # stale references (feeds, bookmarks, etc.) never resolve to a dead CF URL
     await db.videos.update_one(
         {"_id": ObjectId(video_id)},
-        {"$set": {"is_active": False, "updated_at": datetime.utcnow()}}
+        {"$set": {
+            "is_active": False,
+            "updated_at": datetime.utcnow(),
+            "remoteUrl": DELETED_VIDEO_PLACEHOLDER_URL,
+            "remoteUrl_CF": DELETED_VIDEO_PLACEHOLDER_URL,
+        }}
     )
 
     # Decrement creator’s video count ONLY if the creator deleted it
@@ -545,6 +554,13 @@ async def delete_video(
         {"_id": video["creator_id"]},
         {"$inc": {"videos_count": -1}}
     )
+
+    stream_uid = extract_stream_uid(video.get("remoteUrl_CF"))
+    if stream_uid:
+        try:
+            delete_stream_video(stream_uid)
+        except Exception as e:
+            print(f"Failed to delete Cloudflare Stream video {stream_uid}: {e}")
 
     try:
         req = DeleteItem(video_id)
