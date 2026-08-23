@@ -14,7 +14,9 @@ from app.api.deps import get_verified_user
 from app.core.config import Settings
 from app.core.database import get_database
 from app.models.upload_video import CheckStatusReq
+from recombee_api_client.api_requests import SetItemValues
 from app.services.expo import send_push_message
+from app.services.recombee_service import recombee_send
 from app.services.sqs_publisher import push_video_processing_job
 from app.services.upload_DO import generate_cf_tus_upload_url, upload_to_spaces, allowed_file, secure_filename, get_content_type, is_image_file, generate_presigned_upload_url, generate_stream_direct_upload_url, get_stream_video_status
 import asyncio
@@ -301,6 +303,13 @@ async def cloudflare_stream_webhook(request: Request, background_tasks: Backgrou
     )
     if not video:
         return {"ok": True}
+
+    try:
+        req = SetItemValues(str(video["_id"]), {"is_ready_to_stream": True}, cascade_create=True)
+        req.timeout = 5000
+        await recombee_send(req)
+    except Exception as e:
+        print(f"Failed to set is_ready_to_stream on Recombee item {video['_id']}: {e}")
 
     creator = await db.users.find_one(
         {"_id": video["creator_id"]},

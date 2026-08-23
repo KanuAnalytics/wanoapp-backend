@@ -7,6 +7,7 @@ from botocore.exceptions import ClientError
 import os
 import uuid
 import re
+from typing import Optional
 from fastapi import UploadFile
 from app.core.config import settings
 from botocore.client import Config
@@ -294,6 +295,35 @@ def get_stream_video_status(uid: str):
         "uid": result.get("uid"),
         "readyToStream": result.get("readyToStream"),
     }
+
+
+def extract_stream_uid(remote_url_cf: str) -> Optional[str]:
+    """Pull the Cloudflare Stream UID out of a videodelivery.net playback URL."""
+    match = re.search(r"videodelivery\.net/([a-f0-9]+)/", remote_url_cf or "")
+    return match.group(1) if match else None
+
+
+def delete_stream_video(uid: str) -> None:
+    """
+    Delete a video from Cloudflare Stream by UID.
+    A 404 (already gone) is treated as success.
+    """
+    account_id = settings.CLOUDFLARE_ACCOUNT_ID
+    api_token = settings.CLOUDFLARE_STREAM_API_TOKEN
+
+    if not account_id or not api_token:
+        raise RuntimeError("Cloudflare Stream account ID or API token not configured")
+
+    url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/stream/{uid}"
+    headers = {"Authorization": f"Bearer {api_token}"}
+
+    resp = requests.delete(url, headers=headers, timeout=10)
+    if resp.status_code == 404:
+        return
+    if not resp.ok:
+        raise RuntimeError(
+            f"Failed to delete video from Cloudflare Stream: {resp.status_code} {resp.text}"
+        )
 
 
 def generate_cf_tus_upload_url(filename: str, fileSize: int, folder: str = "videos"):
