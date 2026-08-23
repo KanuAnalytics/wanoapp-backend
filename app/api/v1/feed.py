@@ -373,7 +373,7 @@ async def get_feed_v2(
     recombee_user_id = current_user or "temp-user"
     recombee_limit = limit - 1 if video_id else limit
 
-    base_filter = "'is_active' == true AND 'privacy' == \"public\""
+    base_filter = "'is_active' == true AND 'privacy' == \"public\" AND 'is_ready_to_stream' == true"
 
     async def recombee_fallback(count: int):
         req = RecommendItemsToUser(
