@@ -379,6 +379,19 @@ async def get_feed_v2(
         req = RecommendNextItems(next_recomm_id, recombee_limit)
         req.timeout = 5000
         result = await recombee_send(req)
+
+        if not result.get("recomms"):
+            # Recency-filtered batch is exhausted - start a fresh unfiltered batch
+            req = RecommendItemsToUser(
+                recombee_user_id,
+                recombee_limit,
+                scenario=scenario,
+                cascade_create=True,
+                rotation_rate=0.5,
+                filter=base_filter,
+            )
+            req.timeout = 5000
+            result = await recombee_send(req)
     else:
         recent_filter = base_filter + " AND 'created_at' > now() - (10 * 24 * 60 * 60)"
         req = RecommendItemsToUser(
