@@ -2,13 +2,19 @@
 
 
 from typing import Optional
-from fastapi import Depends, File, UploadFile, HTTPException, APIRouter, Query, status
+from datetime import datetime
+import hashlib
+import hmac
+import json
+import re
+from fastapi import BackgroundTasks, Depends, File, UploadFile, HTTPException, APIRouter, Query, Request, status
 from fastapi.responses import JSONResponse
 import httpx
 from app.api.deps import get_verified_user
 from app.core.config import Settings
 from app.core.database import get_database
 from app.models.upload_video import CheckStatusReq
+from app.services.expo import send_push_message
 from app.services.sqs_publisher import push_video_processing_job
 from app.services.upload_DO import generate_cf_tus_upload_url, upload_to_spaces, allowed_file, secure_filename, get_content_type, is_image_file, generate_presigned_upload_url, generate_stream_direct_upload_url, get_stream_video_status
 import asyncio
@@ -231,7 +237,7 @@ async def check_stream_status(input: CheckStatusReq):
         uId = input.uId
         videoId = input.videoId
         print("Initiating status check for UID:", uId)
-        
+
         push_video_processing_job(
             videoId=videoId,
             uId=uId,
@@ -241,3 +247,83 @@ async def check_stream_status(input: CheckStatusReq):
         return {"message": "Video status check initiated in background"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def _verify_cf_webhook_signature(raw_body: bytes, signature_header: str) -> bool:
+    """
+    Verify Cloudflare Stream's webhook signature header, formatted as
+    "time=<unix_ts>,sig1=<hex_hmac_sha256>". See Cloudflare Stream webhook docs.
+    """
+    if not signature_header:
+        return False
+
+    parts = dict(p.split("=", 1) for p in signature_header.split(",") if "=" in p)
+    timestamp = parts.get("time")
+    signature = parts.get("sig1")
+    if not timestamp or not signature:
+        return False
+
+    signed_payload = f"{timestamp}.{raw_body.decode()}".encode()
+    expected = hmac.new(
+        settings.CLOUDFLARE_STREAM_WEBHOOK_SECRET.encode(),
+        signed_payload,
+        hashlib.sha256,
+    ).hexdigest()
+    return hmac.compare_digest(expected, signature)
+
+
+@router.post("/cf-webhook")
+async def cloudflare_stream_webhook(request: Request, background_tasks: BackgroundTasks):
+    """
+    Cloudflare Stream calls this when a video's processing state changes.
+    Once a video first becomes ready to stream, notify its creator.
+    """
+    raw_body = await request.body()
+    signature_header = request.headers.get("webhook-signature", "")
+
+    if not _verify_cf_webhook_signature(raw_body, signature_header):
+        raise HTTPException(status_code=401, detail="Invalid webhook signature")
+
+    payload = json.loads(raw_body)
+    uid = payload.get("uid")
+    ready = payload.get("readyToStream", False)
+
+    if not uid or not ready:
+        return {"ok": True}
+
+    db = get_database()
+    # isReadyToStream: {"$ne": True} makes this idempotent - Cloudflare may retry
+    # the same webhook, and we only want to notify the creator once.
+    video = await db.videos.find_one_and_update(
+        {"remoteUrl_CF": {"$regex": re.escape(uid)}, "isReadyToStream": {"$ne": True}},
+        {"$set": {"isReadyToStream": True}},
+        projection={"creator_id": 1, "urls.thumbnail": 1},
+    )
+    if not video:
+        return {"ok": True}
+
+    creator = await db.users.find_one(
+        {"_id": video["creator_id"]},
+        {"expo_push_tokens": 1},
+    )
+    tokens = (creator or {}).get("expo_push_tokens") or []
+    thumbnail_url = (video.get("urls") or {}).get("thumbnail")
+
+    for token in tokens:
+        background_tasks.add_task(
+            send_push_message,
+            token,
+            "Your video has been successfully uploaded!",
+            {"screen": "profile_v2"},
+            None,
+            thumbnail_url,
+        )
+
+    await db.notifications.insert_one({
+        "recipient_id": video["creator_id"],
+        "type": "video_ready",
+        "post_id": video["_id"],
+        "date": datetime.utcnow(),
+    })
+
+    return {"ok": True}
