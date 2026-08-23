@@ -373,19 +373,48 @@ async def get_feed_v2(
     recombee_user_id = current_user or "temp-user"
     recombee_limit = limit - 1 if video_id else limit
 
+    base_filter = "'is_active' == true AND 'privacy' == \"public\""
+
+    async def recombee_fallback(count: int):
+        req = RecommendItemsToUser(
+            recombee_user_id,
+            count,
+            scenario=scenario,
+            cascade_create=True,
+            rotation_rate=0.5,
+            filter=base_filter,
+        )
+        req.timeout = 5000
+        return await recombee_send(req)
+
     if next_recomm_id:
         req = RecommendNextItems(next_recomm_id, recombee_limit)
+        req.timeout = 5000
+        result = await recombee_send(req)
     else:
+        recent_filter = base_filter + " AND 'created_at' > now() - (10 * 24 * 60 * 60)"
         req = RecommendItemsToUser(
             recombee_user_id,
             recombee_limit,
             scenario=scenario,
             cascade_create=True,
             rotation_rate=0.5,
-            filter="'is_active' == true AND 'privacy' == \"public\"",
+            filter=recent_filter,
         )
-    req.timeout = 5000
-    result = await recombee_send(req)
+        req.timeout = 5000
+        result = await recombee_send(req)
+
+    recomms = result.get("recomms", [])
+
+    if len(recomms) < recombee_limit:
+        # Batch ran short (recency pool thin, or paginated batch exhausted) - top up
+        # from the unfiltered pool rather than treating "fewer than asked" as "list ended".
+        fallback_result = await recombee_fallback(recombee_limit - len(recomms))
+        seen_ids = {r["id"] for r in recomms}
+        extra_recomms = [r for r in fallback_result.get("recomms", []) if r["id"] not in seen_ids]
+        result = fallback_result
+        result["recomms"] = recomms + extra_recomms
+
     recomm_id = result.get("recommId")
 
     recommended_ids = [ObjectId(r["id"]) for r in result.get("recomms", [])]
