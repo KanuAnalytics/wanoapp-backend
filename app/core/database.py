@@ -44,6 +44,9 @@ async def create_indexes():
     try:
         # Video indexes
         await db.db.videos.create_index([("created_at", -1)])
+        # Matches the v1 feed's sort, which pairs created_at with an _id tiebreaker;
+        # the created_at-only index above can't supply that order on its own.
+        await db.db.videos.create_index([("created_at", -1), ("_id", -1)])
         await db.db.videos.create_index([("creator_id", 1)])
         await db.db.videos.create_index([("is_active", 1), ("privacy", 1)])
         

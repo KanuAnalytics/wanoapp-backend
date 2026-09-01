@@ -8,10 +8,12 @@ from app.services.recombee_service import recombee_send
 from recombee_api_client.api_requests import RecommendItemsToUser, RecommendNextItems
 from pydantic import BaseModel
 from bson import ObjectId
-import random
 
 router = APIRouter()
 #deploy
+
+# Fields the client may sort the v1 feed by; anything else falls back to created_at.
+SORTABLE_FIELDS = {"created_at", "views_count", "likes_count"}
 class FeedVideo(BaseModel):
     id: str
     creator_id: str
@@ -66,7 +68,6 @@ async def get_feed(
                 "blocked_users": 1,
                 "blocked_by": 1,
                 "following": 1,
-                "localization": 1,
             },
         ) or {}
 
@@ -143,18 +144,7 @@ async def get_feed(
                 user_following_ids = user_doc.get("following", []) if user_doc else []
                 exclude_creator_ids.update(ObjectId(uid) for uid in user_following_ids)
 
-            user_country = (user_doc or {}).get("localization", {}).get("country", "NG")
-            user_languages = (user_doc or {}).get("localization", {}).get("languages", ["en"])
-
-            match_conditions.update(
-                {
-                    "privacy": "public",
-                    "$or": [
-                        {"country": user_country},
-                        {"language": {"$in": user_languages}},
-                    ]
-                }
-            )
+            match_conditions.update({"privacy": "public"})
             if exclude_creator_ids:
                 match_conditions["creator_id"] = {"$nin": list(exclude_creator_ids)}
         else:
@@ -165,8 +155,14 @@ async def get_feed(
                 }
             )
 
-        sort_stage = {sorted_by: -1} if sorted_by else {"created_at": -1}
-        
+        # sorted_by lands straight in $sort, so an unrecognised field name means an
+        # unindexed in-memory sort (capped at 32MB). Fall back to created_at instead.
+        # The _id tiebreaker keeps $skip/$limit paging stable: without it, docs sharing
+        # a sort value have no defined order between requests, so a page boundary can
+        # repeat or drop videos.
+        sort_field = sorted_by if sorted_by in SORTABLE_FIELDS else "created_at"
+        sort_stage = {sort_field: -1, "_id": -1}
+
         pipeline = [
             {"$match": match_conditions},
             {"$sort": sort_stage},
@@ -341,21 +337,6 @@ async def get_feed(
                 )
                 if len(videos) > limit:
                     videos = videos[:limit]
-
-    # Insert ads (1:20 ratio) - only for personalized feed, not for specific user videos or saved videos
-    if not user_id and not saved and len(videos) >= 20:
-        # Insert an ad at a random position
-        ad_position = random.randint(5, 15)
-        # In production, fetch actual ad from campaigns
-        ad = FeedVideo(
-            id="ad_placeholder",
-            creator_id="advertiser_id",
-            title="Sponsored Content",
-            views_count=0,
-            likes_count=0,
-            is_ad=True,
-        )
-        videos.insert(ad_position, ad)
 
     return videos
 
