@@ -155,6 +155,10 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Browsers hide non-safelisted response headers from JS unless listed
+    # here; React Native itself isn't affected, but a web client reading
+    # X-Has-More (feed v1 pagination) would be silently blocked without this.
+    expose_headers=["X-Has-More"],
 )
 
 # Include the API router - THIS IS WHAT'S MISSING!

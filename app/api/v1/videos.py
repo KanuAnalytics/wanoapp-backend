@@ -24,6 +24,11 @@ from app.services.upload_DO import extract_stream_uid, delete_stream_video
 
 DELETED_VIDEO_PLACEHOLDER_URL = "https://videodelivery.net/fc6b3da74765fa42f7a2cde3de5b2967/manifest/video.m3u8"
 
+# Fraction of a video (0-1) that counts as "watched" for feed-exclusion
+# purposes. Below this, a view is still reported to Recombee (every view is a
+# useful ranking signal) but isn't persisted to watch_history.
+WATCHED_PORTION_THRESHOLD = 0.5
+
 router = APIRouter()
 
 class VideoPost(BaseModel):
@@ -55,6 +60,12 @@ class VideoCreate(BaseModel):
     categories: List[str] = []
     remix_enabled: bool = True
     comments_enabled: bool = True
+
+class TrackWatchBody(BaseModel):
+    portion: float = Field(..., ge=0, le=1)
+    time_spent: Optional[float] = None
+    recomm_id: Optional[str] = None
+    auto_presented: bool = False
 
 class VideoUpdate(BaseModel):
     title: Optional[str] = None
@@ -335,6 +346,55 @@ async def search_videos(
     docs = await cursor.to_list(length=limit)
     return json.loads(dumps(docs))
 
+async def _send_milestone_push(db, video: dict, video_id: str, background_tasks: BackgroundTasks, title: str):
+    recipient = await db.users.find_one(
+        {"_id": video["creator_id"]},
+        {"expo_push_tokens": 1},
+    )
+    recipient_tokens = (recipient or {}).get("expo_push_tokens") or []
+    thumbnail_url = (video.get("urls") or {}).get("thumbnail")
+    description = (video.get("description") or "").strip()
+    description_preview = description[:30] + ("..." if len(description) > 30 else "")
+    for token in recipient_tokens:
+        background_tasks.add_task(
+            send_push_message,
+            token,
+            description_preview,
+            {"video_id": video_id},
+            title,
+            thumbnail_url,
+        )
+
+
+async def notify_view_milestones(
+    db,
+    video: dict,
+    video_id: str,
+    total_views: int,
+    background_tasks: Optional[BackgroundTasks],
+):
+    """Push-notifies a video's creator when its view count crosses a
+    milestone. Shared by GET /{video_id} and POST /{video_id}/watch so both
+    view-counting paths trigger the same creator notifications."""
+    if background_tasks is None:
+        return
+
+    if total_views == 25:
+        await _send_milestone_push(
+            db, video, video_id, background_tasks, "Your post is getting attention 🔥"
+        )
+
+    milestone_labels = {50: "50", 100: "100", 1000: "1k", 5000: "5k"}
+    if total_views in milestone_labels:
+        await _send_milestone_push(
+            db,
+            video,
+            video_id,
+            background_tasks,
+            f"Your video just hit {milestone_labels[total_views]} views",
+        )
+
+
 @router.get("/{video_id}", response_model=VideoResponse)
 async def get_video(
     video_id: str,
@@ -385,46 +445,8 @@ async def get_video(
     buffered = await metrics_buffer.get_buffered_counts(video_id)
 
     total_views = video.get("views_count", 0) + buffered["views"]
-    if total_views == 25 and background_tasks is not None:
-        recipient = await db.users.find_one(
-            {"_id": video["creator_id"]},
-            {"expo_push_tokens": 1},
-        )
-        recipient_tokens = (recipient or {}).get("expo_push_tokens") or []
-        thumbnail_url = (video.get("urls") or {}).get("thumbnail")
-        description = (video.get("description") or "").strip()
-        description_preview = description[:30] + ("..." if len(description) > 30 else "")
-        for token in recipient_tokens:
-            background_tasks.add_task(
-                send_push_message,
-                token,
-                description_preview,
-                {"video_id": video_id},
-                "Your post is getting attention 🔥",
-                thumbnail_url,
-            )
+    await notify_view_milestones(db, video, video_id, total_views, background_tasks)
 
-    milestone_labels = {50: "50", 100: "100", 1000: "1k", 5000: "5k"}
-    if total_views in milestone_labels and background_tasks is not None:
-        recipient = await db.users.find_one(
-            {"_id": video["creator_id"]},
-            {"expo_push_tokens": 1},
-        )
-        recipient_tokens = (recipient or {}).get("expo_push_tokens") or []
-        thumbnail_url = (video.get("urls") or {}).get("thumbnail")
-        title = f"Your video just hit {milestone_labels[total_views]} views"
-        description = (video.get("description") or "").strip()
-        description_preview = description[:30] + ("..." if len(description) > 30 else "")
-        for token in recipient_tokens:
-            background_tasks.add_task(
-                send_push_message,
-                token,
-                description_preview,
-                {"video_id": video_id},
-                title,
-                thumbnail_url,
-            )
-    
     is_liked = False
     is_following = False
     creator_doc = await db.users.find_one({"_id": video["creator_id"]}) or {}
@@ -454,6 +476,80 @@ async def get_video(
     response.user = user_info
 
     return response
+
+@router.post("/{video_id}/watch", status_code=status.HTTP_200_OK)
+async def track_video_watch(
+    video_id: str,
+    body: TrackWatchBody,
+    current_user: Optional[str] = Depends(get_optional_active_user),
+    background_tasks: BackgroundTasks = None,
+):
+    """
+    Called once per video, when the feed scrolls off it — replaces the old
+    tracking call that rode along on GET /{video_id}. Sends the same
+    Recombee view-portion signal that call sent, triggers the same
+    view-milestone creator notifications, and additionally persists a
+    watch_history row once `portion` crosses WATCHED_PORTION_THRESHOLD, for
+    the feed to later filter out. The feed-exclusion filtering itself is not
+    implemented yet — this endpoint only records the data it will need.
+    """
+    if not ObjectId.is_valid(video_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid video ID",
+        )
+
+    db = get_database()
+
+    video = await db.videos.find_one(
+        {"_id": ObjectId(video_id), "is_active": True},
+        {"description": 1, "urls.thumbnail": 1, "creator_id": 1, "views_count": 1},
+    )
+    if not video:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Video not found",
+        )
+
+    # Buffered view count — GET /{video_id} did this on every call; preserved
+    # here since the feed no longer calls that endpoint for tracking.
+    await metrics_buffer.increment_view(video_id)
+
+    buffered = await metrics_buffer.get_buffered_counts(video_id)
+    total_views = video.get("views_count", 0) + buffered["views"]
+    await notify_view_milestones(db, video, video_id, total_views, background_tasks)
+
+    watched = False
+
+    if current_user:
+        try:
+            kwargs = {"auto_presented": body.auto_presented, "cascade_create": True}
+            if body.recomm_id:
+                kwargs["recomm_id"] = body.recomm_id
+            if body.time_spent is not None:
+                kwargs["time_spent"] = body.time_spent
+            req = SetViewPortion(current_user, video_id, body.portion, **kwargs)
+            req.timeout = 5000
+            await recombee_send(req)
+        except Exception:
+            pass
+
+        if body.portion >= WATCHED_PORTION_THRESHOLD:
+            now = datetime.utcnow()
+            await db.watch_history.update_one(
+                {
+                    "user_id": ObjectId(current_user),
+                    "video_id": ObjectId(video_id),
+                },
+                {
+                    "$set": {"portion": body.portion, "watched_at": now},
+                    "$setOnInsert": {"first_watched_at": now},
+                },
+                upsert=True,
+            )
+            watched = True
+
+    return {"watched": watched}
 
 @router.put("/{video_id}", response_model=VideoResponse)
 async def update_video(
