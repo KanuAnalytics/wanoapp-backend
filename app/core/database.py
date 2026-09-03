@@ -49,7 +49,15 @@ async def create_indexes():
         await db.db.videos.create_index([("created_at", -1), ("_id", -1)])
         await db.db.videos.create_index([("creator_id", 1)])
         await db.db.videos.create_index([("is_active", 1), ("privacy", 1)])
-        
+
+        # Watch history: one doc per (user, video). Unique index doubles as
+        # the upsert key; the second index supports a future "continue
+        # watching" query and per-user history listing.
+        await db.db.watch_history.create_index(
+            [("user_id", 1), ("video_id", 1)], unique=True
+        )
+        await db.db.watch_history.create_index([("user_id", 1), ("watched_at", -1)])
+
         # User indexes
         await db.db.users.create_index([("username", 1)], unique=True)
         await db.db.users.create_index([("email", 1)], unique=True)
