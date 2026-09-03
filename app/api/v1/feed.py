@@ -1,6 +1,6 @@
 from typing import List, Optional
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from app.core.database import get_database
 from app.api.deps import get_optional_active_user
 from app.services.metrics_service import metrics_buffer
@@ -40,6 +40,7 @@ class FeedVideo(BaseModel):
 
 @router.get("/", response_model=List[FeedVideo])
 async def get_feed(
+    response: Response,
     current_user: Optional[str] = Depends(get_optional_active_user),
     skip: int = 0,
     limit: int = 20,
@@ -48,6 +49,7 @@ async def get_feed(
     saved: bool = False,
     exclude_following: bool = False,
     sorted_by: Optional[str] = None,
+    exclude_watched: bool = False,
 ):
     """Get personalized video feed, videos from a specific user, or saved videos"""
     db = get_database()
@@ -112,7 +114,8 @@ async def get_feed(
             ]
             }},
         ]
-        cursor = db.users.aggregate(pipeline)
+        docs = await db.users.aggregate(pipeline).to_list(length=limit)
+        has_more = len(docs) == limit
     else:
         # For all other cases, use videos collection with dynamic match conditions
         match_conditions = {
@@ -163,6 +166,25 @@ async def get_feed(
         sort_field = sorted_by if sorted_by in SORTABLE_FIELDS else "created_at"
         sort_stage = {sort_field: -1, "_id": -1}
 
+        # Exclusion only makes sense for the generic discovery feed -- a
+        # profile grid (user_id) should show all of a creator's videos, and
+        # saved videos are handled in the branch above entirely. Anonymous
+        # requests have no stable identity to key watch_history on.
+        #
+        # exclude_watched is an explicit client opt-in, not just "has a
+        # current_user": an app build that predates this feature sends
+        # neither this flag, and keeps computing skip locally exactly as
+        # before. Gating on it means an unupdated client gets byte-for-byte
+        # its old behavior until it ships the exclusion-aware code.
+        apply_watch_filter = bool(current_user) and not user_id and exclude_watched
+
+        # skip/limit stay exactly as-is regardless of filtering: this pipeline
+        # doesn't backfill past `limit` to compensate for filtered-out
+        # videos, so the raw window a page covers is always [skip, skip+limit)
+        # -- unaffected by how many of those turn out to be watched. That
+        # keeps skip stable across pages at the cost of pages sometimes
+        # coming back shorter than `limit` (or empty) when several of the
+        # raw candidates happen to already be watched.
         pipeline = [
             {"$match": match_conditions},
             {"$sort": sort_stage},
@@ -207,10 +229,29 @@ async def get_feed(
             },
         ]
 
-        cursor = db.videos.aggregate(pipeline)
+        docs = await db.videos.aggregate(pipeline).to_list(length=limit)
+        # Captured before watch-filtering below can shrink docs: has_more
+        # reflects whether the raw skip/limit window was actually full, not
+        # how many of those survived filtering. Those are different
+        # questions once filtering happens post-fetch -- a full raw window
+        # with 3 watched videos filtered out still means more content exists
+        # at the next skip, even though this page comes back short.
+        has_more = len(docs) == limit
+
+        if apply_watch_filter and docs:
+            # Bounded to this batch's own ids -- never the user's full watch
+            # history -- so this stays cheap no matter how much they've
+            # watched in total.
+            candidate_ids = [ObjectId(d["_id"]) for d in docs]
+            watched_cursor = db.watch_history.find(
+                {"user_id": ObjectId(current_user), "video_id": {"$in": candidate_ids}},
+                {"video_id": 1},
+            )
+            watched_ids = {str(w["video_id"]) async for w in watched_cursor}
+            docs = [d for d in docs if d["_id"] not in watched_ids]
 
     videos = []
-    async for doc in cursor:
+    for doc in docs:
         # For saved videos, video data is in doc["videos"], otherwise it's directly in doc
         video = doc.get("videos", doc) if saved else doc
         feed_video_id = str(video["_id"])
@@ -337,6 +378,14 @@ async def get_feed(
                 )
                 if len(videos) > limit:
                     videos = videos[:limit]
+
+    # Signals whether the raw skip/limit window was full, independent of the
+    # returned list's length -- see the has_more comment above. v2 has no
+    # equivalent header: Recombee already tops up short batches internally
+    # (see get_feed_v2's fallback_result logic) and reports true exhaustion
+    # as a genuinely empty response, so the client's existing empty-page
+    # check is already a reliable signal there.
+    response.headers["X-Has-More"] = "true" if has_more else "false"
 
     return videos
 
