@@ -22,6 +22,8 @@ class FeedVideo(BaseModel):
     thumbnail: Optional[str] = None
     remoteUrl: Optional[str] = None
     remoteUrl_CF: Optional[str] = None
+    media_type: str = "video"
+    images: List[str] = []
     views_count: int
     likes_count: int
     comments_count: int = 0
@@ -217,6 +219,8 @@ async def get_feed(
                     "comments_count": 1,
                     "created_at": 1,
                     "thumbnail": "$urls.thumbnail",
+                    "media_type": {"$ifNull": ["$media_type", "video"]},
+                    "images": {"$ifNull": ["$images", []]},
                     "is_active": 1,
                     "supports_landscape": 1,
                     "user": {
@@ -273,6 +277,8 @@ async def get_feed(
                 comments_count=video.get("comments_count", 0),
                 remoteUrl=video.get("remoteUrl"),
                 remoteUrl_CF=video.get("remoteUrl_CF"),
+                media_type=video.get("media_type", "video"),
+                images=video.get("images", []),
                 is_ad=False,
                 buffered_views=buffered["views"],
                 buffered_likes=buffered["likes"],
@@ -329,6 +335,8 @@ async def get_feed(
                     "likes_count": 1,
                     "comments_count": 1,
                     "thumbnail": "$urls.thumbnail",
+                    "media_type": {"$ifNull": ["$media_type", "video"]},
+                    "images": {"$ifNull": ["$images", []]},
                     "privacy": 1,
                     "supports_landscape": 1,
                     "created_at": 1,
@@ -365,6 +373,8 @@ async def get_feed(
                         comments_count=featured.get("comments_count", 0),
                         remoteUrl=featured.get("remoteUrl"),
                         remoteUrl_CF=featured.get("remoteUrl_CF"),
+                        media_type=featured.get("media_type", "video"),
+                        images=featured.get("images", []),
                         is_ad=False,
                         buffered_views=buffered["views"],
                         buffered_likes=buffered["likes"],
@@ -484,6 +494,8 @@ async def get_feed_v2(
                 "likes_count": 1,
                 "comments_count": 1,
                 "thumbnail": "$urls.thumbnail",
+                "media_type": {"$ifNull": ["$media_type", "video"]},
+                "images": {"$ifNull": ["$images", []]},
                 "supports_landscape": 1,
                 "created_at": 1,
                 "user": {
@@ -518,6 +530,8 @@ async def get_feed_v2(
                 comments_count=video.get("comments_count", 0),
                 remoteUrl=video.get("remoteUrl"),
                 remoteUrl_CF=video.get("remoteUrl_CF"),
+                media_type=video.get("media_type", "video"),
+                images=video.get("images", []),
                 buffered_views=buffered["views"],
                 buffered_likes=buffered["likes"],
                 user=video.get("user", {}),
@@ -541,6 +555,8 @@ async def get_feed_v2(
                 "title": 1, "description": 1, "remoteUrl": 1, "remoteUrl_CF": 1,
                 "views_count": 1, "likes_count": 1, "comments_count": 1,
                 "thumbnail": "$urls.thumbnail", "privacy": 1, "supports_landscape": 1,
+                "media_type": {"$ifNull": ["$media_type", "video"]},
+                "images": {"$ifNull": ["$images", []]},
                 "created_at": 1,
                 "user": {"username": "$creator.username", "display_name": "$creator.display_name",
                          "profile_picture": "$creator.profile_picture", "is_active": "$creator.is_active"},
@@ -563,6 +579,8 @@ async def get_feed_v2(
                     comments_count=f.get("comments_count", 0),
                     remoteUrl=f.get("remoteUrl"),
                     remoteUrl_CF=f.get("remoteUrl_CF"),
+                    media_type=f.get("media_type", "video"),
+                    images=f.get("images", []),
                     buffered_views=0,
                     buffered_likes=0,
                     user=f.get("user", {}),
