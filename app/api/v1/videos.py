@@ -4,7 +4,7 @@ Video CRUD operations with buffered metrics
 app/api/v1/vidoes.py
 
 """
-from typing import List, Optional
+from typing import List, Literal, Optional
 from fastapi import APIRouter, HTTPException, Depends, status, UploadFile, File, Form, Query, BackgroundTasks
 from bson import ObjectId
 from datetime import datetime
@@ -36,8 +36,10 @@ class VideoPost(BaseModel):
     description: Optional[str] = None
     video_type: Optional[VideoType] = VideoType.REGULAR
     privacy: VideoPrivacy = VideoPrivacy.PUBLIC
-    remoteUrl: str
-    remoteUrl_CF:str
+    media_type: Literal["video", "photo"] = "video"
+    remoteUrl: Optional[str] = None
+    remoteUrl_CF: Optional[str] = None
+    images: Optional[List[str]] = None
     thumbnail: Optional[str] = 'https://wano-africadev.lon1.digitaloceanspaces.com/wanoafrica-dospaces-key/profile-pictures/thumbnail_placeholder.png'
     duration: Optional[float] = 0.0
     start: Optional[float] = 0.0
@@ -97,7 +99,9 @@ class VideoResponse(BaseModel):
     end: Optional[float] = None
     remoteUrl: Optional[str] = None
     remoteUrl_CF: Optional[str] = None
-    
+    media_type: str = "video"
+    images: List[str] = []
+
     is_following: Optional[bool] = None
     is_liked: Optional[bool] = None
     urls: Optional[dict] = None
@@ -120,13 +124,30 @@ async def post_video(
         description = (input.description or "").strip()
         hashtags = re.findall(r"#(\w+)", description)
 
+        is_photo_post = input.media_type == "photo"
+
+        if is_photo_post:
+            if not input.images:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="images is required for photo posts",
+                )
+        else:
+            if not input.remoteUrl or not input.remoteUrl_CF:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="remoteUrl and remoteUrl_CF are required for video posts",
+                )
+
         video_doc = {
             "creator_id": ObjectId(current_user),
             "title": input.title,  # Can be updated later by user
             "description": description,
             "video_type": "regular",
             "privacy": input.privacy,
-            "isReadyToStream": input.isReadyToStream,
+            # Photo posts have no Cloudflare stream to ever flip this later, so
+            # they must be ready immediately or they'd never surface in any feed.
+            "isReadyToStream": True if is_photo_post else input.isReadyToStream,
             "metadata": {
                 "duration": input.duration,
                 "width": input.width if input.width is not None else 1080,
@@ -135,10 +156,11 @@ async def post_video(
                 "file_size": 0  # You can calculate this during upload
             },
             "urls": {
-                "original": input.remoteUrl,
-                "hls_playlist": input.remoteUrl,  # In production, generate HLS separately
-                "thumbnail": input.thumbnail,  # In production, generate thumbnail separately
-                "download": input.remoteUrl
+                "original": None if is_photo_post else input.remoteUrl,
+                "hls_playlist": None if is_photo_post else input.remoteUrl,  # In production, generate HLS separately
+                # No custom thumbnail for photo posts -- always the first image.
+                "thumbnail": input.images[0] if is_photo_post else input.thumbnail,
+                "download": None if is_photo_post else input.remoteUrl
             },
             "categoryId" : input.categoryId,
             "subcategoryId" : input.subcategoryId,
@@ -149,7 +171,9 @@ async def post_video(
             "duration": input.duration,
             "remoteUrl": input.remoteUrl,
             "remoteUrl_CF":input.remoteUrl_CF,
-            "type": 'video',
+            "media_type": input.media_type,
+            "images": input.images or [],
+            "type": input.media_type,
             # Standard fields
             "hashtags": hashtags,
             "categories": [],
@@ -197,6 +221,11 @@ async def post_video(
                 "supports_landscape": bool(video_doc.get("supports_landscape", False)),
                 "privacy": video_doc.get("privacy") or "public",
                 "created_at": video_doc["created_at"].isoformat(),
+                # v2 (Recombee) feed filters on 'is_ready_to_stream' == true --
+                # photo posts need this true immediately since nothing else
+                # (e.g. a stream-ready webhook) will ever flip it later.
+                "is_ready_to_stream": bool(video_doc.get("isReadyToStream", False)),
+                "media_type": video_doc.get("media_type", "video"),
             }
             req = SetItemValues(item_id, values, cascade_create=True)
             req.timeout = 10000
@@ -206,6 +235,8 @@ async def post_video(
             pass
 
         return {"message": "Video posted successfully", "video_id": str(result.inserted_id)}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
