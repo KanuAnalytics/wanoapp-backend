@@ -234,7 +234,8 @@ async def post_video(
         except Exception:
             pass
 
-        return {"message": "Video posted successfully", "video_id": str(result.inserted_id)}
+        message = "Photo posted successfully" if is_photo_post else "Video posted successfully"
+        return {"message": message, "video_id": str(result.inserted_id)}
     except HTTPException:
         raise
     except Exception as e:
