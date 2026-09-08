@@ -343,13 +343,16 @@ def generate_cf_tus_upload_url(filename: str, fileSize: int, folder: str = "vide
     safe_filename = os.path.basename(filename) or "unnamed"
     # This is just to namespace/organize metadata, has no folder structure effect in Stream
     video_name = f"{folder}/{uuid.uuid4()}_{safe_filename}"
-    
+
+    MAX_DURATION_SECONDS = 420  # 7 minutes
+
     encoded_name = base64.b64encode(video_name.encode()).decode()
+    encoded_max_duration = base64.b64encode(str(MAX_DURATION_SECONDS).encode()).decode()
 
     headers = {
         "Authorization": f"Bearer {api_token}",
         "Tus-Resumable": "1.0.0",
-        "Upload-Metadata": f"name {encoded_name}",
+        "Upload-Metadata": f"name {encoded_name},maxdurationseconds {encoded_max_duration}",
         "Upload-Length": str(fileSize)    # required by TUS spec
     }
 
