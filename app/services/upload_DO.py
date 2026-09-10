@@ -326,6 +326,26 @@ def delete_stream_video(uid: str) -> None:
         )
 
 
+def delete_from_spaces(file_url: str) -> None:
+    """
+    Delete an object from DigitalOcean Spaces by its public CDN URL.
+    Missing objects don't error (S3-compatible delete is idempotent).
+    """
+    prefix = f"{settings.DO_SPACES_CDN_URL}/{settings.DO_SPACES_BUCKET_NAME}/"
+    if not file_url or not file_url.startswith(prefix):
+        return
+
+    object_key = file_url[len(prefix):]
+
+    client = boto3.client(
+        's3',
+        endpoint_url=settings.DO_SPACES_ENDPOINT,
+        aws_access_key_id=settings.DO_SPACES_ACCESS_KEY_ID,
+        aws_secret_access_key=settings.DO_SPACES_SECRET_KEY,
+    )
+    client.delete_object(Bucket=settings.DO_SPACES_BUCKET_NAME, Key=object_key)
+
+
 def generate_cf_tus_upload_url(filename: str, fileSize: int, folder: str = "videos"):
     """
     Generate a TUS upload URL for Cloudflare Stream.

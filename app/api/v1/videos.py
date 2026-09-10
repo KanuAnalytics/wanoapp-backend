@@ -20,7 +20,7 @@ from bson.json_util import dumps
 from app.models.user import UserType
 from recombee_api_client.api_requests import SetViewPortion, AddRating, DeleteRating, AddBookmark, DeleteBookmark, SetItemValues, Batch, DeleteItem
 from app.services.recombee_service import recombee_send
-from app.services.upload_DO import extract_stream_uid, delete_stream_video
+from app.services.upload_DO import extract_stream_uid, delete_stream_video, delete_from_spaces
 
 DELETED_VIDEO_PLACEHOLDER_URL = "https://videodelivery.net/fc6b3da74765fa42f7a2cde3de5b2967/manifest/video.m3u8"
 
@@ -689,6 +689,12 @@ async def delete_video(
             delete_stream_video(stream_uid)
         except Exception as e:
             print(f"Failed to delete Cloudflare Stream video {stream_uid}: {e}")
+
+    for image_url in video.get("images") or []:
+        try:
+            delete_from_spaces(image_url)
+        except Exception as e:
+            print(f"Failed to delete Spaces image {image_url}: {e}")
 
     try:
         req = DeleteItem(video_id)
