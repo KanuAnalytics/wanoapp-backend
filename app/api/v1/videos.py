@@ -27,7 +27,7 @@ DELETED_VIDEO_PLACEHOLDER_URL = "https://videodelivery.net/fc6b3da74765fa42f7a2c
 # Fraction of a video (0-1) that counts as "watched" for feed-exclusion
 # purposes. Below this, a view is still reported to Recombee (every view is a
 # useful ranking signal) but isn't persisted to watch_history.
-WATCHED_PORTION_THRESHOLD = 0.5
+WATCHED_PORTION_THRESHOLD = 0.25
 
 router = APIRouter()
 
