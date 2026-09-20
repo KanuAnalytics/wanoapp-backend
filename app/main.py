@@ -104,6 +104,25 @@ app = FastAPI(
     debug=settings.DEBUG
 )
 
+
+# Log unhandled errors and answer with a plain message instead of internals.
+# Note: Starlette only consults this handler when debug is off — with DEBUG=True
+# it replies with the raw Python traceback as the response body instead, which
+# the mobile client renders verbatim in an error toast. Keep DEBUG=False in any
+# deployed environment.
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request, exc):
+    logger.exception(
+        "UNHANDLED ERROR: %s %s%s",
+        request.method,
+        request.url.path,
+        "?" + request.url.query if request.url.query else "",
+    )
+    return JSONResponse(
+        {"detail": "Something went wrong. Please try again."},
+        status_code=500,
+    )
+
 # Request timeout: any request exceeding this is cancelled, logged, and returns 504.
 # Prevents hung awaits (deadlocks, dead connections) from spinning forever invisibly.
 REQUEST_TIMEOUT_SECONDS = 30

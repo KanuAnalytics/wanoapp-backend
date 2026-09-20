@@ -803,7 +803,16 @@ async def get_user_complete(
     user_data.pop("verification_token_expires", None)
     
     # Create base response
-    complete_user = CompleteUserResponse(**user_data)
+    try:
+        complete_user = CompleteUserResponse(**user_data)
+    except Exception:
+        # A single malformed document must not take the whole profile screen down
+        # without telling us which one it was.
+        logger.exception("Failed to build CompleteUserResponse for user %s", user_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not load this profile. Please try again."
+        )
     
     # Calculate relationship status
     current_user_oid = ObjectId(current_user)
