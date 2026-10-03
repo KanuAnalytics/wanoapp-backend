@@ -95,6 +95,10 @@ class Settings(BaseSettings):
     AWS_ACCESS_KEY_ID: str
     AWS_SECRET_ACCESS_KEY: str
     SQS_VIDEO_QUEUE_URL: str
+
+    # AWS Lambda that stitches multi-clip posts
+    EDIT_VIDEO_LAMBDA_NAME: str = "editVideo"
+    EDIT_VIDEO_LAMBDA_REGION: str = "us-east-1"
     
     class Config:
         env_file = ".env"

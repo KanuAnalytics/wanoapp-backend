@@ -71,6 +71,11 @@ async def create_indexes():
         await db.db.notifications.create_index([("type", 1), ("user_id", 1), ("post_id", 1)])
         await db.db.notifications.create_index([("comment_id", 1)])
 
+        # Stitch jobs: the Cloudflare webhook looks jobs up by the clip that just became ready.
+        await db.db.pending_videos.create_index([("status", 1), ("clips.stream_uid", 1)])
+        # ...and looks up the finished job when its stitched video becomes ready.
+        await db.db.pending_videos.create_index([("result.stream_uid", 1)])
+
         logger.info("Database indexes created")
     except Exception as e:
         logger.error(f"Error creating indexes: {e}")
