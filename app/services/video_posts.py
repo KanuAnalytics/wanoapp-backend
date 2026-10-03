@@ -7,7 +7,7 @@ Saving a video as a post. Used by POST /api/v1/videos/post and by stitch jobs.
 import logging
 import re
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 
 from bson import ObjectId
 from recombee_api_client.api_requests import SetItemValues
@@ -23,8 +23,10 @@ DEFAULT_THUMBNAIL = "https://wano-africadev.lon1.digitaloceanspaces.com/wanoafri
 async def create_video_post(
     user_id,
     *,
-    remote_url: str,
-    remote_url_cf: str,
+    media_type: str = "video",
+    images: Optional[List[str]] = None,
+    remote_url: Optional[str] = None,
+    remote_url_cf: Optional[str] = None,
     title: Optional[str] = None,
     description: Optional[str] = None,
     privacy="public",
@@ -47,6 +49,7 @@ async def create_video_post(
     description = (description or "").strip()
     hashtags = re.findall(r"#(\w+)", description)
     now = datetime.utcnow()
+    is_photo_post = media_type == "photo"
 
     video_doc = {
         "creator_id": creator_id,
@@ -54,7 +57,9 @@ async def create_video_post(
         "description": description,
         "video_type": "regular",
         "privacy": privacy,
-        "isReadyToStream": is_ready_to_stream,
+        # Photo posts have no Cloudflare stream to ever flip this later, so
+        # they must be ready immediately or they'd never surface in any feed.
+        "isReadyToStream": True if is_photo_post else is_ready_to_stream,
         "metadata": {
             "duration": duration,
             "width": width if width is not None else 1080,
@@ -63,10 +68,11 @@ async def create_video_post(
             "file_size": 0  # You can calculate this during upload
         },
         "urls": {
-            "original": remote_url,
-            "hls_playlist": remote_url,  # In production, generate HLS separately
-            "thumbnail": thumbnail,  # In production, generate thumbnail separately
-            "download": remote_url
+            "original": None if is_photo_post else remote_url,
+            "hls_playlist": None if is_photo_post else remote_url,  # In production, generate HLS separately
+            # No custom thumbnail for photo posts -- always the first image.
+            "thumbnail": images[0] if is_photo_post else thumbnail,
+            "download": None if is_photo_post else remote_url
         },
         "categoryId": category_id,
         "subcategoryId": subcategory_id,
@@ -77,7 +83,9 @@ async def create_video_post(
         "duration": duration,
         "remoteUrl": remote_url,
         "remoteUrl_CF": remote_url_cf,
-        "type": 'video',
+        "media_type": media_type,
+        "images": images or [],
+        "type": media_type,
         # Standard fields
         "hashtags": hashtags,
         "categories": [],
@@ -122,6 +130,11 @@ async def create_video_post(
             "supports_landscape": bool(video_doc.get("supports_landscape", False)),
             "privacy": video_doc.get("privacy") or "public",
             "created_at": video_doc["created_at"].isoformat(),
+            # v2 (Recombee) feed filters on 'is_ready_to_stream' == true --
+            # photo posts need this true immediately since nothing else
+            # (e.g. a stream-ready webhook) will ever flip it later.
+            "is_ready_to_stream": bool(video_doc.get("isReadyToStream", False)),
+            "media_type": video_doc.get("media_type", "video"),
         }
         req = SetItemValues(str(result.inserted_id), values, cascade_create=True)
         req.timeout = 10000

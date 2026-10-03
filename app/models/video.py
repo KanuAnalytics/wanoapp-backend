@@ -36,8 +36,10 @@ class VideoMetadata(BaseModel):
 
 class VideoUrls(BaseModel):
     """Video URLs model"""
-    original: HttpUrl
-    hls_playlist: HttpUrl  # .m3u8 file
+    # Photo posts have no video track: create_video writes None for both of
+    # these. They stay optional so reading such a post back doesn't blow up.
+    original: Optional[HttpUrl] = None
+    hls_playlist: Optional[HttpUrl] = None  # .m3u8 file
     thumbnail: Optional[HttpUrl] = None
     preview: Optional[HttpUrl] = None
     download: Optional[HttpUrl] = None

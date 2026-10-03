@@ -4,7 +4,7 @@ Video CRUD operations with buffered metrics
 app/api/v1/vidoes.py
 
 """
-from typing import List, Optional
+from typing import List, Literal, Optional
 from fastapi import APIRouter, HTTPException, Depends, status, UploadFile, File, Form, Query, BackgroundTasks
 from bson import ObjectId
 from datetime import datetime
@@ -20,7 +20,7 @@ from bson.json_util import dumps
 from app.models.user import UserType
 from recombee_api_client.api_requests import SetViewPortion, AddRating, DeleteRating, AddBookmark, DeleteBookmark, SetItemValues, Batch, DeleteItem
 from app.services.recombee_service import recombee_send
-from app.services.upload_DO import extract_stream_uid, delete_stream_video
+from app.services.upload_DO import extract_stream_uid, delete_stream_video, delete_from_spaces
 from app.services.stitch_jobs import create_stitch_job
 from app.services.video_posts import DEFAULT_THUMBNAIL, create_video_post
 
@@ -38,8 +38,10 @@ class VideoPost(BaseModel):
     description: Optional[str] = None
     video_type: Optional[VideoType] = VideoType.REGULAR
     privacy: VideoPrivacy = VideoPrivacy.PUBLIC
-    remoteUrl: str
-    remoteUrl_CF:str
+    media_type: Literal["video", "photo"] = "video"
+    remoteUrl: Optional[str] = None
+    remoteUrl_CF: Optional[str] = None
+    images: Optional[List[str]] = None
     thumbnail: Optional[str] = DEFAULT_THUMBNAIL
     duration: Optional[float] = 0.0
     start: Optional[float] = 0.0
@@ -124,7 +126,9 @@ class VideoResponse(BaseModel):
     end: Optional[float] = None
     remoteUrl: Optional[str] = None
     remoteUrl_CF: Optional[str] = None
-    
+    media_type: str = "video"
+    images: List[str] = []
+
     is_following: Optional[bool] = None
     is_liked: Optional[bool] = None
     urls: Optional[dict] = None
@@ -141,8 +145,25 @@ async def post_video(
 ):
     try: 
         """Endpoint to handle video posting logic"""
+        is_photo_post = input.media_type == "photo"
+
+        if is_photo_post:
+            if not input.images:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="images is required for photo posts",
+                )
+        else:
+            if not input.remoteUrl or not input.remoteUrl_CF:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="remoteUrl and remoteUrl_CF are required for video posts",
+                )
+
         video_id = await create_video_post(
             current_user,
+            media_type=input.media_type,
+            images=input.images,
             remote_url=input.remoteUrl,
             remote_url_cf=input.remoteUrl_CF,
             title=input.title,
@@ -160,7 +181,10 @@ async def post_video(
             supports_landscape=input.supports_landscape,
         )
 
-        return {"message": "Video posted successfully", "video_id": video_id}
+        message = "Photo posted successfully" if is_photo_post else "Video posted successfully"
+        return {"message": message, "video_id": video_id}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -637,6 +661,12 @@ async def delete_video(
             delete_stream_video(stream_uid)
         except Exception as e:
             print(f"Failed to delete Cloudflare Stream video {stream_uid}: {e}")
+
+    for image_url in video.get("images") or []:
+        try:
+            delete_from_spaces(image_url)
+        except Exception as e:
+            print(f"Failed to delete Spaces image {image_url}: {e}")
 
     try:
         req = DeleteItem(video_id)
