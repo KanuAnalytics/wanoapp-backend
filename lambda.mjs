@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import { open, readFile, stat } from "node:fs/promises";
+import { extname } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
 
@@ -126,7 +127,10 @@ async function hasAudioStream(filePath) {
   return out.trim().length > 0;
 }
 
-function buildConcatFilterArgs(clips, outputPath) {
+// music: { path, keepOriginalSound } or null. The song loops to cover the whole stitched video.
+function buildConcatFilterArgs(clips, outputPath, music = null) {
+  const useClipSound = !music || music.keepOriginalSound;
+  const totalDuration = clips.reduce((sum, clip) => sum + clip.segmentDuration, 0);
   const inputArgs = [];
   const filters = [];
   let inputIndex = 0;
@@ -141,7 +145,7 @@ function buildConcatFilterArgs(clips, outputPath) {
       // Trimming happens inside the filter graph so picture and sound are cut on the same clock.
       inputArgs.push("-i", clip.videoPath);
       videoRef = `[${inputIndex++}:v:0]`;
-      if (clip.audioPath) {
+      if (useClipSound && clip.audioPath) {
         inputArgs.push("-i", clip.audioPath);
         audioRef = `[${inputIndex++}:a:0]`;
       }
@@ -157,6 +161,7 @@ function buildConcatFilterArgs(clips, outputPath) {
     filters.push(
       `${videoRef}${videoTrim}scale=w=${TARGET_WIDTH}:h=${TARGET_HEIGHT}:force_original_aspect_ratio=increase,crop=${TARGET_WIDTH}:${TARGET_HEIGHT},setsar=1,fps=${TARGET_FPS}[v${i}]`,
     );
+    if (!useClipSound) return;
     filters.push(
       audioRef
         ? `${audioRef}${audioTrim}aformat=sample_rates=${TARGET_SAMPLE_RATE}:channel_layouts=stereo[a${i}]`
@@ -164,8 +169,23 @@ function buildConcatFilterArgs(clips, outputPath) {
     );
   });
 
-  const streamRefs = clips.map((_, i) => `[v${i}][a${i}]`).join("");
-  filters.push(`${streamRefs}concat=n=${clips.length}:v=1:a=1[outv][outa]`);
+  const clipSoundLabel = music ? "[clipsound]" : "[outa]";
+  if (useClipSound) {
+    const streamRefs = clips.map((_, i) => `[v${i}][a${i}]`).join("");
+    filters.push(`${streamRefs}concat=n=${clips.length}:v=1:a=1[outv]${clipSoundLabel}`);
+  } else {
+    const streamRefs = clips.map((_, i) => `[v${i}]`).join("");
+    filters.push(`${streamRefs}concat=n=${clips.length}:v=1:a=0[outv]`);
+  }
+
+  if (music) {
+    inputArgs.push("-stream_loop", "-1", "-i", music.path);
+    const musicLabel = music.keepOriginalSound ? "[music]" : "[outa]";
+    filters.push(
+      `[${inputIndex++}:a:0]aformat=sample_rates=${TARGET_SAMPLE_RATE}:channel_layouts=stereo,atrim=duration=${totalDuration},asetpts=PTS-STARTPTS${musicLabel}`,
+    );
+    if (music.keepOriginalSound) filters.push("[clipsound][music]amix=inputs=2:duration=first[outa]");
+  }
 
   return [
     ...inputArgs,
@@ -176,6 +196,7 @@ function buildConcatFilterArgs(clips, outputPath) {
     "-preset", "ultrafast",
     "-c:a", "aac",
     "-movflags", "+faststart",
+    ...(music ? ["-t", String(totalDuration)] : []),
     outputPath,
     "-y",
   ];
@@ -244,7 +265,7 @@ async function prepareClip(clip, i) {
 }
 
 export const handler = async (event) => {
-  const { videoUrls, filename = "stitched.mp4", folder = "videos" } = parseEventBody(event);
+  const { videoUrls, audio, keepOriginalSound = false, filename = "stitched.mp4", folder = "videos" } = parseEventBody(event);
 
   if (!BACKEND_API_URL) throw new Error("BACKEND_API_URL env var is not set");
 
@@ -262,8 +283,16 @@ export const handler = async (event) => {
     clips.push({ ...prepared, start, segmentDuration });
   }
 
+  let music = null;
+  if (audio?.uri) {
+    const path = `/tmp/music${extname(new URL(audio.uri).pathname) || ".mp3"}`;
+    await downloadFromUrl(audio.uri, path);
+    music = { path, keepOriginalSound: Boolean(keepOriginalSound) };
+    console.log(`music: "${audio.title ?? audio.uri}", keepOriginalSound: ${music.keepOriginalSound}`);
+  }
+
   const outputPath = "/tmp/output.mp4";
-  await runFfmpeg(buildConcatFilterArgs(clips, outputPath));
+  await runFfmpeg(buildConcatFilterArgs(clips, outputPath, music));
 
   const outputDuration = await getDuration(outputPath);
   console.log(`output.mp4 duration: ${outputDuration}s`);
