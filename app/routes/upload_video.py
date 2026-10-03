@@ -19,6 +19,7 @@ from recombee_api_client.api_requests import SetItemValues
 from app.services.expo import send_push_message
 from app.services.recombee_service import recombee_send
 from app.services.sqs_publisher import push_video_processing_job
+from app.services.stitch_jobs import handle_stream_video_failed, handle_stream_video_ready
 from app.services.upload_DO import generate_cf_tus_upload_url, upload_to_spaces, allowed_file, secure_filename, get_content_type, is_image_file, generate_presigned_upload_url, generate_stream_direct_upload_url, get_stream_video_status
 import asyncio
 from app.core.config import settings
@@ -297,6 +298,16 @@ async def cloudflare_stream_webhook(request: Request, background_tasks: Backgrou
     payload = json.loads(raw_body)
     uid = payload.get("uid")
     ready = payload.get("readyToStream", False)
+
+    if uid:
+        clip_status = payload.get("status") or {}
+        if ready:
+            await handle_stream_video_ready(uid)
+        elif clip_status.get("state") == "error":
+            await handle_stream_video_failed(
+                uid,
+                clip_status.get("errorReasonText") or clip_status.get("errorReasonCode") or "unknown error",
+            )
 
     if not uid or not ready:
         return {"ok": True}

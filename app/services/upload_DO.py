@@ -297,6 +297,31 @@ def get_stream_video_status(uid: str):
     }
 
 
+def get_stream_video_name(uid: str) -> Optional[str]:
+    """
+    The name a Stream video was uploaded under, e.g. "videos/<uuid>_<filename>".
+    Returns None if the video no longer exists.
+    """
+    account_id = settings.CLOUDFLARE_ACCOUNT_ID
+    api_token = settings.CLOUDFLARE_STREAM_API_TOKEN
+
+    if not account_id or not api_token:
+        raise RuntimeError("Cloudflare Stream account ID or API token not configured")
+
+    url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/stream/{uid}"
+    headers = {"Authorization": f"Bearer {api_token}"}
+
+    resp = requests.get(url, headers=headers, timeout=10)
+    if resp.status_code == 404:
+        return None
+    if not resp.ok:
+        raise RuntimeError(
+            f"Failed to fetch video from Cloudflare Stream: {resp.status_code} {resp.text}"
+        )
+
+    return (resp.json()["result"].get("meta") or {}).get("name") or ""
+
+
 def extract_stream_uid(remote_url_cf: str) -> Optional[str]:
     """Pull the Cloudflare Stream UID out of a videodelivery.net playback URL."""
     match = re.search(r"videodelivery\.net/([a-f0-9]+)/", remote_url_cf or "")

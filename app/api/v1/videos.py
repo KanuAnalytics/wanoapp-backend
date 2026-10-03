@@ -13,7 +13,7 @@ from app.core.database import get_database
 from app.api.deps import get_current_active_user, get_optional_active_user, get_verified_user
 from app.services.expo import send_push_message
 from app.services.metrics_service import metrics_buffer
-from pydantic import BaseModel,HttpUrl, Field
+from pydantic import BaseModel,HttpUrl, Field, model_validator
 import re
 import json
 from bson.json_util import dumps
@@ -21,6 +21,8 @@ from app.models.user import UserType
 from recombee_api_client.api_requests import SetViewPortion, AddRating, DeleteRating, AddBookmark, DeleteBookmark, SetItemValues, Batch, DeleteItem
 from app.services.recombee_service import recombee_send
 from app.services.upload_DO import extract_stream_uid, delete_stream_video, delete_from_spaces
+from app.services.stitch_jobs import create_stitch_job
+from app.services.video_posts import DEFAULT_THUMBNAIL, create_video_post
 
 DELETED_VIDEO_PLACEHOLDER_URL = "https://videodelivery.net/fc6b3da74765fa42f7a2cde3de5b2967/manifest/video.m3u8"
 
@@ -40,7 +42,7 @@ class VideoPost(BaseModel):
     remoteUrl: Optional[str] = None
     remoteUrl_CF: Optional[str] = None
     images: Optional[List[str]] = None
-    thumbnail: Optional[str] = 'https://wano-africadev.lon1.digitaloceanspaces.com/wanoafrica-dospaces-key/profile-pictures/thumbnail_placeholder.png'
+    thumbnail: Optional[str] = DEFAULT_THUMBNAIL
     duration: Optional[float] = 0.0
     start: Optional[float] = 0.0
     end: Optional[float] = None
@@ -52,6 +54,31 @@ class VideoPost(BaseModel):
     width: Optional[int] = None
     height: Optional[int] = None
     supports_landscape: Optional[bool] = None
+
+class StitchClip(BaseModel):
+    url: str
+    start: float = Field(0.0, ge=0)
+    end: Optional[float] = None
+
+    @model_validator(mode="after")
+    def end_after_start(self):
+        if self.end is not None and self.end <= self.start:
+            raise ValueError("end must be greater than start")
+        return self
+
+class StitchAudio(BaseModel):
+    uri: str
+
+class VideoStitch(BaseModel):
+    videoUrls: List[StitchClip] = Field(..., min_length=1)
+    audio: Optional[StitchAudio] = None
+    keepOriginalSound: bool = False
+    description: Optional[str] = None
+    privacy: VideoPrivacy = VideoPrivacy.PUBLIC
+    thumbnail: Optional[str] = None
+    comments_enabled: bool = True
+    categoryId: Optional[str] = None
+    subcategoryId: Optional[str] = None
 
 class VideoCreate(BaseModel):
     title: Optional[str] = None
@@ -118,12 +145,6 @@ async def post_video(
 ):
     try: 
         """Endpoint to handle video posting logic"""
-        db = get_database()
-        user = await db.users.find_one({"_id": ObjectId(current_user)})
-        
-        description = (input.description or "").strip()
-        hashtags = re.findall(r"#(\w+)", description)
-
         is_photo_post = input.media_type == "photo"
 
         if is_photo_post:
@@ -139,103 +160,29 @@ async def post_video(
                     detail="remoteUrl and remoteUrl_CF are required for video posts",
                 )
 
-        video_doc = {
-            "creator_id": ObjectId(current_user),
-            "title": input.title,  # Can be updated later by user
-            "description": description,
-            "video_type": "regular",
-            "privacy": input.privacy,
-            # Photo posts have no Cloudflare stream to ever flip this later, so
-            # they must be ready immediately or they'd never surface in any feed.
-            "isReadyToStream": True if is_photo_post else input.isReadyToStream,
-            "metadata": {
-                "duration": input.duration,
-                "width": input.width if input.width is not None else 1080,
-                "height": input.height if input.height is not None else 1920,
-                "fps": 30.0,
-                "file_size": 0  # You can calculate this during upload
-            },
-            "urls": {
-                "original": None if is_photo_post else input.remoteUrl,
-                "hls_playlist": None if is_photo_post else input.remoteUrl,  # In production, generate HLS separately
-                # No custom thumbnail for photo posts -- always the first image.
-                "thumbnail": input.images[0] if is_photo_post else input.thumbnail,
-                "download": None if is_photo_post else input.remoteUrl
-            },
-            "categoryId" : input.categoryId,
-            "subcategoryId" : input.subcategoryId,
-            # Additional fields for compatibility
-            "FEid": None,
-            "start": 0,
-            "end": input.end,
-            "duration": input.duration,
-            "remoteUrl": input.remoteUrl,
-            "remoteUrl_CF":input.remoteUrl_CF,
-            "media_type": input.media_type,
-            "images": input.images or [],
-            "type": input.media_type,
-            # Standard fields
-            "hashtags": hashtags,
-            "categories": [],
-            "remix_enabled": True,
-            "comments_enabled": input.comments_enabled,
-            "created_at": datetime.utcnow(),
-            "updated_at": datetime.utcnow(),
-            "is_active": True,
-            "views_count": 0,
-            "likes_count": 0,
-            "comments_count": 0,
-            "shares_count": 0,
-            "bookmarks_count": 0,
-            "is_approved": True,
-            "is_flagged": False,
-            "report_count": 0,
-            "is_remix": False,
-            "remix_count": 0,
-            "country": user.get("localization", {}).get("country", "NG"),
-            "language": user.get("localization", {}).get("languages", ["en"])[0]
-        }
-        
-        if input.supports_landscape is not None:
-            video_doc["supports_landscape"] = input.supports_landscape
-
-        # Insert into database
-        result = await db.videos.insert_one(video_doc)
-        
-        # Update user's video count
-        await db.users.update_one(
-            {"_id": ObjectId(current_user)},
-            {"$inc": {"videos_count": 1}}
+        video_id = await create_video_post(
+            current_user,
+            media_type=input.media_type,
+            images=input.images,
+            remote_url=input.remoteUrl,
+            remote_url_cf=input.remoteUrl_CF,
+            title=input.title,
+            description=input.description,
+            privacy=input.privacy,
+            thumbnail=input.thumbnail,
+            duration=input.duration,
+            end=input.end,
+            is_ready_to_stream=input.isReadyToStream,
+            width=input.width,
+            height=input.height,
+            comments_enabled=input.comments_enabled,
+            category_id=input.categoryId,
+            subcategory_id=input.subcategoryId,
+            supports_landscape=input.supports_landscape,
         )
-        
-        try:
-            item_id = str(result.inserted_id)
-            values = {
-                "creator_id": str(video_doc["creator_id"]),
-                "description": video_doc.get("description") or "",
-                "video_type": video_doc.get("video_type") or "",
-                "duration": float(video_doc.get("duration") or 0.0),
-                "thumbnail": video_doc.get("urls", {}).get("thumbnail") or "",
-                "hashtags": video_doc.get("hashtags") or [],
-                "is_active": True,
-                "supports_landscape": bool(video_doc.get("supports_landscape", False)),
-                "privacy": video_doc.get("privacy") or "public",
-                "created_at": video_doc["created_at"].isoformat(),
-                # v2 (Recombee) feed filters on 'is_ready_to_stream' == true --
-                # photo posts need this true immediately since nothing else
-                # (e.g. a stream-ready webhook) will ever flip it later.
-                "is_ready_to_stream": bool(video_doc.get("isReadyToStream", False)),
-                "media_type": video_doc.get("media_type", "video"),
-            }
-            req = SetItemValues(item_id, values, cascade_create=True)
-            req.timeout = 10000
-            await recombee_send(req)
-            await db.videos.update_one({"_id": result.inserted_id}, {"$set": {"recombee": True}})
-        except Exception:
-            pass
 
         message = "Photo posted successfully" if is_photo_post else "Video posted successfully"
-        return {"message": message, "video_id": str(result.inserted_id)}
+        return {"message": message, "video_id": video_id}
     except HTTPException:
         raise
     except Exception as e:
@@ -243,6 +190,31 @@ async def post_video(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e)
         )
+@router.post("/stitch", status_code=status.HTTP_202_ACCEPTED)
+async def stitch_video(
+    input: VideoStitch,
+    current_user: str = Depends(get_verified_user)
+):
+    """
+    Queue a multi-clip post. The clips are stitched once Cloudflare Stream has
+    processed all of them, and the post appears when the result is ready.
+    """
+    job_id = await create_stitch_job(
+        user_id=current_user,
+        clips=[clip.model_dump() for clip in input.videoUrls],
+        audio_url=input.audio.uri if input.audio else None,
+        keep_original_sound=input.keepOriginalSound,
+        post={
+            "description": input.description,
+            "privacy": input.privacy.value,
+            "thumbnail": input.thumbnail,
+            "categoryId": input.categoryId,
+            "subcategoryId": input.subcategoryId,
+            "comments_enabled": input.comments_enabled,
+        },
+    )
+    return {"message": "Video submitted successfully. Processing in background.", "job_id": job_id}
+
 # Modify create_video function
 # Update the create_video endpoint to use get_verified_user
 @router.post("/", response_model=VideoResponse, status_code=status.HTTP_201_CREATED)
