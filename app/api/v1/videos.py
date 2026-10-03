@@ -24,7 +24,7 @@ from app.services.upload_DO import extract_stream_uid, delete_stream_video, dele
 from app.services.stitch_jobs import create_stitch_job
 from app.services.video_posts import DEFAULT_THUMBNAIL, create_video_post
 
-DELETED_VIDEO_PLACEHOLDER_URL = "https://videodelivery.net/fc6b3da74765fa42f7a2cde3de5b2967/manifest/video.m3u8"
+DELETED_VIDEO_PLACEHOLDER_URL = "https://videodelivery.net/6335abb999778fddf3c7b5a6fb937bf2/manifest/video.m3u8"
 
 # Fraction of a video (0-1) that counts as "watched" for feed-exclusion
 # purposes. Below this, a view is still reported to Recombee (every view is a
