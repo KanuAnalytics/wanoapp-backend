@@ -18,7 +18,7 @@ from app.models.user import StandardUser, ArtistUser, AdvertiserUser, AdminUser,
 from app.core.database import get_database
 from app.core.security import get_password_hash, create_verification_token
 from app.api.deps import get_current_active_user
-from pydantic import BaseModel, Field, EmailStr, HttpUrl, validator
+from pydantic import BaseModel, Field, EmailStr, HttpUrl, ValidationError, validator
 from app.models.video import VideoUrls
 import logging
 from app.services.metrics_service import metrics_buffer
@@ -378,15 +378,20 @@ async def get_video_details(db, video_ids: List[ObjectId]) -> List[VideoDetail]:
     # Create a mapping to preserve order
     video_map = {}
     async for video in cursor:
-        video_map[video["_id"]] = VideoDetail(
+        urls = video.get("urls") if isinstance(video.get("urls"), dict) else None
+        detail = dict(
             id=str(video["_id"]),
             description=video.get("description"),
             title=video.get("title"),
-            thumbnail_url=video.get("urls", {}).get("thumbnail") if video.get("urls") else None,
+            thumbnail_url=urls.get("thumbnail") if urls else None,
             created_at=video.get("created_at"),
-            url=video.get("urls"),
             views_count=video.get("views_count")
         )
+        try:
+            video_map[video["_id"]] = VideoDetail(**detail, url=urls)
+        except ValidationError:
+            # An older post with a malformed URL must not fail the whole profile.
+            video_map[video["_id"]] = VideoDetail(**detail, url=None)
     
     # Return in the same order as video_ids
     return [video_map.get(vid) for vid in video_ids if vid in video_map]
