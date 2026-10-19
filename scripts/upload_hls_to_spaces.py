@@ -1,7 +1,11 @@
 """
-Uploads an HLS folder made by scripts/mp4_to_hls.sh to DigitalOcean Spaces
-under wano-tv/<name>/, publicly readable, and prints the CDN URL of its
-master playlist (what goes in a title's video_url).
+Uploads an HLS folder made by scripts/mp4_to_hls.sh to DigitalOcean Spaces,
+publicly readable, and prints the CDN URL of its master playlist (what goes
+in a title's video_url).
+
+Files land in <DO_SPACES_BUCKET_NAME>/wano-tv/<name>/ inside the Space named
+in DO_SPACES_ENDPOINT, next to the app's other uploads; the CDN URL includes
+that folder the same way app/services/upload_DO.py's URLs do.
 
 Run from the repo root:
     python -m scripts.upload_hls_to_spaces <hls-folder> <name>
@@ -77,7 +81,8 @@ def main():
                 print(f"  {done}/{len(files)}")
 
     cdn = settings.DO_SPACES_CDN_URL.rstrip("/")
-    print(f"Master playlist: {cdn}/{PREFIX}/{name}/master.m3u8")
+    bucket = settings.DO_SPACES_BUCKET_NAME
+    print(f"Master playlist: {cdn}/{bucket}/{PREFIX}/{name}/master.m3u8")
 
 
 if __name__ == "__main__":
