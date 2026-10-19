@@ -58,6 +58,16 @@ async def create_indexes():
         )
         await db.db.watch_history.create_index([("user_id", 1), ("watched_at", -1)])
 
+        # Wano TV: the catalogue is listed by popularity; slug is the seed
+        # script's upsert key. History is one doc per (user, title).
+        await db.db.tv_titles.create_index([("is_active", 1), ("popularity", -1)])
+        await db.db.tv_titles.create_index([("slug", 1)], unique=True)
+        await db.db.tv_genres.create_index([("name", 1)], unique=True)
+        await db.db.tv_watch_history.create_index(
+            [("user_id", 1), ("title_id", 1)], unique=True
+        )
+        await db.db.tv_watch_history.create_index([("user_id", 1), ("watched_at", -1)])
+
         # User indexes
         await db.db.users.create_index([("username", 1)], unique=True)
         await db.db.users.create_index([("email", 1)], unique=True)
