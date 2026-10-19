@@ -331,42 +331,5 @@
       "featured": false,
       "video_url": "https://videodelivery.net/722ac35b2cfad8a192eccc7a12a49039/manifest/video.m3u8"
     }
-  ],
-  "genres": [
-    {
-      "name": "Action",
-      "image": "https://picsum.photos/seed/wano-genre-action/322/200",
-      "order": 0
-    },
-    {
-      "name": "Drama",
-      "image": "https://picsum.photos/seed/wano-genre-drama/322/200",
-      "order": 1
-    },
-    {
-      "name": "Culture",
-      "image": "https://picsum.photos/seed/wano-genre-culture/322/200",
-      "order": 2
-    },
-    {
-      "name": "Documentary",
-      "image": "https://picsum.photos/seed/wano-genre-documentary/322/200",
-      "order": 3
-    },
-    {
-      "name": "Sci-fi",
-      "image": "https://picsum.photos/seed/wano-genre-scifi/322/200",
-      "order": 4
-    },
-    {
-      "name": "Sport",
-      "image": "https://picsum.photos/seed/wano-genre-sport/322/200",
-      "order": 5
-    },
-    {
-      "name": "Comedy",
-      "image": "https://picsum.photos/seed/wano-genre-comedy/322/200",
-      "order": 6
-    }
   ]
 }

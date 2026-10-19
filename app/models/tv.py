@@ -50,11 +50,6 @@ class TvTitleResponse(BaseModel):
     popularity: int = 0
 
 
-class TvGenreResponse(BaseModel):
-    name: str
-    image: str
-
-
 class TvWatchResponse(BaseModel):
     title_id: str
     watched_at: datetime

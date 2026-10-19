@@ -1,7 +1,7 @@
 """
 Loads the Wano TV placeholder catalogue (scripts/wano_tv_seed.json) into
-MongoDB. Safe to re-run: titles are upserted by slug and genres by name, so
-edits to the JSON overwrite what's there without duplicating anything.
+MongoDB. Safe to re-run: titles are upserted by slug, so edits to the JSON
+overwrite what's there without duplicating anything.
 
 Run from the repo root:
     python -m scripts.seed_wano_tv
@@ -36,20 +36,7 @@ async def seed():
                 upsert=True,
             )
 
-        for genre in data["genres"]:
-            await db.tv_genres.update_one(
-                {"name": genre["name"]},
-                {
-                    "$set": {**genre, "is_active": True, "updated_at": now},
-                    "$setOnInsert": {"created_at": now},
-                },
-                upsert=True,
-            )
-
-        print(
-            f"Seeded {len(data['titles'])} titles and "
-            f"{len(data['genres'])} genres into {settings.DATABASE_NAME}"
-        )
+        print(f"Seeded {len(data['titles'])} titles into {settings.DATABASE_NAME}")
     finally:
         client.close()
 
