@@ -36,6 +36,12 @@ async def seed():
                 upsert=True,
             )
 
+        slugs = [title["slug"] for title in data["titles"]]
+        hidden = await db.tv_titles.update_many(
+            {"slug": {"$nin": slugs}, "is_active": True},
+            {"$set": {"is_active": False, "updated_at": now}},
+        )
+
         for genre in data["genres"]:
             await db.tv_genres.update_one(
                 {"name": genre["name"]},
@@ -48,7 +54,8 @@ async def seed():
 
         print(
             f"Seeded {len(data['titles'])} titles and "
-            f"{len(data['genres'])} genres into {settings.DATABASE_NAME}"
+            f"{len(data['genres'])} genres into {settings.DATABASE_NAME}; "
+            f"hid {hidden.modified_count} titles no longer in the seed file"
         )
     finally:
         client.close()
