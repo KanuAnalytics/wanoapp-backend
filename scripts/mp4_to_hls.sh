@@ -4,8 +4,8 @@
 #
 #   scripts/mp4_to_hls.sh <input.mp4> <output-folder>
 #
-# Qualities run from 2160p (4K) down to 360p; ones taller than the source are
-# skipped, so nothing is upscaled. Set PRESET to trade speed for
+# Qualities are 2160p (4K), 1080p, 720p and 360p; ones taller than the source
+# are skipped, so nothing is upscaled. Set PRESET to trade speed for
 # quality (x264 presets: veryfast, fast, medium, slow); default is fast.
 set -euo pipefail
 
@@ -27,10 +27,8 @@ SEGMENT_SECONDS=6
 # height:video bitrate:max bitrate:buffer
 LADDER=(
   "2160:16000k:17120k:24000k"
-  "1440:9000k:9630k:13500k"
   "1080:5000k:5350k:7500k"
   "720:2800k:2996k:4200k"
-  "480:1400k:1498k:2100k"
   "360:800k:856k:1200k"
 )
 
