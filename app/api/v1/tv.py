@@ -13,7 +13,7 @@ from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, status
 from app.api.deps import get_current_active_user
 from app.core.database import get_database
-from app.models.tv import TvTitleResponse, TvWatchResponse
+from app.models.tv import TvGenreResponse, TvTitleResponse, TvWatchResponse
 
 router = APIRouter()
 
@@ -43,6 +43,16 @@ async def get_titles(current_user: str = Depends(get_current_active_user)):
         [("popularity", -1), ("_id", 1)]
     ).to_list(length=None)
     return [_title_response(doc) for doc in docs]
+
+
+@router.get("/genres", response_model=List[TvGenreResponse])
+async def get_genres(current_user: str = Depends(get_current_active_user)):
+    """Every genre in display order, including ones with no titles yet."""
+    db = get_database()
+    docs = await db.tv_genres.find({"is_active": True}).sort("order", 1).to_list(
+        length=None
+    )
+    return [TvGenreResponse(name=doc["name"], image=doc["image"]) for doc in docs]
 
 
 @router.get("/history", response_model=List[TvTitleResponse])
