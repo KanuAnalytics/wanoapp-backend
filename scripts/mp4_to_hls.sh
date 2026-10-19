@@ -13,6 +13,11 @@ if [ $# -ne 2 ]; then
   exit 1
 fi
 
+if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
+  echo "ffmpeg isn't installed. Install it with: brew install ffmpeg" >&2
+  exit 1
+fi
+
 INPUT="$1"
 OUT="$2"
 PRESET="${PRESET:-fast}"
