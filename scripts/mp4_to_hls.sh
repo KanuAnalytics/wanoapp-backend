@@ -31,7 +31,13 @@ LADDER=(
   "360:800k:856k:1200k"
 )
 
-SOURCE_HEIGHT=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$INPUT")
+# Newer ffprobe can list the same stream more than once (e.g. inside a stream
+# group), so keep only the first number.
+SOURCE_HEIGHT=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$INPUT" | grep -Eo '[0-9]+' | head -1)
+if [ -z "$SOURCE_HEIGHT" ]; then
+  echo "Couldn't read the video height of $INPUT" >&2
+  exit 1
+fi
 HAS_AUDIO=$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "$INPUT" | head -1)
 
 RUNGS=()
