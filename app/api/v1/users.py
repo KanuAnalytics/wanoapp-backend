@@ -17,6 +17,7 @@ from app.models.base import PyObjectId
 from app.models.user import StandardUser, ArtistUser, AdvertiserUser, AdminUser, UserType
 from app.core.database import get_database
 from app.core.disposable_email import ensure_not_disposable_email
+from app.services.video_deletion import delete_spaces_file_if_unused, soft_delete_video
 from app.core.security import get_password_hash, create_verification_token
 from app.api.deps import get_current_active_user
 from pydantic import BaseModel, Field, EmailStr, HttpUrl, validator
@@ -612,7 +613,10 @@ async def ban_user(
     """
     Admin-only ban:
     - Anonymizes and deactivates the target user
-    - Soft deletes all their videos
+    - Deletes their profile picture from Spaces
+    - Deletes all their videos the same way DELETE /videos/{id} does: hidden,
+      removed from Cloudflare Stream and Recombee, and their photos,
+      thumbnails and pre-Stream originals removed from Spaces
     """
     db = get_database()
     now = datetime.utcnow()
@@ -639,6 +643,9 @@ async def ban_user(
             detail="User not found"
         )
 
+    # Read before the anonymize update below clears it.
+    profile_picture_url = user.get("profile_picture")
+
     # Anonymize and deactivate the user
     await db.users.update_one(
         {"_id": ObjectId(user_id)},
@@ -656,11 +663,22 @@ async def ban_user(
         }
     )
 
-    # Soft delete all videos for this user
-    await db.videos.update_many(
-        {"creator_id": ObjectId(user_id)},
-        {"$set": {"is_active": False, "updated_at": now}}
+    # Profile picture, skipped if another account or video uses the same file.
+    await delete_spaces_file_if_unused(
+        db, profile_picture_url, exclude_user_id=ObjectId(user_id)
     )
+
+    # Delete every active video exactly as DELETE /videos/{id} would. Videos
+    # the user already deleted were cleaned up at the time and are skipped.
+    # Collected first so the deletes don't change what the cursor is reading.
+    videos = [
+        video
+        async for video in db.videos.find(
+            {"creator_id": ObjectId(user_id), "is_active": {"$ne": False}}
+        )
+    ]
+    for video in videos:
+        await soft_delete_video(db, video)
 
     return
 

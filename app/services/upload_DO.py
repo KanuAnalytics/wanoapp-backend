@@ -369,14 +369,26 @@ def delete_stream_video(uid: str) -> None:
 
 def delete_from_spaces(file_url: str) -> None:
     """
-    Delete an object from DigitalOcean Spaces by its public CDN URL.
+    Delete an object from DigitalOcean Spaces by its public URL.
+    Accepts both the CDN address and the origin (non-CDN) address; some older
+    thumbnails and profile pictures were stored with the origin one. Any
+    other URL (e.g. a Cloudflare Stream link) is ignored.
     Missing objects don't error (S3-compatible delete is idempotent).
     """
-    prefix = f"{settings.DO_SPACES_CDN_URL}/{settings.DO_SPACES_BUCKET_NAME}/"
-    if not file_url or not file_url.startswith(prefix):
+    if not file_url:
+        return
+    bucket = settings.DO_SPACES_BUCKET_NAME
+    prefixes = (
+        f"{settings.DO_SPACES_CDN_URL}/{bucket}/",
+        f"{settings.DO_SPACES_ENDPOINT}/{bucket}/",
+    )
+    prefix = next((p for p in prefixes if file_url.startswith(p)), None)
+    if prefix is None:
         return
 
     object_key = file_url[len(prefix):]
+    if not object_key:
+        return
 
     client = boto3.client(
         's3',

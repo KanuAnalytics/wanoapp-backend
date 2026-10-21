@@ -1,13 +1,16 @@
-"""DELETE /api/v1/videos/{id}: idempotent, never deletes the placeholder, and
-cleans up legacy Spaces files and thumbnails without touching shared ones.
-Runs without MongoDB, Cloudflare or Spaces: all of those are faked."""
+"""Video deletion (DELETE /videos/{id}) and banning (DELETE /users/ban/{id}).
+
+Both go through app.services.video_deletion.soft_delete_video. These tests run
+without MongoDB, Cloudflare, Spaces or Recombee: all of those are faked, and
+every delete call is recorded instead of performed."""
 
 import pytest
 from bson import ObjectId
 from fastapi import HTTPException
 
+from app.api.v1 import users as users_api
 from app.api.v1 import videos as videos_api
-from app.services import upload_DO
+from app.services import upload_DO, video_deletion
 from app.services.upload_DO import (
     DELETED_VIDEO_PLACEHOLDER_UID,
     DELETED_VIDEO_PLACEHOLDER_URL,
@@ -15,156 +18,237 @@ from app.services.upload_DO import (
 from app.services.video_posts import DEFAULT_THUMBNAIL
 
 CDN = "https://wano-africadev.lon1.cdn.digitaloceanspaces.com/wanoafrica-dospaces-key"
-CREATOR_ID = ObjectId()
 
 
-class FakeVideos:
+def _field(doc, field):
+    if field == "urls.thumbnail":
+        return (doc.get("urls") or {}).get("thumbnail")
+    return doc.get(field)
+
+
+def _matches_reference(doc, query):
+    """Evaluate the {"$or": [...], "_id": {"$ne": x}} reference queries."""
+    if "_id" in query and doc["_id"] == query["_id"]["$ne"]:
+        return False
+    for cond in query["$or"]:
+        (field, url), = cond.items()
+        value = _field(doc, field)
+        if value == url or (isinstance(value, list) and url in value):
+            return True
+    return False
+
+
+class FakeCollection:
     def __init__(self, docs):
         self.docs = {d["_id"]: d for d in docs}
         self.updates = []
 
     async def find_one(self, query, projection=None):
-        if set(query) == {"_id"}:
-            return self.docs.get(query["_id"])
-        # Shared-file check: {"_id": {"$ne": oid}, field: url}
-        exclude = query["_id"]["$ne"]
-        (field, url), = [(k, v) for k, v in query.items() if k != "_id"]
-        for oid, d in self.docs.items():
-            if oid == exclude:
-                continue
-            value = (d.get("urls") or {}).get("thumbnail") if field == "urls.thumbnail" else d.get(field)
-            if value == url:
-                return {"_id": oid}
-        return None
+        if "$or" in query:
+            return next((d for d in self.docs.values() if _matches_reference(d, query)), None)
+        return self.docs.get(query["_id"])
+
+    def find(self, query):
+        creator = query["creator_id"]
+        hits = [
+            d for d in self.docs.values()
+            if d.get("creator_id") == creator and d.get("is_active") is not False
+        ]
+
+        async def gen():
+            for d in hits:
+                yield d
+
+        return gen()
 
     async def update_one(self, query, update):
         self.updates.append((query, update))
-        self.docs[query["_id"]].update(update["$set"])
-
-
-class FakeUsers:
-    def __init__(self):
-        self.incs = []
-
-    async def find_one(self, query, projection=None):
-        return {"_id": query["_id"], "user_type": "standard"}
-
-    async def update_one(self, query, update):
-        self.incs.append((query, update))
+        doc = self.docs.get(query["_id"])
+        if doc is not None and "$set" in update:
+            doc.update(update["$set"])
 
 
 class FakeDB:
-    def __init__(self, videos):
-        self.videos = FakeVideos(videos)
-        self.users = FakeUsers()
+    def __init__(self, videos=(), users=()):
+        self.videos = FakeCollection(list(videos))
+        self.users = FakeCollection(list(users))
 
 
 @pytest.fixture
 def calls(monkeypatch):
-    rec = {"stream": [], "spaces": [], "recombee": 0}
-    monkeypatch.setattr(videos_api, "delete_stream_video", lambda uid: rec["stream"].append(uid))
-    monkeypatch.setattr(videos_api, "delete_from_spaces", lambda url: rec["spaces"].append(url))
+    rec = {"stream": [], "spaces": [], "recombee": []}
+    monkeypatch.setattr(video_deletion, "delete_stream_video", lambda uid: rec["stream"].append(uid))
+    monkeypatch.setattr(video_deletion, "delete_from_spaces", lambda url: rec["spaces"].append(url))
 
     async def fake_recombee(req):
-        rec["recombee"] += 1
+        rec["recombee"].append(req)
 
-    monkeypatch.setattr(videos_api, "recombee_send", fake_recombee)
+    monkeypatch.setattr(video_deletion, "recombee_send", fake_recombee)
     return rec
 
 
-def _video(**overrides):
+def _user(**overrides):
+    doc = {"_id": ObjectId(), "user_type": "standard", "is_active": True,
+           "profile_picture": f"{CDN}/profile-pictures/{ObjectId()}.jpg"}
+    doc.update(overrides)
+    return doc
+
+
+def _video(creator, **overrides):
+    uid = str(ObjectId())
     doc = {
         "_id": ObjectId(),
-        "creator_id": CREATOR_ID,
+        "creator_id": creator["_id"],
         "is_active": True,
-        "remoteUrl": "https://videodelivery.net/aaaa1111/manifest/video.m3u8",
-        "remoteUrl_CF": "https://videodelivery.net/aaaa1111/manifest/video.m3u8",
-        "urls": {"thumbnail": f"{CDN}/thumbnails/own.jpg"},
+        "remoteUrl": f"https://videodelivery.net/{uid}/manifest/video.m3u8",
+        "remoteUrl_CF": f"https://videodelivery.net/{uid}/manifest/video.m3u8",
+        "urls": {"thumbnail": f"{CDN}/profile-pictures/thumb-{uid}.jpg"},
     }
     doc.update(overrides)
     return doc
 
 
-async def _delete(db, video, monkeypatch):
-    monkeypatch.setattr(videos_api, "get_database", lambda: db)
-    return await videos_api.delete_video(str(video["_id"]), current_user=str(CREATOR_ID))
+def _uid(video):
+    return upload_DO.extract_stream_uid(video["remoteUrl_CF"])
 
+
+async def _delete(db, video, requester, monkeypatch):
+    monkeypatch.setattr(videos_api, "get_database", lambda: db)
+    return await videos_api.delete_video(str(video["_id"]), current_user=str(requester["_id"]))
+
+
+# ---- DELETE /videos/{id} ---------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_invalid_id_is_400(monkeypatch, calls):
-    monkeypatch.setattr(videos_api, "get_database", lambda: FakeDB([]))
+    monkeypatch.setattr(videos_api, "get_database", lambda: FakeDB())
     with pytest.raises(HTTPException) as exc:
-        await videos_api.delete_video("not-an-id", current_user=str(CREATOR_ID))
+        await videos_api.delete_video("not-an-id", current_user=str(ObjectId()))
     assert exc.value.status_code == 400
 
 
 @pytest.mark.asyncio
 async def test_repeat_delete_is_a_no_op(monkeypatch, calls):
-    video = _video(
-        is_active=False,
-        remoteUrl=DELETED_VIDEO_PLACEHOLDER_URL,
-        remoteUrl_CF=DELETED_VIDEO_PLACEHOLDER_URL,
-    )
-    db = FakeDB([video])
-    await _delete(db, video, monkeypatch)
+    creator = _user()
+    video = _video(creator, is_active=False,
+                   remoteUrl=DELETED_VIDEO_PLACEHOLDER_URL,
+                   remoteUrl_CF=DELETED_VIDEO_PLACEHOLDER_URL)
+    db = FakeDB([video], [creator])
+    await _delete(db, video, creator, monkeypatch)
 
-    assert calls["stream"] == []          # placeholder not deleted
-    assert calls["spaces"] == []
-    assert db.users.incs == []            # video count not lowered again
-    assert db.videos.updates == []
+    assert calls == {"stream": [], "spaces": [], "recombee": []}
+    assert db.videos.updates == [] and db.users.updates == []
 
 
 @pytest.mark.asyncio
-async def test_stream_video_delete(monkeypatch, calls):
-    video = _video()
-    db = FakeDB([video])
-    await _delete(db, video, monkeypatch)
+async def test_stream_video_delete_removes_stream_thumbnail_and_recombee(monkeypatch, calls):
+    creator = _user()
+    video = _video(creator)
+    stream, thumb = _uid(video), video["urls"]["thumbnail"]
+    db = FakeDB([video], [creator])
+    await _delete(db, video, creator, monkeypatch)
 
-    assert calls["stream"] == ["aaaa1111"]
+    assert calls["stream"] == [stream]
+    assert thumb in calls["spaces"]
+    assert len(calls["recombee"]) == 1
     assert db.videos.docs[video["_id"]]["remoteUrl_CF"] == DELETED_VIDEO_PLACEHOLDER_URL
     assert db.videos.docs[video["_id"]]["is_active"] is False
-    assert db.users.incs == [({"_id": CREATOR_ID}, {"$inc": {"videos_count": -1}})]
-    # remoteUrl is a Stream link (ignored by the real helper) plus the thumbnail.
-    assert f"{CDN}/thumbnails/own.jpg" in calls["spaces"]
-    assert calls["recombee"] == 1
+    assert ({"_id": creator["_id"]}, {"$inc": {"videos_count": -1}}) in db.users.updates
 
 
 @pytest.mark.asyncio
 async def test_legacy_spaces_original_is_deleted(monkeypatch, calls):
+    creator = _user()
     legacy = f"{CDN}/videos/original.mp4"
-    video = _video(remoteUrl=legacy)
-    db = FakeDB([video])
-    await _delete(db, video, monkeypatch)
+    video = _video(creator, remoteUrl=legacy)
+    db = FakeDB([video], [creator])
+    await _delete(db, video, creator, monkeypatch)
 
     assert legacy in calls["spaces"]
-    assert calls["stream"] == ["aaaa1111"]
 
 
 @pytest.mark.asyncio
-async def test_shared_and_default_thumbnails_are_kept(monkeypatch, calls):
-    shared = f"{CDN}/thumbnails/shared.jpg"
-    default_thumb = _video(urls={"thumbnail": DEFAULT_THUMBNAIL})
-    shared_a = _video(urls={"thumbnail": shared})
-    shared_b = _video(urls={"thumbnail": shared})
-    db = FakeDB([default_thumb, shared_a, shared_b])
+async def test_photo_post_images_deleted_once_each(monkeypatch, calls):
+    creator = _user()
+    imgs = [f"{CDN}/profile-pictures/p1.jpg", f"{CDN}/profile-pictures/p2.jpg"]
+    video = _video(creator, media_type="photo", remoteUrl=None, remoteUrl_CF=None,
+                   images=imgs, urls={"thumbnail": imgs[0]})
+    db = FakeDB([video], [creator])
+    await _delete(db, video, creator, monkeypatch)
 
-    await _delete(db, default_thumb, monkeypatch)
-    await _delete(db, shared_a, monkeypatch)
+    assert sorted(calls["spaces"]) == sorted(imgs)
+    assert calls["stream"] == []
+
+
+@pytest.mark.asyncio
+async def test_shared_and_default_files_are_kept(monkeypatch, calls):
+    creator = _user()
+    shared = f"{CDN}/profile-pictures/shared.jpg"
+    default_thumb = _video(creator, urls={"thumbnail": DEFAULT_THUMBNAIL})
+    shared_a = _video(creator, urls={"thumbnail": shared})
+    shared_b = _video(creator, urls={"thumbnail": shared})
+    # A thumbnail that happens to be someone's profile picture.
+    other_user = _user()
+    avatar_thumb = _video(creator, urls={"thumbnail": other_user["profile_picture"]})
+    db = FakeDB([default_thumb, shared_a, shared_b, avatar_thumb], [creator, other_user])
+
+    for v in (default_thumb, shared_a, avatar_thumb):
+        await _delete(db, v, creator, monkeypatch)
 
     assert DEFAULT_THUMBNAIL not in calls["spaces"]
     assert shared not in calls["spaces"]
+    assert other_user["profile_picture"] not in calls["spaces"]
+
+
+# ---- DELETE /users/ban/{id} --------------------------------------------------
+
+async def _ban(db, target, admin, monkeypatch):
+    monkeypatch.setattr(users_api, "get_database", lambda: db)
+    return await users_api.ban_user(str(target["_id"]), current_user=str(admin["_id"]))
 
 
 @pytest.mark.asyncio
-async def test_photo_post_image_deleted_once(monkeypatch, calls):
-    img = f"{CDN}/photos/p1.jpg"
-    video = _video(remoteUrl=None, remoteUrl_CF=None, images=[img], urls={"thumbnail": img})
-    db = FakeDB([video])
-    await _delete(db, video, monkeypatch)
+async def test_ban_deletes_videos_photos_and_profile_picture(monkeypatch, calls):
+    admin = _user(user_type="admin")
+    target = _user()
+    v1, v2 = _video(target), _video(target)
+    photo = _video(target, media_type="photo", remoteUrl=None, remoteUrl_CF=None,
+                   images=[f"{CDN}/profile-pictures/ph.jpg"],
+                   urls={"thumbnail": f"{CDN}/profile-pictures/ph.jpg"})
+    already_deleted = _video(target, is_active=False,
+                             remoteUrl=DELETED_VIDEO_PLACEHOLDER_URL,
+                             remoteUrl_CF=DELETED_VIDEO_PLACEHOLDER_URL)
+    someone_elses = _video(admin)
+    db = FakeDB([v1, v2, photo, already_deleted, someone_elses], [admin, target])
+    profile_picture = target["profile_picture"]
+    streams = sorted([_uid(v1), _uid(v2)])   # before the ban swaps in the placeholder
 
-    assert calls["spaces"].count(img) == 1
-    assert calls["stream"] == []
+    await _ban(db, target, admin, monkeypatch)
 
+    assert sorted(calls["stream"]) == streams
+    assert v1["urls"]["thumbnail"] in calls["spaces"]
+    assert f"{CDN}/profile-pictures/ph.jpg" in calls["spaces"]
+    assert profile_picture in calls["spaces"]
+    assert len(calls["recombee"]) == 3          # v1, v2, photo
+    for v in (v1, v2, photo):
+        assert db.videos.docs[v["_id"]]["is_active"] is False
+    assert db.videos.docs[someone_elses["_id"]]["is_active"] is True
+    assert DELETED_VIDEO_PLACEHOLDER_UID not in calls["stream"]
+    t = db.users.docs[target["_id"]]
+    assert t["is_active"] is False and t["profile_picture"] is None
+
+
+@pytest.mark.asyncio
+async def test_ban_requires_admin(monkeypatch, calls):
+    target, not_admin = _user(), _user()
+    db = FakeDB([_video(target)], [target, not_admin])
+    with pytest.raises(HTTPException) as exc:
+        await _ban(db, target, not_admin, monkeypatch)
+    assert exc.value.status_code == 403
+    assert calls == {"stream": [], "spaces": [], "recombee": []}
+
+
+# ---- storage helpers ---------------------------------------------------------
 
 def test_stream_helper_refuses_to_delete_placeholder(monkeypatch):
     def boom(*a, **k):
@@ -173,6 +257,22 @@ def test_stream_helper_refuses_to_delete_placeholder(monkeypatch):
     monkeypatch.setattr(upload_DO.requests, "delete", boom)
     upload_DO.delete_stream_video(DELETED_VIDEO_PLACEHOLDER_UID)
     upload_DO.delete_stream_video("")
+
+
+def test_spaces_helper_accepts_cdn_and_origin_urls(monkeypatch):
+    deleted = []
+
+    class FakeS3:
+        def delete_object(self, Bucket, Key):
+            deleted.append(Key)
+
+    monkeypatch.setattr(upload_DO.boto3, "client", lambda *a, **k: FakeS3())
+    s = upload_DO.settings
+    upload_DO.delete_from_spaces(f"{s.DO_SPACES_CDN_URL}/{s.DO_SPACES_BUCKET_NAME}/profile-pictures/a.jpg")
+    upload_DO.delete_from_spaces(f"{s.DO_SPACES_ENDPOINT}/{s.DO_SPACES_BUCKET_NAME}/profile-pictures/b.jpg")
+    upload_DO.delete_from_spaces("https://videodelivery.net/abc/manifest/video.m3u8")
+    upload_DO.delete_from_spaces(None)
+    assert deleted == ["profile-pictures/a.jpg", "profile-pictures/b.jpg"]
 
 
 def test_placeholder_url_uses_new_stream():
