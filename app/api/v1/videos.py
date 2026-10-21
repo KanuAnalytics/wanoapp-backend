@@ -705,7 +705,28 @@ async def like_video(
         {"_id": ObjectId(video_id)},
         {"description": 1, "urls.thumbnail": 1, "thumbnail": 1, "creator_id": 1},
     )
-    
+
+    # A like means the user has seen the video, so record it in watch_history
+    # the same as a >=25% watch -- the feed's exclude_watched filter then
+    # keeps it out of their feed even if they liked it within the first 25%.
+    # `portion` is deliberately left alone: it's only ever written by the
+    # /watch endpoint from real playback, so a like never overwrites (or
+    # invents) how much was actually watched. The row is kept on unlike;
+    # they've still seen the video.
+    if video:
+        now = datetime.utcnow()
+        await db.watch_history.update_one(
+            {
+                "user_id": ObjectId(current_user),
+                "video_id": ObjectId(video_id),
+            },
+            {
+                "$set": {"watched_at": now, "liked_at": now},
+                "$setOnInsert": {"first_watched_at": now},
+            },
+            upsert=True,
+        )
+
     # Increment like count in buffer
     await metrics_buffer.increment_like(video_id)
     
