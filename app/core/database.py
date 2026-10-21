@@ -86,6 +86,11 @@ async def create_indexes():
         # ...and looks up the finished job when its stitched video becomes ready.
         await db.db.pending_videos.create_index([("result.stream_uid", 1)])
 
+        # Songs: song_id is the id the app sees (the original songs.json id).
+        await db.db.songs.create_index([("song_id", 1)], unique=True)
+        await db.db.songs.create_index([("is_active", 1), ("sort_order", 1)])
+        await db.db.music_genres.create_index([("slug", 1)], unique=True)
+
         logger.info("Database indexes created")
     except Exception as e:
         logger.error(f"Error creating indexes: {e}")

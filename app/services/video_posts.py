@@ -40,6 +40,7 @@ async def create_video_post(
     category_id: Optional[str] = None,
     subcategory_id: Optional[str] = None,
     supports_landscape: Optional[bool] = None,
+    sound: Optional[dict] = None,
 ) -> str:
     """Saves the post, counts it on the user, and syncs it to Recombee. Returns the new video's id."""
     db = get_database()
@@ -110,6 +111,11 @@ async def create_video_post(
 
     if supports_landscape is not None:
         video_doc["supports_landscape"] = supports_landscape
+
+    # A copy of the song ({id, title, uri, artist}), so the feed can show its
+    # name -- and play it, for photo posts -- without looking the song up.
+    if sound:
+        video_doc["sound"] = sound
 
     result = await db.videos.insert_one(video_doc)
 

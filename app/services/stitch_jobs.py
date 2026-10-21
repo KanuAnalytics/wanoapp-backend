@@ -54,7 +54,7 @@ async def create_stitch_job(
 ) -> str:
     """
     clips: [{"url", "start", "end"}] in playback order; end=None means to the end of the clip.
-    post: {"description", "privacy", "thumbnail", "categoryId", "subcategoryId", "comments_enabled"}
+    post: {"title", "description", "sound", "privacy", "thumbnail", "categoryId", "subcategoryId", "comments_enabled"}
     """
     db = get_database()
     now = datetime.utcnow()
@@ -281,6 +281,7 @@ async def _create_post(job: dict, stitched: dict) -> str:
         job["creator_id"],
         remote_url=stitched["file_url"],
         remote_url_cf=stitched["file_url"],
+        title=post.get("title"),
         description=post.get("description"),
         privacy=post.get("privacy") or "public",
         thumbnail=post.get("thumbnail") or DEFAULT_THUMBNAIL,
@@ -294,4 +295,5 @@ async def _create_post(job: dict, stitched: dict) -> str:
         category_id=post.get("categoryId"),
         subcategory_id=post.get("subcategoryId"),
         supports_landscape=False,
+        sound=post.get("sound"),
     )
