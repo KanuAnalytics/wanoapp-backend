@@ -86,18 +86,23 @@ async def test_registration_otp_request_rejects_disposable_email():
 
 
 @pytest.mark.asyncio
-async def test_users_create_rejects_disposable_email():
-    from app.api.v1.users import UserCreate, create_user
+async def test_users_create_rejects_disposable_email(monkeypatch):
+    # POST /users/ is admin-only, so the disposable check is reached only
+    # after the admin check passes; fake an admin requester for that lookup.
+    from app.api.v1 import users as users_api
+    from tests.test_users_create_admin_only import ADMIN_ID, FakeDB
 
+    monkeypatch.setattr(users_api, "get_database", lambda: FakeDB("admin"))
     with pytest.raises(HTTPException) as exc:
-        await create_user(
-            UserCreate(
+        await users_api.create_user(
+            users_api.UserCreate(
                 username="Griffard1681",
                 email="Griffard1681@uberip.com",
                 password="Password1",
                 display_name="x",
                 localization={"country": "bw"},
-            )
+            ),
+            current_user=ADMIN_ID,
         )
     assert exc.value.status_code == 400
     assert exc.value.detail == DISPOSABLE_EMAIL_MESSAGE

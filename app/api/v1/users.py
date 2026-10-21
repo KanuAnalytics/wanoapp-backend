@@ -1307,9 +1307,28 @@ async def update_user_comments_display_name(db, user_id: str, new_display_name: 
         logger.error(f"Failed to update comments display name: {e}")
 
 @router.post("/", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-async def create_user(user: UserCreate):
-    """Create a new user"""
+async def create_user(
+    user: UserCreate,
+    current_user: str = Depends(get_current_active_user),
+):
+    """Create a new user (admin only).
+
+    This endpoint lets the caller choose `user_type`, including admin, so it
+    must never be reachable without an admin login: an open version let anyone
+    mint an admin account and then ban users or delete any video. Regular
+    signups go through POST /auth/register, which always creates a standard
+    account.
+    """
     db = get_database()
+
+    requesting_user = await db.users.find_one(
+        {"_id": ObjectId(current_user)}, {"user_type": 1}
+    )
+    if not requesting_user or requesting_user.get("user_type") != UserType.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin privileges required to create users"
+        )
 
     ensure_not_disposable_email(user.email)
     
