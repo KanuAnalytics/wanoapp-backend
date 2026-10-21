@@ -9,7 +9,6 @@ from typing import Optional, List
 from bson import ObjectId
 from datetime import datetime, timedelta
 from app.core.database import get_database
-from app.core.disposable_email import DISPOSABLE_EMAIL_MESSAGE, is_disposable_email
 from app.services.metrics_service import metrics_buffer
 from app.graphql.types import (
     UserType, VideoType, CommentType, AuthPayload,
@@ -21,19 +20,6 @@ from app.graphql.mutations_folder.video_editor import VideoEditorMutation
 from strawberry.types import Info
 
 
-
-@strawberry.input
-class RegisterInput:
-    username: str
-    email: str
-    password: str
-    display_name: str
-    country: str
-    languages: List[str] = strawberry.field(default_factory=lambda: ["en"])
-    user_type: UserTypeEnum = UserTypeEnum.STANDARD
-    gender: Optional[str] = None
-    date_of_birth: Optional[datetime] = None
-    tags: Optional[List[str]] = None
 
 @strawberry.input
 class LoginInput:
@@ -210,77 +196,12 @@ class CommentMutations:
 
 @strawberry.type
 class Mutation(VideoEditorMutation, CommentMutations):
-    @strawberry.mutation
-    async def register(self, input: RegisterInput) -> AuthPayload:
-        """Register a new user"""
-        db = get_database()
+    # There is deliberately no GraphQL register mutation. Signups go through
+    # POST /api/v1/auth/register only, which hashes passwords, blocks
+    # disposable emails and always creates standard accounts. The old
+    # mutation stored plain-text passwords and let the caller pick
+    # user_type (including admin), and the app never used it.
 
-        if is_disposable_email(input.email):
-            raise Exception(DISPOSABLE_EMAIL_MESSAGE)
-        
-        # Check if username or email already exists
-        existing_user = await db.users.find_one({
-            "$or": [
-                {"username": input.username},
-                {"email": input.email}
-            ]
-        })
-        
-        if existing_user:
-            raise Exception("Username or email already registered")
-        
-        # Create user document
-        user_doc = {
-            "username": input.username,
-            "email": input.email,
-            "password_hash": f"hashed_{input.password}",  # Use get_password_hash() in production
-            "display_name": input.display_name,
-            "user_type": input.user_type.value,
-            "localization": {
-                "country": input.country,
-                "languages": input.languages,
-                "tribes": []
-            },
-            "gender": input.gender,
-            "date_of_birth": input.date_of_birth,
-            "tags": input.tags if input.tags else [],
-            "created_at": datetime.utcnow(),
-            "updated_at": datetime.utcnow(),
-            "is_active": True,
-            "followers_count": 0,
-            "following_count": 0,
-            "videos_count": 0,
-            "likes_count": 0,
-            "bookmarked_videos": [],
-            "liked_videos": [],
-            "following": [],
-            "followers": []
-        }
-        
-        result = await db.users.insert_one(user_doc)
-        user_doc["_id"] = result.inserted_id
-        
-        # Create access token
-        access_token = create_access_token(data={"sub": str(result.inserted_id)})
-        
-        user = UserType(
-            id=str(user_doc["_id"]),
-            username=user_doc["username"],
-            email=user_doc["email"],
-            display_name=user_doc["display_name"],
-            user_type=UserTypeEnum(user_doc["user_type"]),
-            localization=LocalizationType(**user_doc["localization"]),
-            gender=user_doc.get("gender"),
-            date_of_birth=user_doc.get("date_of_birth"),
-            tags=user_doc.get("tags", []),
-            followers_count=0,
-            following_count=0,
-            videos_count=0,
-            created_at=user_doc["created_at"]
-        )
-        
-        return AuthPayload(token=access_token, user=user)
-    
     @strawberry.mutation
     async def login(self, input: LoginInput) -> AuthPayload:
         """Login user"""
