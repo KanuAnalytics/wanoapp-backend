@@ -210,7 +210,7 @@ async def _ban(db, target, admin, monkeypatch):
 @pytest.mark.asyncio
 async def test_ban_deletes_videos_photos_and_profile_picture(monkeypatch, calls):
     admin = _user(user_type="admin")
-    target = _user()
+    target = _user(cover_picture=f"{CDN}/profile-pictures/cover.jpg")
     v1, v2 = _video(target), _video(target)
     photo = _video(target, media_type="photo", remoteUrl=None, remoteUrl_CF=None,
                    images=[f"{CDN}/profile-pictures/ph.jpg"],
@@ -229,6 +229,7 @@ async def test_ban_deletes_videos_photos_and_profile_picture(monkeypatch, calls)
     assert v1["urls"]["thumbnail"] in calls["spaces"]
     assert f"{CDN}/profile-pictures/ph.jpg" in calls["spaces"]
     assert profile_picture in calls["spaces"]
+    assert f"{CDN}/profile-pictures/cover.jpg" in calls["spaces"]
     assert len(calls["recombee"]) == 3          # v1, v2, photo
     for v in (v1, v2, photo):
         assert db.videos.docs[v["_id"]]["is_active"] is False
@@ -236,6 +237,19 @@ async def test_ban_deletes_videos_photos_and_profile_picture(monkeypatch, calls)
     assert DELETED_VIDEO_PLACEHOLDER_UID not in calls["stream"]
     t = db.users.docs[target["_id"]]
     assert t["is_active"] is False and t["profile_picture"] is None
+
+
+@pytest.mark.asyncio
+async def test_ban_keeps_shared_cover_and_handles_missing_pictures(monkeypatch, calls):
+    admin = _user(user_type="admin")
+    shared_cover = f"{CDN}/profile-pictures/shared-cover.jpg"
+    target = _user(profile_picture=None, cover_picture=shared_cover)
+    other = _user(cover_picture=shared_cover)
+    db = FakeDB([], [admin, target, other])
+
+    await _ban(db, target, admin, monkeypatch)
+
+    assert calls["spaces"] == []
 
 
 @pytest.mark.asyncio

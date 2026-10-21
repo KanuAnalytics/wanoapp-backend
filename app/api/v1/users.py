@@ -613,7 +613,7 @@ async def ban_user(
     """
     Admin-only ban:
     - Anonymizes and deactivates the target user
-    - Deletes their profile picture from Spaces
+    - Deletes their profile and cover pictures from Spaces
     - Deletes all their videos the same way DELETE /videos/{id} does: hidden,
       removed from Cloudflare Stream and Recombee, and their photos,
       thumbnails and pre-Stream originals removed from Spaces
@@ -643,8 +643,9 @@ async def ban_user(
             detail="User not found"
         )
 
-    # Read before the anonymize update below clears it.
+    # Read before the anonymize update below clears them.
     profile_picture_url = user.get("profile_picture")
+    cover_picture_url = user.get("cover_picture")
 
     # Anonymize and deactivate the user
     await db.users.update_one(
@@ -663,10 +664,12 @@ async def ban_user(
         }
     )
 
-    # Profile picture, skipped if another account or video uses the same file.
-    await delete_spaces_file_if_unused(
-        db, profile_picture_url, exclude_user_id=ObjectId(user_id)
-    )
+    # Profile and cover pictures, each skipped if another account or video
+    # uses the same file.
+    for picture_url in (profile_picture_url, cover_picture_url):
+        await delete_spaces_file_if_unused(
+            db, picture_url, exclude_user_id=ObjectId(user_id)
+        )
 
     # Delete every active video exactly as DELETE /videos/{id} would. Videos
     # the user already deleted were cleaned up at the time and are skipped.
