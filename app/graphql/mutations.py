@@ -11,20 +11,14 @@ from datetime import datetime, timedelta
 from app.core.database import get_database
 from app.services.metrics_service import metrics_buffer
 from app.graphql.types import (
-    UserType, VideoType, CommentType, AuthPayload,
+    UserType, VideoType, CommentType,
     UserTypeEnum, VideoTypeEnum, VideoPrivacyEnum,
     LocalizationType
 )
-from app.core.security import verify_password, get_password_hash, create_access_token
 from app.graphql.mutations_folder.video_editor import VideoEditorMutation
 from strawberry.types import Info
 
 
-
-@strawberry.input
-class LoginInput:
-    username: str
-    password: str
 
 @strawberry.input
 class UpdateUserInput:
@@ -196,51 +190,13 @@ class CommentMutations:
 
 @strawberry.type
 class Mutation(VideoEditorMutation, CommentMutations):
-    # There is deliberately no GraphQL register mutation. Signups go through
-    # POST /api/v1/auth/register only, which hashes passwords, blocks
-    # disposable emails and always creates standard accounts. The old
-    # mutation stored plain-text passwords and let the caller pick
-    # user_type (including admin), and the app never used it.
+    # There are deliberately no GraphQL register or login mutations. Signup
+    # and login go through the REST endpoints only (POST /api/v1/auth/register
+    # and /api/v1/auth/login/json), which hash passwords, block disposable
+    # emails and always create standard accounts. The old GraphQL versions
+    # stored and accepted plain-text passwords, let the caller pick user_type
+    # (including admin), and were never used by the app.
 
-    @strawberry.mutation
-    async def login(self, input: LoginInput) -> AuthPayload:
-        """Login user"""
-        db = get_database()
-        
-        user_doc = await db.users.find_one({"username": input.username})
-        
-        if not user_doc:
-            raise Exception("Invalid username or password")
-        
-        # Check password
-        password_hash = user_doc.get("password_hash", "")
-        if password_hash.startswith("hashed_"):
-            # MVP simple hash
-            if f"hashed_{input.password}" != password_hash:
-                raise Exception("Invalid username or password")
-        else:
-            # Real hash
-            if not verify_password(input.password, password_hash):
-                raise Exception("Invalid username or password")
-        
-        # Create access token
-        access_token = create_access_token(data={"sub": str(user_doc["_id"])})
-        
-        user = UserType(
-            id=str(user_doc["_id"]),
-            username=user_doc["username"],
-            email=user_doc["email"],
-            display_name=user_doc["display_name"],
-            user_type=UserTypeEnum(user_doc["user_type"]),
-            localization=LocalizationType(**user_doc["localization"]),
-            followers_count=user_doc.get("followers_count", 0),
-            following_count=user_doc.get("following_count", 0),
-            videos_count=user_doc.get("videos_count", 0),
-            created_at=user_doc["created_at"]
-        )
-        
-        return AuthPayload(token=access_token, user=user)
-    
     @strawberry.mutation
     async def update_user(self, info, input: UpdateUserInput) -> UserType:
         """Update user profile"""
