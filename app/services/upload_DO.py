@@ -322,6 +322,18 @@ def get_stream_video_name(uid: str) -> Optional[str]:
     return (resp.json()["result"].get("meta") or {}).get("name") or ""
 
 
+# Shared "this video was deleted" stream. Every soft-deleted video record has
+# its stream links pointed here, so old feeds, bookmarks and likes play this
+# instead of a dead link. It must never be deleted: an earlier version of the
+# delete endpoint read the stream id back off an already-deleted video and
+# removed the previous placeholder from Cloudflare.
+DELETED_VIDEO_PLACEHOLDER_UID = "97002814c3643d7bba41a9311db4e610"
+DELETED_VIDEO_PLACEHOLDER_URL = (
+    f"https://videodelivery.net/{DELETED_VIDEO_PLACEHOLDER_UID}/manifest/video.m3u8"
+)
+PROTECTED_STREAM_UIDS = frozenset({DELETED_VIDEO_PLACEHOLDER_UID})
+
+
 def extract_stream_uid(remote_url_cf: str) -> Optional[str]:
     """Pull the Cloudflare Stream UID out of a videodelivery.net playback URL."""
     match = re.search(r"videodelivery\.net/([a-f0-9]+)/", remote_url_cf or "")
@@ -332,7 +344,11 @@ def delete_stream_video(uid: str) -> None:
     """
     Delete a video from Cloudflare Stream by UID.
     A 404 (already gone) is treated as success.
+    The shared deleted-video placeholder is never deleted, whoever asks.
     """
+    if not uid or uid in PROTECTED_STREAM_UIDS:
+        return
+
     account_id = settings.CLOUDFLARE_ACCOUNT_ID
     api_token = settings.CLOUDFLARE_STREAM_API_TOKEN
 

@@ -20,11 +20,15 @@ from bson.json_util import dumps
 from app.models.user import UserType
 from recombee_api_client.api_requests import SetViewPortion, AddRating, DeleteRating, AddBookmark, DeleteBookmark, SetItemValues, Batch, DeleteItem
 from app.services.recombee_service import recombee_send
-from app.services.upload_DO import extract_stream_uid, delete_stream_video, delete_from_spaces
+from app.services.upload_DO import (
+    DELETED_VIDEO_PLACEHOLDER_URL,
+    delete_from_spaces,
+    delete_stream_video,
+    extract_stream_uid,
+)
 from app.services.stitch_jobs import create_stitch_job
 from app.services.video_posts import DEFAULT_THUMBNAIL, create_video_post
 
-DELETED_VIDEO_PLACEHOLDER_URL = "https://videodelivery.net/fc6b3da74765fa42f7a2cde3de5b2967/manifest/video.m3u8"
 
 # Fraction of a video (0-1) that counts as "watched" for feed-exclusion
 # purposes. Below this, a view is still reported to Recombee (every view is a
@@ -602,13 +606,33 @@ async def update_video(
     
     return response
 
+async def _spaces_file_shared(db, video_oid, field: str, url: str) -> bool:
+    """True if any other video record references the same file in `field`."""
+    other = await db.videos.find_one(
+        {"_id": {"$ne": video_oid}, field: url}, {"_id": 1}
+    )
+    return other is not None
+
+
 @router.delete("/{video_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_video(
     video_id: str,
     current_user: str = Depends(get_current_active_user)
 ):
-    """Soft delete a video. Only creator or admin can delete."""
+    """Soft delete a video. Only creator or admin can delete.
+
+    Deleting an already-deleted video is a no-op. Without that, a repeat
+    delete read the placeholder's stream id back off the record and deleted
+    the shared placeholder from Cloudflare, and lowered the creator's video
+    count a second time.
+    """
     db = get_database()
+
+    if not ObjectId.is_valid(video_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid video ID"
+        )
 
     # Get current user document
     user_doc = await db.users.find_one({"_id": ObjectId(current_user)})
@@ -636,6 +660,15 @@ async def delete_video(
             detail="You do not have permission to delete this video"
         )
 
+    if video.get("is_active") is False:
+        return
+
+    # Captured before the update below overwrites the stream links.
+    original_remote_url = video.get("remoteUrl")
+    original_remote_url_cf = video.get("remoteUrl_CF")
+    images = video.get("images") or []
+    thumbnail_url = (video.get("urls") or {}).get("thumbnail")
+
     # Soft delete video, and swap in the "deleted" placeholder stream so any
     # stale references (feeds, bookmarks, etc.) never resolve to a dead CF URL
     await db.videos.update_one(
@@ -655,18 +688,44 @@ async def delete_video(
         {"$inc": {"videos_count": -1}}
     )
 
-    stream_uid = extract_stream_uid(video.get("remoteUrl_CF"))
+    stream_uid = extract_stream_uid(original_remote_url_cf) or extract_stream_uid(original_remote_url)
     if stream_uid:
         try:
             delete_stream_video(stream_uid)
         except Exception as e:
             print(f"Failed to delete Cloudflare Stream video {stream_uid}: {e}")
 
-    for image_url in video.get("images") or []:
+    for image_url in images:
         try:
             delete_from_spaces(image_url)
         except Exception as e:
             print(f"Failed to delete Spaces image {image_url}: {e}")
+
+    # Videos uploaded before the move to Cloudflare Stream (mid-2025 to March
+    # 2026) also kept their original file on Spaces in remoteUrl, publicly
+    # reachable. Delete it too, unless another record points at the same file.
+    # For Stream-only videos remoteUrl is a videodelivery.net link and
+    # delete_from_spaces ignores it.
+    if original_remote_url and not await _spaces_file_shared(
+        db, video["_id"], "remoteUrl", original_remote_url
+    ):
+        try:
+            delete_from_spaces(original_remote_url)
+        except Exception as e:
+            print(f"Failed to delete Spaces video file {original_remote_url}: {e}")
+
+    # Thumbnails live on Spaces. Skip the shared default thumbnail, a photo
+    # post's own image (deleted above), and any file another video still uses.
+    if (
+        thumbnail_url
+        and thumbnail_url != DEFAULT_THUMBNAIL
+        and thumbnail_url not in images
+        and not await _spaces_file_shared(db, video["_id"], "urls.thumbnail", thumbnail_url)
+    ):
+        try:
+            delete_from_spaces(thumbnail_url)
+        except Exception as e:
+            print(f"Failed to delete Spaces thumbnail {thumbnail_url}: {e}")
 
     try:
         req = DeleteItem(video_id)
