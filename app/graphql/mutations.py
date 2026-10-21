@@ -9,6 +9,7 @@ from typing import Optional, List
 from bson import ObjectId
 from datetime import datetime, timedelta
 from app.core.database import get_database
+from app.core.disposable_email import DISPOSABLE_EMAIL_MESSAGE, is_disposable_email
 from app.services.metrics_service import metrics_buffer
 from app.graphql.types import (
     UserType, VideoType, CommentType, AuthPayload,
@@ -213,6 +214,9 @@ class Mutation(VideoEditorMutation, CommentMutations):
     async def register(self, input: RegisterInput) -> AuthPayload:
         """Register a new user"""
         db = get_database()
+
+        if is_disposable_email(input.email):
+            raise Exception(DISPOSABLE_EMAIL_MESSAGE)
         
         # Check if username or email already exists
         existing_user = await db.users.find_one({

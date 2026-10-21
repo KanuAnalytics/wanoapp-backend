@@ -16,6 +16,7 @@ from datetime import datetime
 from app.models.base import PyObjectId
 from app.models.user import StandardUser, ArtistUser, AdvertiserUser, AdminUser, UserType
 from app.core.database import get_database
+from app.core.disposable_email import ensure_not_disposable_email
 from app.core.security import get_password_hash, create_verification_token
 from app.api.deps import get_current_active_user
 from pydantic import BaseModel, Field, EmailStr, HttpUrl, validator
@@ -1309,6 +1310,8 @@ async def update_user_comments_display_name(db, user_id: str, new_display_name: 
 async def create_user(user: UserCreate):
     """Create a new user"""
     db = get_database()
+
+    ensure_not_disposable_email(user.email)
     
     # Check if username or email already exists
     existing_user = await db.users.find_one({
