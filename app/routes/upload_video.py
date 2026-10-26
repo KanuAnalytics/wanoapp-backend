@@ -318,9 +318,14 @@ async def cloudflare_stream_webhook(request: Request, background_tasks: Backgrou
     video = await db.videos.find_one_and_update(
         {"remoteUrl_CF": {"$regex": re.escape(uid)}, "isReadyToStream": {"$ne": True}},
         {"$set": {"isReadyToStream": True}},
-        projection={"creator_id": 1, "urls.thumbnail": 1},
+        projection={"creator_id": 1, "urls.thumbnail": 1, "status": 1},
     )
     if not video:
+        return {"ok": True}
+
+    # A scheduled post is announced, synced and notified when it is published,
+    # not when its video finishes processing.
+    if video.get("status") in ("scheduled", "publishing"):
         return {"ok": True}
 
     try:
