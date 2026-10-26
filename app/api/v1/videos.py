@@ -24,6 +24,7 @@ from app.services.upload_DO import extract_stream_uid, delete_stream_video, dele
 from app.services.stitch_jobs import create_stitch_job
 from app.services.video_posts import DEFAULT_THUMBNAIL, create_video_post
 from app.services.songs import sound_for_post
+from app.services.scheduled_publisher import normalize_schedule
 
 DELETED_VIDEO_PLACEHOLDER_URL = "https://videodelivery.net/fc6b3da74765fa42f7a2cde3de5b2967/manifest/video.m3u8"
 
@@ -73,6 +74,10 @@ class VideoPost(BaseModel):
     supports_landscape: Optional[bool] = None
     # The song played with a photo post (an id from GET /music/songs).
     sound_id: Optional[str] = None
+    # When set, the post stays hidden and goes live at this time. The zone is
+    # only remembered so the app can show the time the way it was picked.
+    scheduled_at: Optional[datetime] = None
+    timezone: Optional[str] = None
 
 class StitchClip(BaseModel):
     url: str
@@ -101,6 +106,8 @@ class VideoStitch(BaseModel):
     comments_enabled: bool = True
     categoryId: Optional[str] = None
     subcategoryId: Optional[str] = None
+    scheduled_at: Optional[datetime] = None
+    timezone: Optional[str] = None
 
 class VideoCreate(BaseModel):
     title: Optional[str] = None
@@ -196,6 +203,7 @@ async def post_video(
 
         # Only photo posts play a separate song; a video's song is mixed in by /stitch.
         sound = await sound_for_post(input.sound_id) if is_photo_post and input.sound_id else None
+        scheduled_at, scheduled_timezone = normalize_schedule(input.scheduled_at, input.timezone)
 
         video_id = await create_video_post(
             current_user,
@@ -217,9 +225,13 @@ async def post_video(
             subcategory_id=input.subcategoryId,
             supports_landscape=input.supports_landscape,
             sound=sound,
+            scheduled_at=scheduled_at,
+            scheduled_timezone=scheduled_timezone,
         )
 
         message = "Photo posted successfully" if is_photo_post else "Video posted successfully"
+        if scheduled_at:
+            message = "Post scheduled successfully"
         return {"message": message, "video_id": video_id}
     except HTTPException:
         raise
@@ -238,6 +250,7 @@ async def stitch_video(
     processed all of them, and the post appears when the result is ready.
     """
     sound = await sound_for_post(input.audio.id, input.audio.uri) if input.audio else None
+    scheduled_at, scheduled_timezone = normalize_schedule(input.scheduled_at, input.timezone)
     job_id = await create_stitch_job(
         user_id=current_user,
         clips=[clip.model_dump() for clip in input.videoUrls],
@@ -252,6 +265,8 @@ async def stitch_video(
             "categoryId": input.categoryId,
             "subcategoryId": input.subcategoryId,
             "comments_enabled": input.comments_enabled,
+            "scheduled_at": scheduled_at,
+            "scheduled_timezone": scheduled_timezone,
         },
     )
     return {"message": "Video submitted successfully. Processing in background.", "job_id": job_id}
