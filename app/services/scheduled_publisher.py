@@ -39,12 +39,19 @@ CANCELLED = "cancelled"
 def normalize_schedule(
     scheduled_at: Optional[datetime],
     timezone_name: Optional[str],
+    require_lead_time: bool = True,
 ) -> tuple[Optional[datetime], Optional[str]]:
     """
     Returns (naive UTC datetime, IANA zone) for a requested schedule, or
     (None, None) when the post isn't scheduled. The rest of the app stores
     naive UTC timestamps, so this does too. The zone is kept only so the app
     can show the time the way the user picked it.
+
+    A new post is created only after the app has compressed (and, for a
+    stitch, uploaded) the video, so its time may have come close or passed
+    by then. Those pass require_lead_time=False: the app already checked the
+    lead time when the user picked it, and a time that has passed simply
+    publishes on the next tick.
     """
     if scheduled_at is None:
         return None, None
@@ -59,7 +66,7 @@ def normalize_schedule(
         scheduled_at = scheduled_at.astimezone(timezone.utc).replace(tzinfo=None)
 
     now = datetime.utcnow()
-    if scheduled_at < now + MIN_LEAD_TIME:
+    if require_lead_time and scheduled_at < now + MIN_LEAD_TIME:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             "Schedule the post at least 5 minutes from now",
@@ -94,24 +101,38 @@ async def publish_post(video_id) -> bool:
         return False
 
     try:
-        await _go_live(video, now)
+        went_live = await _go_live(video, now)
     except Exception:
-        # Back to scheduled so the next tick retries.
+        # The post never went live; back to scheduled so the next tick retries.
         logger.exception("Publishing scheduled post %s failed", video["_id"])
         await db.videos.update_one(
-            {"_id": video["_id"]},
+            {"_id": video["_id"], "status": PUBLISHING},
             {"$set": {"status": SCHEDULED}, "$unset": {"claimed_at": ""}},
         )
         return False
+    if not went_live:
+        return False
+
+    # The post is live from here on. Nothing below sends it back to
+    # scheduled, or a retry would count it on the user a second time.
+    try:
+        await db.users.update_one({"_id": video["creator_id"]}, {"$inc": {"videos_count": 1}})
+    except Exception:
+        logger.exception("Counting scheduled post %s on its creator failed", video["_id"])
+    await _sync_recombee(video, now)
+    await _notify_creator(video, now)
     return True
 
 
-async def _go_live(video: dict, now: datetime) -> None:
+async def _go_live(video: dict, now: datetime) -> bool:
+    """
+    Flips the post live. False when it is no longer ours to publish: it was
+    deleted, or its claim went stale and was handed back, after the claim.
+    """
     db = get_database()
-    creator_id = video["creator_id"]
 
-    await db.videos.update_one(
-        {"_id": video["_id"]},
+    result = await db.videos.update_one(
+        {"_id": video["_id"], "status": PUBLISHING},
         {
             "$set": {
                 "is_active": True,
@@ -124,10 +145,7 @@ async def _go_live(video: dict, now: datetime) -> None:
             "$unset": {"claimed_at": ""},
         },
     )
-    await db.users.update_one({"_id": creator_id}, {"$inc": {"videos_count": 1}})
-
-    await _sync_recombee(video, now)
-    await _notify_creator(video, now)
+    return result.modified_count == 1
 
 
 async def _sync_recombee(video: dict, now: datetime) -> None:
