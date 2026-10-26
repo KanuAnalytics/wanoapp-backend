@@ -24,7 +24,12 @@ from app.services.upload_DO import extract_stream_uid, delete_stream_video, dele
 from app.services.stitch_jobs import create_stitch_job
 from app.services.video_posts import DEFAULT_THUMBNAIL, create_video_post
 from app.services.songs import sound_for_post
-from app.services.scheduled_publisher import normalize_schedule
+from app.services.scheduled_publisher import (
+    CANCELLED,
+    PUBLISHING,
+    SCHEDULED,
+    normalize_schedule,
+)
 
 DELETED_VIDEO_PLACEHOLDER_URL = "https://videodelivery.net/fc6b3da74765fa42f7a2cde3de5b2967/manifest/video.m3u8"
 
@@ -203,7 +208,9 @@ async def post_video(
 
         # Only photo posts play a separate song; a video's song is mixed in by /stitch.
         sound = await sound_for_post(input.sound_id) if is_photo_post and input.sound_id else None
-        scheduled_at, scheduled_timezone = normalize_schedule(input.scheduled_at, input.timezone)
+        scheduled_at, scheduled_timezone = normalize_schedule(
+            input.scheduled_at, input.timezone, require_lead_time=False
+        )
 
         video_id = await create_video_post(
             current_user,
@@ -250,7 +257,9 @@ async def stitch_video(
     processed all of them, and the post appears when the result is ready.
     """
     sound = await sound_for_post(input.audio.id, input.audio.uri) if input.audio else None
-    scheduled_at, scheduled_timezone = normalize_schedule(input.scheduled_at, input.timezone)
+    scheduled_at, scheduled_timezone = normalize_schedule(
+        input.scheduled_at, input.timezone, require_lead_time=False
+    )
     job_id = await create_stitch_job(
         user_id=current_user,
         clips=[clip.model_dump() for clip in input.videoUrls],
@@ -692,6 +701,15 @@ async def delete_video(
             detail="You do not have permission to delete this video"
         )
 
+    # A post that hasn't gone live is cancelled, so the scheduled publisher
+    # never makes it live. It was never counted on the user either. If the
+    # publisher wins the race the status is "published" and this matches nothing.
+    unpublished = await db.videos.update_one(
+        {"_id": ObjectId(video_id), "status": {"$in": [SCHEDULED, PUBLISHING]}},
+        {"$set": {"status": CANCELLED}},
+    )
+    was_published = unpublished.modified_count == 0
+
     # Soft delete video, and swap in the "deleted" placeholder stream so any
     # stale references (feeds, bookmarks, etc.) never resolve to a dead CF URL
     await db.videos.update_one(
@@ -706,10 +724,11 @@ async def delete_video(
 
     # Decrement creator’s video count ONLY if the creator deleted it
     # Or if admin deleted it, decrement the *actual owner’s* count
-    await db.users.update_one(
-        {"_id": video["creator_id"]},
-        {"$inc": {"videos_count": -1}}
-    )
+    if was_published:
+        await db.users.update_one(
+            {"_id": video["creator_id"]},
+            {"$inc": {"videos_count": -1}}
+        )
 
     stream_uid = extract_stream_uid(video.get("remoteUrl_CF"))
     if stream_uid:
