@@ -49,6 +49,9 @@ async def create_indexes():
         await db.db.videos.create_index([("created_at", -1), ("_id", -1)])
         await db.db.videos.create_index([("creator_id", 1)])
         await db.db.videos.create_index([("is_active", 1), ("privacy", 1)])
+        # Scheduled posts: the publisher's due-time scan, and each creator's own list.
+        await db.db.videos.create_index([("status", 1), ("scheduled_at", 1)])
+        await db.db.videos.create_index([("creator_id", 1), ("status", 1), ("scheduled_at", 1)])
 
         # Watch history: one doc per (user, video). Unique index doubles as
         # the upsert key; the second index supports a future "continue
@@ -75,11 +78,6 @@ async def create_indexes():
         await db.db.pending_videos.create_index([("status", 1), ("clips.stream_uid", 1)])
         # ...and looks up the finished job when its stitched video becomes ready.
         await db.db.pending_videos.create_index([("result.stream_uid", 1)])
-
-        # Songs: song_id is the id the app sees (the original songs.json id).
-        await db.db.songs.create_index([("song_id", 1)], unique=True)
-        await db.db.songs.create_index([("is_active", 1), ("sort_order", 1)])
-        await db.db.music_genres.create_index([("slug", 1)], unique=True)
 
         logger.info("Database indexes created")
     except Exception as e:
