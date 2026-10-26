@@ -296,4 +296,6 @@ async def _create_post(job: dict, stitched: dict) -> str:
         subcategory_id=post.get("subcategoryId"),
         supports_landscape=False,
         sound=post.get("sound"),
+        scheduled_at=post.get("scheduled_at"),
+        scheduled_timezone=post.get("scheduled_timezone"),
     )
