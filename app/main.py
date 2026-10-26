@@ -18,6 +18,7 @@ from app.core.database import connect_to_mongo, close_mongo_connection
 from app.api.v1 import api_router  # This imports the router
 from app.graphql.schema import graphql_app
 from app.services.metrics_service import metrics_buffer
+from app.services.scheduled_publisher import scheduled_publisher
 from app.routes import upload_video
 from collections.abc import Mapping
 
@@ -92,8 +93,10 @@ async def lifespan(app: FastAPI):
     db = AsyncIOMotorClient(settings.MONGODB_URI)[settings.DATABASE_NAME]
     await ensure_indexes(db)
     await metrics_buffer.start()  # Start the metrics buffer
+    await scheduled_publisher.start()  # Publishes scheduled posts when they come due
     yield
     # Shutdown
+    await scheduled_publisher.stop()
     await metrics_buffer.stop()   # Stop the metrics buffer
     await close_mongo_connection()
 
