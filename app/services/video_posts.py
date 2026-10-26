@@ -41,8 +41,15 @@ async def create_video_post(
     subcategory_id: Optional[str] = None,
     supports_landscape: Optional[bool] = None,
     sound: Optional[dict] = None,
+    scheduled_at: Optional[datetime] = None,
+    scheduled_timezone: Optional[str] = None,
 ) -> str:
-    """Saves the post, counts it on the user, and syncs it to Recombee. Returns the new video's id."""
+    """
+    Saves the post, counts it on the user, and syncs it to Recombee. Returns the new video's id.
+
+    With scheduled_at (naive UTC) the post is saved hidden instead -- not counted and not synced --
+    and app/services/scheduled_publisher.py does that part when it comes due.
+    """
     db = get_database()
     creator_id = ObjectId(user_id)
     user = await db.users.find_one({"_id": creator_id})
@@ -117,7 +124,18 @@ async def create_video_post(
     if sound:
         video_doc["sound"] = sound
 
+    if scheduled_at is not None:
+        # Every feed, profile and search query filters on is_active, so this
+        # alone keeps the post hidden until it is published.
+        video_doc["is_active"] = False
+        video_doc["status"] = "scheduled"
+        video_doc["scheduled_at"] = scheduled_at
+        video_doc["scheduled_timezone"] = scheduled_timezone
+
     result = await db.videos.insert_one(video_doc)
+
+    if scheduled_at is not None:
+        return str(result.inserted_id)
 
     await db.users.update_one(
         {"_id": creator_id},
