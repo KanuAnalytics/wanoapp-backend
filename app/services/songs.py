@@ -4,10 +4,15 @@ app/services/songs.py
 The song library behind GET /api/v1/music/songs, favourites and the sound
 saved on a post.
 
-Songs live in the `songs` collection. Each one keeps its original id from
-songs.json in `song_id`, and that is the id the app sees, so ids already
-stored on devices, favourites and posts never change. Until the collection is
-imported (scripts/import_songs.py), or if it can't be read, songs.json is used.
+Songs come from the existing `songs` collection:
+    { _id: ObjectId, id: "11", title, uri, duration: "2:23", category: "afro-energy",
+      thumbnail?: url }
+and genres from `song_categories`:
+    { _id: ObjectId, key: "afro-energy", name: "AFRO ENERGY", createdAt }
+
+`id` is the id the app sees (the same ids songs.json uses), so ids already
+stored in favourites and on posts never change. This code only reads both
+collections. If `songs` is empty or can't be read, songs.json is used.
 """
 
 import json
@@ -48,18 +53,13 @@ def load_json_songs() -> List[dict]:
             raw = json.load(f)
         _json_songs = [
             {
-                "song_id": str(s.get("id")),
+                "id": str(s.get("id")),
                 "title": s.get("title") or "",
                 "uri": s.get("uri"),
                 "duration": s.get("duration"),
-                "duration_sec": duration_to_seconds(s.get("duration")),
-                "artist": None,
-                "cover_url": None,
-                "genres": [],
-                "is_active": True,
-                "sort_order": index,
+                "category": None,
             }
-            for index, s in enumerate(raw)
+            for s in raw
             if s.get("id") is not None and s.get("uri")
         ]
     return _json_songs
@@ -70,24 +70,31 @@ def song_out(doc: dict) -> dict:
     API shape of a song. id/title/uri/duration are the fields older app
     versions read and must keep their meaning; the rest are additions.
     """
+    category = doc.get("category")
     return {
-        "id": str(doc.get("song_id")),
-        "title": doc.get("title") or "",
+        "id": str(doc.get("id")),
+        "title": (doc.get("title") or "").strip(),
         "uri": doc.get("uri"),
         "duration": doc.get("duration"),
-        "duration_sec": doc.get("duration_sec"),
+        "duration_sec": duration_to_seconds(doc.get("duration")),
         "artist": doc.get("artist") or None,
-        "cover_url": doc.get("cover_url") or None,
-        "genres": doc.get("genres") or [],
+        "cover_url": doc.get("thumbnail") or None,
+        # A song has one category today; a list keeps room for more later.
+        "genres": [category] if isinstance(category, str) and category else [],
     }
+
+
+def _active_songs_query(extra: Optional[dict] = None) -> dict:
+    query = {"id": {"$ne": None}, "uri": {"$ne": None}, "is_active": {"$ne": False}}
+    if extra:
+        query.update(extra)
+    return query
 
 
 async def list_songs() -> List[dict]:
     db = get_database()
     try:
-        docs = await db.songs.find(
-            {"is_active": {"$ne": False}, "song_id": {"$ne": None}},
-        ).sort([("sort_order", 1), ("_id", 1)]).to_list(length=None)
+        docs = await db.songs.find(_active_songs_query()).sort("_id", 1).to_list(length=None)
         if docs:
             return [song_out(d) for d in docs]
     except Exception:
@@ -96,15 +103,16 @@ async def list_songs() -> List[dict]:
 
 
 async def list_genres() -> List[dict]:
+    """Genres in the order they were created. Names are shown as stored (emoji included)."""
     db = get_database()
     try:
-        docs = await db.music_genres.find(
-            {"is_active": {"$ne": False}, "slug": {"$ne": None}},
-        ).sort([("sort_order", 1), ("name", 1)]).to_list(length=None)
+        docs = await db.song_categories.find(
+            {"key": {"$ne": None}, "is_active": {"$ne": False}},
+        ).sort([("createdAt", 1), ("_id", 1)]).to_list(length=None)
     except Exception:
-        logger.exception("Reading music genres failed")
+        logger.exception("Reading song categories failed")
         return []
-    return [{"id": d["slug"], "name": d.get("name") or d["slug"]} for d in docs]
+    return [{"id": d["key"], "name": d.get("name") or d["key"]} for d in docs]
 
 
 async def find_song(song_id: Optional[str]) -> Optional[dict]:
@@ -114,14 +122,14 @@ async def find_song(song_id: Optional[str]) -> Optional[dict]:
     song_id = str(song_id)
     db = get_database()
     try:
-        doc = await db.songs.find_one({"song_id": song_id, "is_active": {"$ne": False}})
+        doc = await db.songs.find_one(_active_songs_query({"id": song_id}))
         if doc:
             return doc
         if await db.songs.estimated_document_count() > 0:
             return None
     except Exception:
         logger.exception("Looking up song %s failed; using songs.json", song_id)
-    return next((s for s in load_json_songs() if s["song_id"] == song_id), None)
+    return next((s for s in load_json_songs() if s["id"] == song_id), None)
 
 
 def post_sound(song: Optional[dict]) -> Optional[dict]:
@@ -129,11 +137,11 @@ def post_sound(song: Optional[dict]) -> Optional[dict]:
     The copy of a song saved on a post as `sound`. It is a copy so the post
     keeps showing its song even if the song is renamed or removed later.
     """
-    if not song or not song.get("uri"):
+    if not song or not song.get("uri") or song.get("id") is None:
         return None
     return {
-        "id": str(song.get("song_id")),
-        "title": song.get("title") or "",
+        "id": str(song["id"]),
+        "title": (song.get("title") or "").strip(),
         "uri": song.get("uri"),
         "artist": song.get("artist") or None,
     }
@@ -149,7 +157,7 @@ async def sound_for_post(song_id: Optional[str] = None, audio_uri: Optional[str]
         song = await find_song(song_id)
         if song is None and audio_uri:
             db = get_database()
-            song = await db.songs.find_one({"uri": audio_uri})
+            song = await db.songs.find_one(_active_songs_query({"uri": audio_uri}))
             if song is None:
                 song = next((s for s in load_json_songs() if s["uri"] == audio_uri), None)
         return post_sound(song)
