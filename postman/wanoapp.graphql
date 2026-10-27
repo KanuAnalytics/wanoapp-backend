@@ -1,0 +1,263 @@
+type AuthPayload {
+  token: String!
+  user: UserType!
+}
+
+type CommentType {
+  id: String!
+  videoId: String!
+  userId: String!
+  userDisplayName: String!
+  content: String!
+  parentId: String
+  likesCount: Int!
+  repliesCount: Int!
+  isLiked: Boolean!
+  isEdited: Boolean!
+  editedAt: DateTime
+  isPinned: Boolean!
+  isHearted: Boolean!
+  createdAt: DateTime!
+  user: UserType
+  replies(limit: Int! = 10): [CommentType!]!
+}
+
+input CompileVideoInput {
+  video: [VideoInput!]!
+  audioUrl: String = null
+  ratio: String = null
+  videoType: String = "public"
+  description: String = null
+  thumbnail: String = null
+  categoryId: String = null
+  subcategoryId: String = null
+}
+
+input CreateCommentInput {
+  videoId: String!
+  content: String!
+  parentId: String = null
+}
+
+input CreateVideoInput {
+  title: String = null
+  description: String = null
+  videoType: VideoTypeEnum! = REGULAR
+  privacy: VideoPrivacyEnum! = PUBLIC
+  hashtags: [String!]! = []
+  categories: [String!]! = []
+  remixEnabled: Boolean! = true
+  commentsEnabled: Boolean! = true
+  videoUrl: String!
+  thumbnailUrl: String = null
+  duration: Float! = 0
+  width: Int! = 1920
+  height: Int! = 1080
+  fps: Float! = 30
+  fileSize: Int! = 0
+}
+
+"""Date with time (isoformat)"""
+scalar DateTime
+
+type FeedItemType {
+  video: VideoType!
+  score: Float!
+  reason: String!
+  isAd: Boolean!
+  position: Int!
+}
+
+type LocalizationType {
+  country: String!
+  languages: [String!]!
+  tribes: [String!]
+}
+
+input LoginInput {
+  username: String!
+  password: String!
+}
+
+type MetricsStatus {
+  totalVideosInBuffer: Int!
+  totalUpdatesPending: Int!
+  lastFlush: String!
+  viewsPending: Int!
+  likesPending: Int!
+  commentsPending: Int!
+}
+
+type Mutation {
+  compileVideo(input: CompileVideoInput!): ResponseType!
+  createComment(videoId: String!, input: CreateCommentInput!): CommentType!
+  updateComment(commentId: String!, content: String!): CommentType!
+  register(input: RegisterInput!): AuthPayload!
+  login(input: LoginInput!): AuthPayload!
+  updateUser(input: UpdateUserInput!): UserType!
+  createVideo(input: CreateVideoInput!): VideoType!
+  updateVideo(videoId: String!, input: UpdateVideoInput!): VideoType!
+  deleteVideo(videoId: String!): Boolean!
+  likeVideo(videoId: String!): Boolean!
+  unlikeVideo(videoId: String!): Boolean!
+  followUser(userIdToFollow: String!): Boolean!
+  unfollowUser(userIdToUnfollow: String!): Boolean!
+  deleteComment(commentId: String!): Boolean!
+  bookmarkVideo(videoId: String!): Boolean!
+  unbookmarkVideo(videoId: String!): Boolean!
+  flushMetrics: Boolean!
+}
+
+type PageInfo {
+  hasNextPage: Boolean!
+  hasPreviousPage: Boolean!
+  startCursor: String
+  endCursor: String
+}
+
+type Query {
+  me: UserType
+  user(userId: String!): UserType
+  users(userType: UserTypeEnum = null, limit: Int! = 20, offset: Int! = 0): [UserType!]!
+  video(videoId: String!): VideoType
+  videos(videoType: VideoTypeEnum = null, privacy: VideoPrivacyEnum = null, creatorId: String = null, hashtag: String = null, first: Int! = 20, after: String = null): VideoConnection!
+  feed(limit: Int! = 20, offset: Int! = 0): [FeedItemType!]!
+  videoComments(videoId: String!, limit: Int! = 20, offset: Int! = 0): [CommentType!]!
+  searchVideos(query: String!, limit: Int! = 20, offset: Int! = 0): [VideoType!]!
+  metricsStatus: MetricsStatus!
+}
+
+input RegisterInput {
+  username: String!
+  email: String!
+  password: String!
+  displayName: String!
+  country: String!
+  languages: [String!]! = ["en"]
+  userType: UserTypeEnum! = STANDARD
+  gender: String = null
+  dateOfBirth: DateTime = null
+  tags: [String!] = null
+}
+
+type ResponseType {
+  message: String!
+  status: String!
+}
+
+type Subscription {
+  videoMetrics(videoId: String!): VideoMetrics!
+  newComments(videoId: String!): CommentType!
+  followerCount(userId: String!): Int!
+  trendingVideos(country: String = null): [VideoType!]!
+}
+
+input UpdateUserInput {
+  displayName: String = null
+  bio: String = null
+  profilePicture: String = null
+  gender: String = null
+  dateOfBirth: DateTime = null
+  tags: [String!] = null
+}
+
+input UpdateVideoInput {
+  title: String = null
+  description: String = null
+  privacy: VideoPrivacyEnum = null
+  hashtags: [String!] = null
+  categories: [String!] = null
+  remixEnabled: Boolean = null
+  commentsEnabled: Boolean = null
+}
+
+type UserType {
+  id: String!
+  username: String!
+  email: String!
+  displayName: String!
+  bio: String
+  userType: UserTypeEnum!
+  localization: LocalizationType!
+  followersCount: Int!
+  followingCount: Int!
+  videosCount: Int!
+  createdAt: DateTime!
+  gender: String
+  dateOfBirth: DateTime
+  tags: [String!]!
+}
+
+enum UserTypeEnum {
+  STANDARD
+  ARTIST
+  ADVERTISER
+  ADMIN
+}
+
+type VideoConnection {
+  edges: [VideoType!]!
+  pageInfo: PageInfo!
+  totalCount: Int!
+}
+
+input VideoInput {
+  FEid: String!
+  duration: Float!
+  start: Float!
+  end: Float!
+  remoteUrl: String!
+  type: String!
+  index: Int = null
+  isTrimmed: Boolean = false
+}
+
+type VideoMetrics {
+  viewsCount: Int!
+  likesCount: Int!
+  commentsCount: Int!
+  bufferedViews: Int!
+  bufferedLikes: Int!
+  bufferedComments: Int!
+  totalViews: Int!
+  totalLikes: Int!
+  totalComments: Int!
+}
+
+enum VideoPrivacyEnum {
+  PUBLIC
+  UNLISTED
+  PRIVATE
+}
+
+type VideoType {
+  id: String!
+  creatorId: String!
+  creator: UserType
+  title: String
+  description: String
+  videoType: VideoTypeEnum!
+  privacy: VideoPrivacyEnum!
+  viewsCount: Int!
+  likesCount: Int!
+  commentsCount: Int!
+  sharesCount: Int!
+  hashtags: [String!]!
+  categories: [String!]!
+  createdAt: DateTime!
+  bufferedViews: Int!
+  bufferedLikes: Int!
+  bufferedComments: Int!
+  FEid: String
+  start: Float!
+  end: Float!
+  remoteUrl: String
+  remoteUrlCf: String
+  duration: Float!
+  type: String!
+}
+
+enum VideoTypeEnum {
+  REGULAR
+  BITS
+}

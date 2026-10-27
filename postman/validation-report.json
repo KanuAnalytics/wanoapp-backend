@@ -1,0 +1,10 @@
+{
+  "http_operations_in_openapi": 100,
+  "http_operations_covered": 100,
+  "graphql_queries_and_mutations": 26,
+  "websocket_subscriptions": 4,
+  "example_json_bodies_validated_against_fastapi_models": 40,
+  "collection_requests_including_variants_and_docs": 139,
+  "undefined_variable_references": 0,
+  "validation": "Offline schema/model validation only. No API handlers, lifespan hooks, database queries or external service requests executed."
+}
