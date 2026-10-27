@@ -36,7 +36,6 @@ STATUS_FAILED = "failed"
 
 # Only videos uploaded under this folder are ever deleted after stitching. Posts are
 # uploaded under "videos/", so a post passed in as a clip can never be removed.
-CLIP_NAME_PREFIX = "clips/"
 
 STITCHED_WIDTH = 1080
 STITCHED_HEIGHT = 1920
@@ -160,8 +159,12 @@ async def _reason_to_keep_clip(stream_uid: str, job_id: ObjectId) -> Optional[st
     name = await asyncio.to_thread(get_stream_video_name, stream_uid)
     if name is None:
         return "already gone from Cloudflare"
-    if not name.startswith(CLIP_NAME_PREFIX):
-        return f"not uploaded as a clip (its name does not start with {CLIP_NAME_PREFIX})"
+    # No check on the clip's Stream name here. There used to be one ("must
+    # start with clips/") as a guard against deleting an ordinary upload, but
+    # the app's presigns named clips videos/... for a long time, so the guard
+    # only ever kept clips that should have gone. What actually protects
+    # footage is the two checks below: a video attached to a post, or still
+    # needed by another job, is never deleted.
 
     if await db.videos.find_one({"remoteUrl_CF": {"$regex": re.escape(stream_uid)}}, {"_id": 1}):
         return "it is the video of a post"

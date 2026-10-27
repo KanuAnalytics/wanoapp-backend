@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.security import OAuth2PasswordRequestForm
 from jose import jwt
 from app.core.config import settings
+from app.core.disposable_email import ensure_not_disposable_email
 from app.core.database import get_database
 from app.core.security import verify_password, get_password_hash, create_access_token, create_verification_token
 from app.services.email_service import email_service
@@ -143,6 +144,11 @@ async def register(request: RegisterRequest):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Either email or phone number is required"
         )
+
+    # Checked here as well as at OTP request time: /register doesn't require
+    # a verified OTP, so a client can call it directly.
+    if request.email:
+        ensure_not_disposable_email(request.email)
 
     # --- Profanity and banned-word check (username + display name) ---
     username_probability = predict_prob([request.username])[0]
@@ -299,6 +305,9 @@ async def request_registration_otp(request: RequestRegistrationOtpRequest):
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Email is required for email verification"
             )
+
+        # Refuse throwaway inboxes before spending an OTP email on them.
+        ensure_not_disposable_email(request.email)
 
         # Avoid sending OTP if email is already registered
         existing_user = await db.users.find_one({"email": request.email})

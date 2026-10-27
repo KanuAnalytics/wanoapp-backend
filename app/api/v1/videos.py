@@ -20,18 +20,12 @@ from bson.json_util import dumps
 from app.models.user import UserType
 from recombee_api_client.api_requests import SetViewPortion, AddRating, DeleteRating, AddBookmark, DeleteBookmark, SetItemValues, Batch, DeleteItem
 from app.services.recombee_service import recombee_send
-from app.services.upload_DO import extract_stream_uid, delete_stream_video, delete_from_spaces
+from app.services.video_deletion import soft_delete_video
 from app.services.stitch_jobs import create_stitch_job
 from app.services.video_posts import DEFAULT_THUMBNAIL, create_video_post
 from app.services.songs import sound_for_post
-from app.services.scheduled_publisher import (
-    CANCELLED,
-    PUBLISHING,
-    SCHEDULED,
-    normalize_schedule,
-)
+from app.services.scheduled_publisher import normalize_schedule
 
-DELETED_VIDEO_PLACEHOLDER_URL = "https://videodelivery.net/fc6b3da74765fa42f7a2cde3de5b2967/manifest/video.m3u8"
 
 # Fraction of a video (0-1) that counts as "watched" for feed-exclusion
 # purposes. Below this, a view is still reported to Recombee (every view is a
@@ -672,8 +666,20 @@ async def delete_video(
     video_id: str,
     current_user: str = Depends(get_current_active_user)
 ):
-    """Soft delete a video. Only creator or admin can delete."""
+    """Soft delete a video. Only creator or admin can delete.
+
+    Deleting an already-deleted video is a no-op. Without that, a repeat
+    delete read the placeholder's stream id back off the record and deleted
+    the shared placeholder from Cloudflare, and lowered the creator's video
+    count a second time.
+    """
     db = get_database()
+
+    if not ObjectId.is_valid(video_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid video ID"
+        )
 
     # Get current user document
     user_doc = await db.users.find_one({"_id": ObjectId(current_user)})
@@ -701,54 +707,9 @@ async def delete_video(
             detail="You do not have permission to delete this video"
         )
 
-    # A post that hasn't gone live is cancelled, so the scheduled publisher
-    # never makes it live. It was never counted on the user either. If the
-    # publisher wins the race the status is "published" and this matches nothing.
-    unpublished = await db.videos.update_one(
-        {"_id": ObjectId(video_id), "status": {"$in": [SCHEDULED, PUBLISHING]}},
-        {"$set": {"status": CANCELLED}},
-    )
-    was_published = unpublished.modified_count == 0
-
-    # Soft delete video, and swap in the "deleted" placeholder stream so any
-    # stale references (feeds, bookmarks, etc.) never resolve to a dead CF URL
-    await db.videos.update_one(
-        {"_id": ObjectId(video_id)},
-        {"$set": {
-            "is_active": False,
-            "updated_at": datetime.utcnow(),
-            "remoteUrl": DELETED_VIDEO_PLACEHOLDER_URL,
-            "remoteUrl_CF": DELETED_VIDEO_PLACEHOLDER_URL,
-        }}
-    )
-
-    # Decrement creator’s video count ONLY if the creator deleted it
-    # Or if admin deleted it, decrement the *actual owner’s* count
-    if was_published:
-        await db.users.update_one(
-            {"_id": video["creator_id"]},
-            {"$inc": {"videos_count": -1}}
-        )
-
-    stream_uid = extract_stream_uid(video.get("remoteUrl_CF"))
-    if stream_uid:
-        try:
-            delete_stream_video(stream_uid)
-        except Exception as e:
-            print(f"Failed to delete Cloudflare Stream video {stream_uid}: {e}")
-
-    for image_url in video.get("images") or []:
-        try:
-            delete_from_spaces(image_url)
-        except Exception as e:
-            print(f"Failed to delete Spaces image {image_url}: {e}")
-
-    try:
-        req = DeleteItem(video_id)
-        req.timeout = 5000
-        await recombee_send(req)
-    except Exception:
-        pass
+    # Already-deleted videos are a no-op inside soft_delete_video. A scheduled
+    # post is cancelled there too, so the publisher never makes it live.
+    await soft_delete_video(db, video)
 
     return {"message": "Video deleted successfully"}  # Optional for 204
 
@@ -780,7 +741,28 @@ async def like_video(
         {"_id": ObjectId(video_id)},
         {"description": 1, "urls.thumbnail": 1, "thumbnail": 1, "creator_id": 1},
     )
-    
+
+    # A like means the user has seen the video, so record it in watch_history
+    # the same as a >=25% watch -- the feed's exclude_watched filter then
+    # keeps it out of their feed even if they liked it within the first 25%.
+    # `portion` is deliberately left alone: it's only ever written by the
+    # /watch endpoint from real playback, so a like never overwrites (or
+    # invents) how much was actually watched. The row is kept on unlike;
+    # they've still seen the video.
+    if video:
+        now = datetime.utcnow()
+        await db.watch_history.update_one(
+            {
+                "user_id": ObjectId(current_user),
+                "video_id": ObjectId(video_id),
+            },
+            {
+                "$set": {"watched_at": now, "liked_at": now},
+                "$setOnInsert": {"first_watched_at": now},
+            },
+            upsert=True,
+        )
+
     # Increment like count in buffer
     await metrics_buffer.increment_like(video_id)
     

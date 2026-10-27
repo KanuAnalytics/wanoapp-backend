@@ -16,6 +16,9 @@ from datetime import datetime
 from app.models.base import PyObjectId
 from app.models.user import StandardUser, ArtistUser, AdvertiserUser, AdminUser, UserType
 from app.core.database import get_database
+from app.core.disposable_email import ensure_not_disposable_email
+from app.services.video_deletion import delete_spaces_file_if_unused, soft_delete_video
+from app.services.scheduled_publisher import PUBLISHING, SCHEDULED
 from app.core.security import get_password_hash, create_verification_token
 from app.api.deps import get_current_active_user
 from pydantic import BaseModel, Field, EmailStr, HttpUrl, ValidationError, validator
@@ -616,7 +619,10 @@ async def ban_user(
     """
     Admin-only ban:
     - Anonymizes and deactivates the target user
-    - Soft deletes all their videos
+    - Deletes their profile and cover pictures from Spaces
+    - Deletes all their videos the same way DELETE /videos/{id} does: hidden,
+      removed from Cloudflare Stream and Recombee, and their photos,
+      thumbnails and pre-Stream originals removed from Spaces
     """
     db = get_database()
     now = datetime.utcnow()
@@ -643,6 +649,10 @@ async def ban_user(
             detail="User not found"
         )
 
+    # Read before the anonymize update below clears them.
+    profile_picture_url = user.get("profile_picture")
+    cover_picture_url = user.get("cover_picture")
+
     # Anonymize and deactivate the user
     await db.users.update_one(
         {"_id": ObjectId(user_id)},
@@ -660,11 +670,30 @@ async def ban_user(
         }
     )
 
-    # Soft delete all videos for this user
-    await db.videos.update_many(
-        {"creator_id": ObjectId(user_id)},
-        {"$set": {"is_active": False, "updated_at": now}}
-    )
+    # Profile and cover pictures, each skipped if another account or video
+    # uses the same file.
+    for picture_url in (profile_picture_url, cover_picture_url):
+        await delete_spaces_file_if_unused(
+            db, picture_url, exclude_user_id=ObjectId(user_id)
+        )
+
+    # Delete every active video exactly as DELETE /videos/{id} would. Videos
+    # the user already deleted were cleaned up at the time and are skipped.
+    # Scheduled posts are hidden but not deleted, so they're included, or they
+    # would still go live after the ban.
+    # Collected first so the deletes don't change what the cursor is reading.
+    videos = [
+        video
+        async for video in db.videos.find({
+            "creator_id": ObjectId(user_id),
+            "$or": [
+                {"is_active": {"$ne": False}},
+                {"status": {"$in": [SCHEDULED, PUBLISHING]}},
+            ],
+        })
+    ]
+    for video in videos:
+        await soft_delete_video(db, video)
 
     return
 
@@ -1311,9 +1340,30 @@ async def update_user_comments_display_name(db, user_id: str, new_display_name: 
         logger.error(f"Failed to update comments display name: {e}")
 
 @router.post("/", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-async def create_user(user: UserCreate):
-    """Create a new user"""
+async def create_user(
+    user: UserCreate,
+    current_user: str = Depends(get_current_active_user),
+):
+    """Create a new user (admin only).
+
+    This endpoint lets the caller choose `user_type`, including admin, so it
+    must never be reachable without an admin login: an open version let anyone
+    mint an admin account and then ban users or delete any video. Regular
+    signups go through POST /auth/register, which always creates a standard
+    account.
+    """
     db = get_database()
+
+    requesting_user = await db.users.find_one(
+        {"_id": ObjectId(current_user)}, {"user_type": 1}
+    )
+    if not requesting_user or requesting_user.get("user_type") != UserType.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin privileges required to create users"
+        )
+
+    ensure_not_disposable_email(user.email)
     
     # Check if username or email already exists
     existing_user = await db.users.find_one({

@@ -5,7 +5,6 @@ app/api/v1/scheduled_posts.py
 
 Registered before the videos router, so /videos/scheduled is not read as a video id.
 """
-import logging
 from datetime import datetime
 from typing import Literal, Optional
 
@@ -13,22 +12,17 @@ from bson import ObjectId
 from bson.errors import InvalidId
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
-from recombee_api_client.api_requests import DeleteItem
 
 from app.api.deps import get_verified_user
 from app.core.database import get_database
-from app.services.recombee_service import recombee_send
 from app.services.scheduled_publisher import (
-    CANCELLED,
     PUBLISHED,
     PUBLISHING,
     SCHEDULED,
     normalize_schedule,
     publish_post,
 )
-from app.services.upload_DO import delete_from_spaces, delete_stream_video, extract_stream_uid
-
-logger = logging.getLogger(__name__)
+from app.services.video_deletion import soft_delete_video
 
 router = APIRouter()
 
@@ -162,35 +156,7 @@ async def cancel_scheduled_post(
     current_user: str = Depends(get_verified_user),
 ):
     video = await _own_scheduled_post(video_id, current_user)
-
-    db = get_database()
-    # It was never counted on the user, so there is no videos_count to undo.
-    result = await db.videos.update_one(
-        {"_id": video["_id"], "status": SCHEDULED},
-        {"$set": {"status": CANCELLED, "is_active": False, "updated_at": datetime.utcnow()}},
-    )
-    if not result.modified_count:
-        raise HTTPException(status.HTTP_409_CONFLICT, "This post is already being published")
-
-    stream_uid = extract_stream_uid(video.get("remoteUrl_CF"))
-    if stream_uid:
-        try:
-            delete_stream_video(stream_uid)
-        except Exception:
-            logger.exception("Failed to delete Cloudflare Stream video %s", stream_uid)
-
-    for image_url in video.get("images") or []:
-        try:
-            delete_from_spaces(image_url)
-        except Exception:
-            logger.exception("Failed to delete Spaces image %s", image_url)
-
-    # Only synced to Recombee at publish, so this normally finds nothing.
-    try:
-        req = DeleteItem(str(video["_id"]))
-        req.timeout = 5000
-        await recombee_send(req)
-    except Exception:
-        pass
-
+    # Cancels it and removes its media, the same way DELETE /videos/{id} does.
+    # If the publisher made it live in the meantime, it is deleted as a live post.
+    await soft_delete_video(get_database(), video)
     return {"message": "Scheduled post deleted"}
