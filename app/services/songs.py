@@ -4,15 +4,16 @@ app/services/songs.py
 The song library behind GET /api/v1/music/songs, favourites and the sound
 saved on a post.
 
-Songs come from the existing `songs` collection:
-    { _id: ObjectId, id: "11", title, uri, duration: "2:23", category: "afro-energy",
-      thumbnail?: url }
-and genres from `song_categories`:
-    { _id: ObjectId, key: "afro-energy", name: "AFRO ENERGY", createdAt }
+Songs come from the `songs` collection:
+    { _id: ObjectId, id: "6adf...", title, uri, thumbnail, duration: "2:23",
+      duration_sec: 143.2, category: "pan-africa", order: 1, is_active }
+and genres from `song_genres`:
+    { _id: ObjectId, key: "pan-africa", name: "Pan-Africa", order: 14, createdAt, is_active }
 
-`id` is the id the app sees (the same ids songs.json uses), so ids already
-stored in favourites and on posts never change. This code only reads both
-collections. If `songs` is empty or can't be read, songs.json is used.
+`id` is the id the app sees, so ids stored in favourites and on posts never
+change. Songs are listed by genre order, then by their order inside the genre.
+This code only reads both collections. If `songs` is empty or can't be read,
+songs.json is used.
 """
 
 import json
@@ -76,7 +77,7 @@ def song_out(doc: dict) -> dict:
         "title": (doc.get("title") or "").strip(),
         "uri": doc.get("uri"),
         "duration": doc.get("duration"),
-        "duration_sec": duration_to_seconds(doc.get("duration")),
+        "duration_sec": doc.get("duration_sec") or duration_to_seconds(doc.get("duration")),
         "artist": doc.get("artist") or None,
         "cover_url": doc.get("thumbnail") or None,
         # A song has one category today; a list keeps room for more later.
@@ -91,11 +92,26 @@ def _active_songs_query(extra: Optional[dict] = None) -> dict:
     return query
 
 
+async def _genre_docs() -> List[dict]:
+    db = get_database()
+    return await db.song_genres.find(
+        {"key": {"$ne": None}, "is_active": {"$ne": False}},
+    ).sort([("order", 1), ("createdAt", 1), ("_id", 1)]).to_list(length=None)
+
+
 async def list_songs() -> List[dict]:
+    """Songs grouped by genre (in genre order), each genre's songs in their own order."""
     db = get_database()
     try:
-        docs = await db.songs.find(_active_songs_query()).sort("_id", 1).to_list(length=None)
+        docs = await db.songs.find(_active_songs_query()).sort([("order", 1), ("_id", 1)]).to_list(length=None)
         if docs:
+            try:
+                genre_rank = {g["key"]: i for i, g in enumerate(await _genre_docs())}
+            except Exception:
+                logger.exception("Reading song genres failed; songs keep their own order")
+                genre_rank = {}
+            # sorted() is stable, so songs keep their in-genre order.
+            docs.sort(key=lambda d: genre_rank.get(d.get("category"), len(genre_rank)))
             return [song_out(d) for d in docs]
     except Exception:
         logger.exception("Reading songs from the database failed; using songs.json")
@@ -103,14 +119,11 @@ async def list_songs() -> List[dict]:
 
 
 async def list_genres() -> List[dict]:
-    """Genres in the order they were created. Names are shown as stored (emoji included)."""
-    db = get_database()
+    """Genres in their display order."""
     try:
-        docs = await db.song_categories.find(
-            {"key": {"$ne": None}, "is_active": {"$ne": False}},
-        ).sort([("createdAt", 1), ("_id", 1)]).to_list(length=None)
+        docs = await _genre_docs()
     except Exception:
-        logger.exception("Reading song categories failed")
+        logger.exception("Reading song genres failed")
         return []
     return [{"id": d["key"], "name": d.get("name") or d["key"]} for d in docs]
 
