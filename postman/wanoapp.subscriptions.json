@@ -1,0 +1,70 @@
+{
+  "url": "{{ws_url}}/graphql",
+  "subprotocol": "graphql-transport-ws",
+  "connection_init": {
+    "type": "connection_init",
+    "payload": {}
+  },
+  "subscriptions": [
+    {
+      "name": "videoMetrics",
+      "subscribe_frame": {
+        "id": "videoMetrics",
+        "type": "subscribe",
+        "payload": {
+          "query": "subscription VideoMetrics($videoId: String!) { videoMetrics(videoId: $videoId) { viewsCount likesCount commentsCount bufferedViews bufferedLikes bufferedComments totalViews totalLikes totalComments } }",
+          "variables": {
+            "videoId": "{{video_id}}"
+          },
+          "operationName": "VideoMetrics"
+        }
+      }
+    },
+    {
+      "name": "newComments",
+      "subscribe_frame": {
+        "id": "newComments",
+        "type": "subscribe",
+        "payload": {
+          "query": "subscription NewComments($videoId: String!) { newComments(videoId: $videoId) { id videoId userId userDisplayName content parentId likesCount repliesCount isLiked isEdited editedAt isPinned isHearted createdAt } }",
+          "variables": {
+            "videoId": "{{video_id}}"
+          },
+          "operationName": "NewComments"
+        }
+      }
+    },
+    {
+      "name": "followerCount",
+      "subscribe_frame": {
+        "id": "followerCount",
+        "type": "subscribe",
+        "payload": {
+          "query": "subscription FollowerCount($userId: String!) { followerCount(userId: $userId) }",
+          "variables": {
+            "userId": "{{user_id}}"
+          },
+          "operationName": "FollowerCount"
+        }
+      }
+    },
+    {
+      "name": "trendingVideos",
+      "subscribe_frame": {
+        "id": "trendingVideos",
+        "type": "subscribe",
+        "payload": {
+          "query": "subscription TrendingVideos($country: String) { trendingVideos(country: $country) { id creatorId title description videoType privacy viewsCount likesCount commentsCount sharesCount hashtags categories createdAt bufferedViews bufferedLikes bufferedComments FEid start end remoteUrl remoteUrlCf duration type } }",
+          "variables": {
+            "country": null
+          },
+          "operationName": "TrendingVideos"
+        }
+      }
+    }
+  ],
+  "complete_frame": {
+    "id": "<subscription id>",
+    "type": "complete"
+  }
+}

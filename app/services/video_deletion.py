@@ -18,6 +18,7 @@ from bson import ObjectId
 from recombee_api_client.api_requests import DeleteItem
 
 from app.services.recombee_service import recombee_send
+from app.services.scheduled_publisher import CANCELLED, PUBLISHING, SCHEDULED
 from app.services.upload_DO import (
     DELETED_VIDEO_PLACEHOLDER_URL,
     delete_from_spaces,
@@ -86,8 +87,22 @@ async def soft_delete_video(db, video: dict) -> bool:
     Returns True if the video was deleted by this call. An already-deleted
     video is skipped entirely: re-reading its links would point at the shared
     placeholder stream, and its media was cleaned up the first time.
+
+    A scheduled post is hidden (is_active=False) but not deleted, so it is
+    cancelled here first, which keeps the publisher from ever making it live.
     """
-    if video.get("is_active") is False:
+    was_scheduled = False
+    if video.get("status") in (SCHEDULED, PUBLISHING):
+        cancelled = await db.videos.update_one(
+            {"_id": video["_id"], "status": {"$in": [SCHEDULED, PUBLISHING]}},
+            {"$set": {"status": CANCELLED}},
+        )
+        was_scheduled = cancelled.modified_count == 1
+        if not was_scheduled:
+            # The publisher made it live since it was read; delete it as a live post.
+            video = await db.videos.find_one({"_id": video["_id"]}) or video
+
+    if video.get("is_active") is False and not was_scheduled:
         return False
 
     video_id = video["_id"]
@@ -108,10 +123,12 @@ async def soft_delete_video(db, video: dict) -> bool:
             "remoteUrl_CF": DELETED_VIDEO_PLACEHOLDER_URL,
         }},
     )
-    await db.users.update_one(
-        {"_id": video["creator_id"]},
-        {"$inc": {"videos_count": -1}},
-    )
+    # A scheduled post was never counted on the user.
+    if not was_scheduled:
+        await db.users.update_one(
+            {"_id": video["creator_id"]},
+            {"$inc": {"videos_count": -1}},
+        )
 
     # Cloudflare Stream (delete_stream_video itself refuses the placeholder).
     stream_uid = extract_stream_uid(original_remote_url_cf) or extract_stream_uid(original_remote_url)

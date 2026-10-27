@@ -1,6 +1,7 @@
 #app/services/upload_DO.py
 
 
+import asyncio
 import base64
 import boto3
 from botocore.exceptions import ClientError
@@ -110,7 +111,9 @@ async def upload_to_spaces(file_obj: UploadFile, filename: str, isAudio: bool = 
             tmp.write(file_content)
             tmp_path = tmp.name
 
-        client.upload_file(
+        # boto3 blocks; in a thread so a slow upload doesn't stall every other request.
+        await asyncio.to_thread(
+            client.upload_file,
             tmp_path,
             settings.DO_SPACES_BUCKET_NAME,
             unique_filename,

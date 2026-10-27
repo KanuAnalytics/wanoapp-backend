@@ -50,10 +50,16 @@ class FakeCollection:
 
     def find(self, query):
         creator = query["creator_id"]
-        hits = [
-            d for d in self.docs.values()
-            if d.get("creator_id") == creator and d.get("is_active") is not False
-        ]
+
+        def selected(d):
+            # The ban's query: active videos, plus scheduled posts.
+            active = d.get("is_active") is not False
+            if "$or" not in query:
+                return active
+            statuses = query["$or"][1]["status"]["$in"]
+            return active or d.get("status") in statuses
+
+        hits = [d for d in self.docs.values() if d.get("creator_id") == creator and selected(d)]
 
         async def gen():
             for d in hits:
@@ -64,8 +70,17 @@ class FakeCollection:
     async def update_one(self, query, update):
         self.updates.append((query, update))
         doc = self.docs.get(query["_id"])
+        status_filter = query.get("status")
+        if status_filter is not None and (doc is None or doc.get("status") not in status_filter["$in"]):
+            doc = None
         if doc is not None and "$set" in update:
             doc.update(update["$set"])
+        return UpdateResult(1 if doc is not None else 0)
+
+
+class UpdateResult:
+    def __init__(self, modified_count):
+        self.modified_count = modified_count
 
 
 class FakeDB:
@@ -200,6 +215,47 @@ async def test_shared_and_default_files_are_kept(monkeypatch, calls):
     assert other_user["profile_picture"] not in calls["spaces"]
 
 
+@pytest.mark.asyncio
+async def test_scheduled_post_is_cancelled_and_its_media_deleted(monkeypatch, calls):
+    creator = _user()
+    video = _video(creator, is_active=False, status="scheduled")
+    stream = _uid(video)
+    db = FakeDB([video], [creator])
+    await _delete(db, video, creator, monkeypatch)
+
+    doc = db.videos.docs[video["_id"]]
+    assert doc["status"] == "cancelled" and doc["is_active"] is False
+    assert calls["stream"] == [stream]
+    # It never went live, so it was never counted on the creator.
+    assert db.users.updates == []
+
+
+@pytest.mark.asyncio
+async def test_post_published_since_it_was_read_is_deleted_as_live(monkeypatch, calls):
+    creator = _user()
+    video = _video(creator, is_active=True, status="published")
+    db = FakeDB([video], [creator])
+    stale = {**video, "is_active": False, "status": "scheduled"}
+    await video_deletion.soft_delete_video(db, stale)
+
+    doc = db.videos.docs[video["_id"]]
+    assert doc["status"] == "published" and doc["is_active"] is False
+    assert ({"_id": creator["_id"]}, {"$inc": {"videos_count": -1}}) in db.users.updates
+
+
+@pytest.mark.asyncio
+async def test_cancelled_scheduled_post_is_a_no_op(monkeypatch, calls):
+    creator = _user()
+    video = _video(creator, is_active=False, status="cancelled",
+                   remoteUrl=DELETED_VIDEO_PLACEHOLDER_URL,
+                   remoteUrl_CF=DELETED_VIDEO_PLACEHOLDER_URL)
+    db = FakeDB([video], [creator])
+    await _delete(db, video, creator, monkeypatch)
+
+    assert calls == {"stream": [], "spaces": [], "recombee": []}
+    assert db.users.updates == []
+
+
 # ---- DELETE /users/ban/{id} --------------------------------------------------
 
 async def _ban(db, target, admin, monkeypatch):
@@ -237,6 +293,18 @@ async def test_ban_deletes_videos_photos_and_profile_picture(monkeypatch, calls)
     assert DELETED_VIDEO_PLACEHOLDER_UID not in calls["stream"]
     t = db.users.docs[target["_id"]]
     assert t["is_active"] is False and t["profile_picture"] is None
+
+
+@pytest.mark.asyncio
+async def test_ban_cancels_scheduled_posts(monkeypatch, calls):
+    admin = _user(user_type="admin")
+    target = _user()
+    scheduled = _video(target, is_active=False, status="scheduled")
+    db = FakeDB([scheduled], [admin, target])
+
+    await _ban(db, target, admin, monkeypatch)
+
+    assert db.videos.docs[scheduled["_id"]]["status"] == "cancelled"
 
 
 @pytest.mark.asyncio

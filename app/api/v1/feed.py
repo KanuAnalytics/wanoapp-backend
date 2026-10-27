@@ -14,10 +14,17 @@ router = APIRouter()
 
 # Fields the client may sort the v1 feed by; anything else falls back to created_at.
 SORTABLE_FIELDS = {"created_at", "views_count", "likes_count"}
+
+class FeedSound(BaseModel):
+    id: Optional[str] = None
+    title: Optional[str] = None
+    uri: Optional[str] = None
+    artist: Optional[str] = None
+
 class FeedVideo(BaseModel):
     id: str
     creator_id: str
-    title: Optional[str]
+    title: Optional[str] = None
     description: Optional[str] = None
     thumbnail: Optional[str] = None
     remoteUrl: Optional[str] = None
@@ -38,6 +45,39 @@ class FeedVideo(BaseModel):
     recomm_id: Optional[str] = None
     supports_landscape: bool = False
     created_at: Optional[datetime] = None
+    # The song on the post, if one was picked. Older posts have none.
+    sound: Optional[FeedSound] = None
+
+
+def _feed_video(video: dict, **fields) -> FeedVideo:
+    """
+    Build a FeedVideo from a projected (or raw) video document. Older documents
+    can be missing fields or hold null in them, so every value falls back to a
+    safe default instead of failing validation for the whole page.
+    """
+    sound = video.get("sound")
+    thumbnail = video.get("thumbnail")
+    if thumbnail is None and isinstance(video.get("urls"), dict):
+        thumbnail = video["urls"].get("thumbnail")
+    images = video.get("images")
+    return FeedVideo(
+        creator_id=str(video.get("creator_id")),
+        title=video.get("title"),
+        description=video.get("description"),
+        thumbnail=thumbnail,
+        views_count=video.get("views_count") or 0,
+        likes_count=video.get("likes_count") or 0,
+        comments_count=video.get("comments_count") or 0,
+        remoteUrl=video.get("remoteUrl"),
+        remoteUrl_CF=video.get("remoteUrl_CF"),
+        media_type=video.get("media_type") or "video",
+        images=[i for i in images if isinstance(i, str)] if isinstance(images, list) else [],
+        user=video.get("user") or {},
+        supports_landscape=bool(video.get("supports_landscape")),
+        created_at=video.get("created_at"),
+        sound=sound if isinstance(sound, dict) and sound.get("title") else None,
+        **fields,
+    )
 
 
 @router.get("/", response_model=List[FeedVideo])
@@ -115,6 +155,27 @@ async def get_feed(
                 {"videos.isReadyToStream": {"$exists": False}}
             ]
             }},
+            # The creator, so saved posts show who posted them like the other feeds do.
+            {
+                "$lookup": {
+                    "from": "users",
+                    "localField": "videos.creator_id",
+                    "foreignField": "_id",
+                    "as": "creator",
+                }
+            },
+            {"$unwind": {"path": "$creator", "preserveNullAndEmptyArrays": True}},
+            {
+                "$addFields": {
+                    "videos.user": {
+                        "username": "$creator.username",
+                        "display_name": "$creator.display_name",
+                        "profile_picture": "$creator.profile_picture",
+                        "is_active": "$creator.is_active",
+                    }
+                }
+            },
+            {"$project": {"videos": 1}},
         ]
         docs = await db.users.aggregate(pipeline).to_list(length=limit)
         has_more = len(docs) == limit
@@ -221,6 +282,7 @@ async def get_feed(
                     "thumbnail": "$urls.thumbnail",
                     "media_type": {"$ifNull": ["$media_type", "video"]},
                     "images": {"$ifNull": ["$images", []]},
+                    "sound": 1,
                     "is_active": 1,
                     "supports_landscape": 1,
                     "user": {
@@ -264,30 +326,16 @@ async def get_feed(
         is_following = str(video["creator_id"]) in following_ids
         # Get buffered counts
         buffered = await metrics_buffer.get_buffered_counts(feed_video_id)
-        user_info = video.get("user", {})
         videos.append(
-            FeedVideo(
+            _feed_video(
+                video,
                 id=feed_video_id,
-                creator_id=str(video["creator_id"]),
-                title=video.get("title"),
-                description=video.get("description"),
-                thumbnail=video.get("thumbnail"),
-                views_count=video.get("views_count", 0),
-                likes_count=video.get("likes_count", 0),
-                comments_count=video.get("comments_count", 0),
-                remoteUrl=video.get("remoteUrl"),
-                remoteUrl_CF=video.get("remoteUrl_CF"),
-                media_type=video.get("media_type", "video"),
-                images=video.get("images", []),
                 is_ad=False,
                 buffered_views=buffered["views"],
                 buffered_likes=buffered["likes"],
-                user=user_info,
                 has_liked=has_liked,
                 is_bookmarked=is_bookmarked,
                 is_following=is_following,
-                supports_landscape=video.get("supports_landscape", False),
-                created_at=video.get("created_at"),
             )
         )
 
@@ -337,6 +385,7 @@ async def get_feed(
                     "thumbnail": "$urls.thumbnail",
                     "media_type": {"$ifNull": ["$media_type", "video"]},
                     "images": {"$ifNull": ["$images", []]},
+                    "sound": 1,
                     "privacy": 1,
                     "supports_landscape": 1,
                     "created_at": 1,
@@ -362,28 +411,15 @@ async def get_feed(
                 videos = [v for v in videos if v.id != featured_id]
                 videos.insert(
                     0,
-                    FeedVideo(
+                    _feed_video(
+                        featured,
                         id=featured_id,
-                        creator_id=str(featured["creator_id"]),
-                        title=featured.get("title"),
-                        description=featured.get("description"),
-                        thumbnail=featured.get("thumbnail"),
-                        views_count=featured.get("views_count", 0),
-                        likes_count=featured.get("likes_count", 0),
-                        comments_count=featured.get("comments_count", 0),
-                        remoteUrl=featured.get("remoteUrl"),
-                        remoteUrl_CF=featured.get("remoteUrl_CF"),
-                        media_type=featured.get("media_type", "video"),
-                        images=featured.get("images", []),
                         is_ad=False,
                         buffered_views=buffered["views"],
                         buffered_likes=buffered["likes"],
-                        user=featured.get("user", {}),
                         has_liked=featured_id in liked_video_ids,
                         is_bookmarked=featured_id in bookmarked_video_ids,
                         is_following=str(featured["creator_id"]) in following_ids,
-                        supports_landscape=featured.get("supports_landscape", False),
-                        created_at=featured.get("created_at"),
                     ),
                 )
                 if len(videos) > limit:
@@ -496,6 +532,7 @@ async def get_feed_v2(
                 "thumbnail": "$urls.thumbnail",
                 "media_type": {"$ifNull": ["$media_type", "video"]},
                 "images": {"$ifNull": ["$images", []]},
+                "sound": 1,
                 "supports_landscape": 1,
                 "created_at": 1,
                 "user": {
@@ -519,28 +556,15 @@ async def get_feed_v2(
         feed_video_id = video["_id"]
         buffered = await metrics_buffer.get_buffered_counts(feed_video_id)
         videos.append(
-            FeedVideo(
+            _feed_video(
+                video,
                 id=feed_video_id,
-                creator_id=video["creator_id"],
-                title=video.get("title"),
-                description=video.get("description"),
-                thumbnail=video.get("thumbnail"),
-                views_count=video.get("views_count", 0),
-                likes_count=video.get("likes_count", 0),
-                comments_count=video.get("comments_count", 0),
-                remoteUrl=video.get("remoteUrl"),
-                remoteUrl_CF=video.get("remoteUrl_CF"),
-                media_type=video.get("media_type", "video"),
-                images=video.get("images", []),
                 buffered_views=buffered["views"],
                 buffered_likes=buffered["likes"],
-                user=video.get("user", {}),
                 has_liked=feed_video_id in liked_video_ids,
                 is_bookmarked=feed_video_id in bookmarked_video_ids,
                 is_following=str(video["creator_id"]) in following_ids,
                 recomm_id=recomm_id,
-                supports_landscape=video.get("supports_landscape", False),
-                created_at=video.get("created_at"),
             )
         )
 
@@ -557,6 +581,7 @@ async def get_feed_v2(
                 "thumbnail": "$urls.thumbnail", "privacy": 1, "supports_landscape": 1,
                 "media_type": {"$ifNull": ["$media_type", "video"]},
                 "images": {"$ifNull": ["$images", []]},
+                "sound": 1,
                 "created_at": 1,
                 "user": {"username": "$creator.username", "display_name": "$creator.display_name",
                          "profile_picture": "$creator.profile_picture", "is_active": "$creator.is_active"},
@@ -568,28 +593,15 @@ async def get_feed_v2(
             if f.get("privacy") == "public" or str(f.get("creator_id")) == current_user:
                 fid = f["_id"]
                 videos = [v for v in videos if v.id != fid]
-                videos.insert(0, FeedVideo(
+                videos.insert(0, _feed_video(
+                    f,
                     id=fid,
-                    creator_id=f["creator_id"],
-                    title=f.get("title"),
-                    description=f.get("description"),
-                    thumbnail=f.get("thumbnail"),
-                    views_count=f.get("views_count", 0),
-                    likes_count=f.get("likes_count", 0),
-                    comments_count=f.get("comments_count", 0),
-                    remoteUrl=f.get("remoteUrl"),
-                    remoteUrl_CF=f.get("remoteUrl_CF"),
-                    media_type=f.get("media_type", "video"),
-                    images=f.get("images", []),
                     buffered_views=0,
                     buffered_likes=0,
-                    user=f.get("user", {}),
                     has_liked=fid in liked_video_ids,
                     is_bookmarked=fid in bookmarked_video_ids,
                     is_following=str(f["creator_id"]) in following_ids,
                     recomm_id=recomm_id,
-                    supports_landscape=f.get("supports_landscape", False),
-                    created_at=f.get("created_at"),
                 ))
                 videos = videos[:limit]
 

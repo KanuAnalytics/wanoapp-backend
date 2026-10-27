@@ -49,6 +49,9 @@ async def create_indexes():
         await db.db.videos.create_index([("created_at", -1), ("_id", -1)])
         await db.db.videos.create_index([("creator_id", 1)])
         await db.db.videos.create_index([("is_active", 1), ("privacy", 1)])
+        # Scheduled posts: the publisher's due-time scan, and each creator's own list.
+        await db.db.videos.create_index([("status", 1), ("scheduled_at", 1)])
+        await db.db.videos.create_index([("creator_id", 1), ("status", 1), ("scheduled_at", 1)])
 
         # Watch history: one doc per (user, video). Unique index doubles as
         # the upsert key; the second index supports a future "continue

@@ -23,6 +23,8 @@ from app.services.recombee_service import recombee_send
 from app.services.video_deletion import soft_delete_video
 from app.services.stitch_jobs import create_stitch_job
 from app.services.video_posts import DEFAULT_THUMBNAIL, create_video_post
+from app.services.songs import sound_for_post
+from app.services.scheduled_publisher import normalize_schedule
 
 
 # Fraction of a video (0-1) that counts as "watched" for feed-exclusion
@@ -30,7 +32,23 @@ from app.services.video_posts import DEFAULT_THUMBNAIL, create_video_post
 # useful ranking signal) but isn't persisted to watch_history.
 WATCHED_PORTION_THRESHOLD = 0.25
 
+TITLE_MAX_LENGTH = 100
+
 router = APIRouter()
+
+
+def clean_title(title: Optional[str]) -> Optional[str]:
+    """Titles stay optional here because older app versions never send one; the app makes them required."""
+    if title is None:
+        return None
+    title = title.strip()[:TITLE_MAX_LENGTH]
+    return title or None
+
+class PostSound(BaseModel):
+    id: Optional[str] = None
+    title: Optional[str] = None
+    uri: Optional[str] = None
+    artist: Optional[str] = None
 
 class VideoPost(BaseModel):
     title: Optional[str] = None
@@ -53,6 +71,12 @@ class VideoPost(BaseModel):
     width: Optional[int] = None
     height: Optional[int] = None
     supports_landscape: Optional[bool] = None
+    # The song played with a photo post (an id from GET /music/songs).
+    sound_id: Optional[str] = None
+    # When set, the post stays hidden and goes live at this time. The zone is
+    # only remembered so the app can show the time the way it was picked.
+    scheduled_at: Optional[datetime] = None
+    timezone: Optional[str] = None
 
 class StitchClip(BaseModel):
     url: str
@@ -67,17 +91,22 @@ class StitchClip(BaseModel):
 
 class StitchAudio(BaseModel):
     uri: str
+    # The song's id from GET /music/songs, so the post can show its name.
+    id: Optional[str] = None
 
 class VideoStitch(BaseModel):
     videoUrls: List[StitchClip] = Field(..., min_length=1)
     audio: Optional[StitchAudio] = None
     keepOriginalSound: bool = False
+    title: Optional[str] = None
     description: Optional[str] = None
     privacy: VideoPrivacy = VideoPrivacy.PUBLIC
     thumbnail: Optional[str] = None
     comments_enabled: bool = True
     categoryId: Optional[str] = None
     subcategoryId: Optional[str] = None
+    scheduled_at: Optional[datetime] = None
+    timezone: Optional[str] = None
 
 class VideoCreate(BaseModel):
     title: Optional[str] = None
@@ -107,8 +136,8 @@ class VideoUpdate(BaseModel):
 class VideoResponse(BaseModel):
     id: str = Field(alias="_id")
     creator_id: str
-    title: Optional[str]
-    description: Optional[str]
+    title: Optional[str] = None
+    description: Optional[str] = None
     video_type: VideoType
     privacy: VideoPrivacy
     views_count: int
@@ -127,6 +156,7 @@ class VideoResponse(BaseModel):
     remoteUrl_CF: Optional[str] = None
     media_type: str = "video"
     images: List[str] = []
+    sound: Optional[PostSound] = None
 
     is_following: Optional[bool] = None
     is_liked: Optional[bool] = None
@@ -136,6 +166,17 @@ class VideoResponse(BaseModel):
 
     class Config:
         populate_by_name = True
+
+    @model_validator(mode="before")
+    @classmethod
+    def replace_stored_nulls(cls, data):
+        # Older documents can hold null where these expect a value.
+        if isinstance(data, dict):
+            data = dict(data)
+            for key, default in (("images", []), ("media_type", "video"), ("supports_landscape", False), ("start", 0.0)):
+                if key in data and data[key] is None:
+                    data[key] = default
+        return data
 
 @router.post("/post", status_code=status.HTTP_201_CREATED)
 async def post_video(
@@ -159,13 +200,19 @@ async def post_video(
                     detail="remoteUrl and remoteUrl_CF are required for video posts",
                 )
 
+        # Only photo posts play a separate song; a video's song is mixed in by /stitch.
+        sound = await sound_for_post(input.sound_id) if is_photo_post and input.sound_id else None
+        scheduled_at, scheduled_timezone = normalize_schedule(
+            input.scheduled_at, input.timezone, require_lead_time=False
+        )
+
         video_id = await create_video_post(
             current_user,
             media_type=input.media_type,
             images=input.images,
             remote_url=input.remoteUrl,
             remote_url_cf=input.remoteUrl_CF,
-            title=input.title,
+            title=clean_title(input.title),
             description=input.description,
             privacy=input.privacy,
             thumbnail=input.thumbnail,
@@ -178,9 +225,14 @@ async def post_video(
             category_id=input.categoryId,
             subcategory_id=input.subcategoryId,
             supports_landscape=input.supports_landscape,
+            sound=sound,
+            scheduled_at=scheduled_at,
+            scheduled_timezone=scheduled_timezone,
         )
 
         message = "Photo posted successfully" if is_photo_post else "Video posted successfully"
+        if scheduled_at:
+            message = "Post scheduled successfully"
         return {"message": message, "video_id": video_id}
     except HTTPException:
         raise
@@ -198,18 +250,26 @@ async def stitch_video(
     Queue a multi-clip post. The clips are stitched once Cloudflare Stream has
     processed all of them, and the post appears when the result is ready.
     """
+    sound = await sound_for_post(input.audio.id, input.audio.uri) if input.audio else None
+    scheduled_at, scheduled_timezone = normalize_schedule(
+        input.scheduled_at, input.timezone, require_lead_time=False
+    )
     job_id = await create_stitch_job(
         user_id=current_user,
         clips=[clip.model_dump() for clip in input.videoUrls],
         audio_url=input.audio.uri if input.audio else None,
         keep_original_sound=input.keepOriginalSound,
         post={
+            "title": clean_title(input.title),
             "description": input.description,
+            "sound": sound,
             "privacy": input.privacy.value,
             "thumbnail": input.thumbnail,
             "categoryId": input.categoryId,
             "subcategoryId": input.subcategoryId,
             "comments_enabled": input.comments_enabled,
+            "scheduled_at": scheduled_at,
+            "scheduled_timezone": scheduled_timezone,
         },
     )
     return {"message": "Video submitted successfully. Processing in background.", "job_id": job_id}
@@ -647,7 +707,8 @@ async def delete_video(
             detail="You do not have permission to delete this video"
         )
 
-    # Already-deleted videos are a no-op inside soft_delete_video.
+    # Already-deleted videos are a no-op inside soft_delete_video. A scheduled
+    # post is cancelled there too, so the publisher never makes it live.
     await soft_delete_video(db, video)
 
     return {"message": "Video deleted successfully"}  # Optional for 204
