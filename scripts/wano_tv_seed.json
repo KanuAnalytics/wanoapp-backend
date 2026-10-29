@@ -29,7 +29,7 @@
       },
       "poster": "https://picsum.photos/seed/wano-one-field/268/400",
       "backdrop": "https://picsum.photos/seed/wano-one-field/750/852",
-      "video_url": "https://wano-africadev.lon1.cdn.digitaloceanspaces.com/wanoafrica-dospaces-key/wano-tv/one-field/master.m3u8",
+      "video_url": "https://wano-africadev.lon1.cdn.digitaloceanspaces.com/wanoafrica-dospaces-key/wano-tv/one-field-v2/master.m3u8",
       "featured": true,
       "popularity": 100
     }
