@@ -39,7 +39,8 @@ if [ -z "$SOURCE_HEIGHT" ]; then
   echo "Couldn't read the video height of $INPUT" >&2
   exit 1
 fi
-HAS_AUDIO=$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "$INPUT" | head -1)
+# Same quirk: the audio index can come after a blank line, so look for any number.
+HAS_AUDIO=$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "$INPUT" | grep -Eo '[0-9]+' | head -1 || true)
 
 RUNGS=()
 for rung in "${LADDER[@]}"; do
