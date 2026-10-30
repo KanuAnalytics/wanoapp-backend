@@ -5,33 +5,45 @@
       "title": "One Field",
       "type": "movie",
       "genres": [
+        "Documentary",
         "Sport",
-        "Documentary"
+        "Culture"
       ],
       "year": 2026,
       "release_date": "2026-10-07",
       "duration_minutes": 10,
-      "age_rating": "13+",
-      "description": "One patch of dirt, one ball, and a whole community that shows up for it.",
-      "synopsis": "\"One Field\" follows the players, coaches and neighbours who keep a single local football pitch alive. Over one season, early-morning training, weekend matches and the people on the sidelines show how a shared field becomes the centre of a community's life, and why they refuse to let it go.",
+      "age_rating": "All",
+      "description": "Two Tanzanian communities, one annual soccer match, and the reunion that matters more than the score.",
+      "synopsis": "Every year, the Tanzanian communities of Wichita and Houston meet on a park field in Kansas for one soccer match — and a day of food, old friends and new nations joining in. Two cities. Many nations. One family.",
       "trailer": {
-        "duration_seconds": 60,
-        "thumbnail": "https://picsum.photos/seed/wano-one-field-trailer/300/200",
-        "video_url": null
+        "duration_seconds": 44,
+        "thumbnail": "https://wano-africadev.lon1.cdn.digitaloceanspaces.com/wanoafrica-dospaces-key/wano-tv/one-field-v2/ONE_FIELD_Banner_16x9.jpg",
+        "video_url": "https://wano-africadev.lon1.cdn.digitaloceanspaces.com/wanoafrica-dospaces-key/wano-tv/one-field-v2/trailer/master.m3u8"
       },
       "credits": {
-        "director": "Wano Africa",
+        "director": "Eilmer Bahri",
         "cast": [
-          "Wano Africa"
+          "Saidi",
+          "Taji Deen",
+          "Salah",
+          "Olivier",
+          "Adamu"
         ],
-        "production": "Wano Africa",
+        "production": "Ondore Media",
         "distributor": "Wano TV"
       },
-      "poster": "https://picsum.photos/seed/wano-one-field/268/400",
-      "backdrop": "https://picsum.photos/seed/wano-one-field/750/852",
+      "poster": "https://wano-africadev.lon1.cdn.digitaloceanspaces.com/wanoafrica-dospaces-key/wano-tv/one-field-v2/ONE_FIELD_Poster_9x16_1080.jpg",
+      "backdrop": "https://wano-africadev.lon1.cdn.digitaloceanspaces.com/wanoafrica-dospaces-key/wano-tv/one-field-v2/ONE_FIELD_Poster_9x16_1080.jpg",
       "video_url": "https://wano-africadev.lon1.cdn.digitaloceanspaces.com/wanoafrica-dospaces-key/wano-tv/one-field-v2/master.m3u8",
       "featured": true,
-      "popularity": 100
+      "popularity": 100,
+      "captions": [
+        {
+          "language": "en",
+          "label": "English",
+          "url": "https://wano-africadev.lon1.cdn.digitaloceanspaces.com/wanoafrica-dospaces-key/wano-tv/one-field-v2/ONE_FIELD_Film_EN_Captions.vtt"
+        }
+      ]
     }
   ],
   "genres": [

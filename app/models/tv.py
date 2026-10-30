@@ -21,6 +21,13 @@ class TvTrailer(BaseModel):
     video_url: Optional[str] = None
 
 
+class TvCaption(BaseModel):
+    """A sidecar subtitle file (WebVTT) for the film."""
+    language: str = Field(..., description="BCP 47 code, e.g. en")
+    label: str
+    url: str
+
+
 class TvCredits(BaseModel):
     director: str
     cast: List[str] = Field(default_factory=list)
@@ -48,6 +55,7 @@ class TvTitleResponse(BaseModel):
     video_url: str
     featured: bool = False
     popularity: int = 0
+    captions: List[TvCaption] = Field(default_factory=list)
 
 
 class TvGenreResponse(BaseModel):
