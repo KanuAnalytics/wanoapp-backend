@@ -124,7 +124,14 @@ def main():
 
     cdn = settings.DO_SPACES_CDN_URL.rstrip("/")
     print(f"Added {label} subtitles: {cdn}/{bucket}/{base}/{sub_dir}/captions.vtt")
-    print("The CDN may serve the old master.m3u8 for up to 5 minutes.")
+    # The Spaces CDN keeps files for its own TTL (an hour here), whatever
+    # Cache-Control says, so the change only shows once the edge refetches.
+    print(
+        "The CDN can serve the old master.m3u8 for up to an hour. To see the "
+        "change now, purge this path in the DigitalOcean dashboard "
+        "(Spaces > Settings > CDN > Purge Cache):\n"
+        f"  {bucket}/{base}/master.m3u8"
+    )
 
 
 if __name__ == "__main__":
