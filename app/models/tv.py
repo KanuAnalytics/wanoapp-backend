@@ -22,7 +22,7 @@ class TvTrailer(BaseModel):
 
 
 class TvCaption(BaseModel):
-    """A sidecar subtitle file (WebVTT) for the film."""
+    """A subtitle track inside the film's HLS stream (see scripts/add_hls_subtitles.py)."""
     language: str = Field(..., description="BCP 47 code, e.g. en")
     label: str
     url: str

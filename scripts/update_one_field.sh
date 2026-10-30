@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Publishes the One Field submission package and updates the title:
 #   1. converts the subtitled trailer to HLS and uploads it
-#   2. uploads the poster, banner and English captions (.srt becomes .vtt)
-#   3. runs the seed, which writes the details in scripts/wano_tv_seed.json
+#   2. uploads the poster and banner
+#   3. adds the English captions to the film's HLS stream as a subtitle track
+#   4. runs the seed, which writes the details in scripts/wano_tv_seed.json
 #
 #   scripts/update_one_field.sh "<path to the submission .zip>"
 #
@@ -44,8 +45,11 @@ scripts/mp4_to_hls.sh "$TRAILER" "$WORK/trailer-hls"
 echo "==> Uploading the trailer"
 "$PYTHON" -m scripts.upload_hls_to_spaces "$WORK/trailer-hls" "$FOLDER/trailer"
 
-echo "==> Uploading artwork and captions"
-"$PYTHON" -m scripts.upload_wano_tv_files "$FOLDER" "$POSTER" "$BANNER" "$CAPTIONS"
+echo "==> Uploading artwork"
+"$PYTHON" -m scripts.upload_wano_tv_files "$FOLDER" "$POSTER" "$BANNER"
+
+echo "==> Adding English subtitles to the film"
+"$PYTHON" -m scripts.add_hls_subtitles "$FOLDER" "$CAPTIONS" en English
 
 echo "==> Updating the title"
 "$PYTHON" -m scripts.seed_wano_tv
