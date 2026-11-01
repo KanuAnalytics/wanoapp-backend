@@ -115,6 +115,26 @@
       "name": "Comedy",
       "image": "https://picsum.photos/seed/wano-genre-comedy/322/200",
       "order": 6
+    },
+    {
+      "name": "Series",
+      "image": "https://picsum.photos/seed/wano-genre-series/322/200",
+      "order": 7
+    },
+    {
+      "name": "World Stories",
+      "image": "https://picsum.photos/seed/wano-genre-world-stories/322/200",
+      "order": 8
+    },
+    {
+      "name": "Family & Kids",
+      "image": "https://picsum.photos/seed/wano-genre-family-kids/322/200",
+      "order": 9
+    },
+    {
+      "name": "Music",
+      "image": "https://picsum.photos/seed/wano-genre-music/322/200",
+      "order": 10
     }
   ]
 }
