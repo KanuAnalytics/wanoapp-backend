@@ -50,6 +50,8 @@ async def create_stitch_job(
     audio_url: Optional[str],
     keep_original_sound: bool,
     post: dict,
+    video_volume: float = 1.0,
+    music_volume: float = 1.0,
 ) -> str:
     """
     clips: [{"url", "start", "end"}] in playback order; end=None means to the end of the clip.
@@ -76,6 +78,8 @@ async def create_stitch_job(
         "clips": clip_docs,
         "audio_url": audio_url,
         "keep_original_sound": keep_original_sound,
+        "video_volume": video_volume,
+        "music_volume": music_volume,
         "post": post,
         "error": None,
         "result": None,
@@ -241,10 +245,16 @@ def _build_lambda_payload(job: dict) -> dict:
             item["end"] = clip["end"]
         video_urls.append(item)
 
-    payload = {"videoUrls": video_urls, "filename": f"stitched_{job['_id']}.mp4"}
+    payload = {
+        "videoUrls": video_urls,
+        "filename": f"stitched_{job['_id']}.mp4",
+        # Jobs saved before volumes existed have neither key; 1 is unchanged.
+        "videoVolume": job.get("video_volume", 1.0),
+    }
     if job.get("audio_url"):
         payload["audio"] = {"uri": job["audio_url"]}
         payload["keepOriginalSound"] = bool(job.get("keep_original_sound"))
+        payload["musicVolume"] = job.get("music_volume", 1.0)
     return payload
 
 

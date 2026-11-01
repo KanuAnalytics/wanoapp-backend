@@ -98,6 +98,9 @@ class VideoStitch(BaseModel):
     videoUrls: List[StitchClip] = Field(..., min_length=1)
     audio: Optional[StitchAudio] = None
     keepOriginalSound: bool = False
+    # Volume multipliers: 1 leaves the level alone, 0.5 halves it, 0 mutes.
+    videoVolume: float = Field(1.0, ge=0, le=2)
+    musicVolume: float = Field(1.0, ge=0, le=2)
     title: Optional[str] = None
     description: Optional[str] = None
     privacy: VideoPrivacy = VideoPrivacy.PUBLIC
@@ -259,6 +262,8 @@ async def stitch_video(
         clips=[clip.model_dump() for clip in input.videoUrls],
         audio_url=input.audio.uri if input.audio else None,
         keep_original_sound=input.keepOriginalSound,
+        video_volume=input.videoVolume,
+        music_volume=input.musicVolume,
         post={
             "title": clean_title(input.title),
             "description": input.description,
