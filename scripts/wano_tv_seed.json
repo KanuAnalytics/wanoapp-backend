@@ -44,6 +44,40 @@
           "url": "https://wano-africadev.lon1.cdn.digitaloceanspaces.com/wanoafrica-dospaces-key/wano-tv/one-field-v2/subs/en/captions.vtt"
         }
       ]
+    },
+    {
+      "slug": "middleton",
+      "title": "Middleton: We Don't Sit and Wait",
+      "type": "movie",
+      "genres": [
+        "Documentary",
+        "Culture"
+      ],
+      "year": 2026,
+      "release_date": "2026-10-31",
+      "duration_minutes": 11,
+      "age_rating": "All",
+      "description": "In Jamaica's Blue Mountains, a coffee-farming community rebuilds its only road after Hurricane Melissa.",
+      "synopsis": "High in Jamaica's Blue Mountains, coffee farmer Paul Miller invites us into Middleton, a community that grows some of the world's most prized coffee. When Hurricane Melissa cut off the only road, the people rebuilt it themselves.",
+      "trailer": {
+        "duration_seconds": 39,
+        "thumbnail": "https://wano-africadev.lon1.cdn.digitaloceanspaces.com/wanoafrica-dospaces-key/wano-tv/middleton/MIDDLETON_landscape_16x9_1920x1080.jpg",
+        "video_url": "https://wano-africadev.lon1.cdn.digitaloceanspaces.com/wanoafrica-dospaces-key/wano-tv/middleton/trailer/master.m3u8"
+      },
+      "credits": {
+        "director": "Eilmer Bahri",
+        "cast": [
+          "Paul Miller"
+        ],
+        "production": "Ondore Media",
+        "distributor": "Wano TV"
+      },
+      "poster": "https://wano-africadev.lon1.cdn.digitaloceanspaces.com/wanoafrica-dospaces-key/wano-tv/middleton/MIDDLETON_poster_9x16_1080x1920.jpg",
+      "backdrop": "https://wano-africadev.lon1.cdn.digitaloceanspaces.com/wanoafrica-dospaces-key/wano-tv/middleton/MIDDLETON_poster_9x16_1080x1920.jpg",
+      "video_url": "https://wano-africadev.lon1.cdn.digitaloceanspaces.com/wanoafrica-dospaces-key/wano-tv/middleton/master.m3u8",
+      "featured": true,
+      "popularity": 100,
+      "captions": []
     }
   ],
   "genres": [
