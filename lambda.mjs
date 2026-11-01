@@ -127,8 +127,14 @@ async function hasAudioStream(filePath) {
   return out.trim().length > 0;
 }
 
-// music: { path, keepOriginalSound } or null. The song loops to cover the whole stitched video.
-function buildConcatFilterArgs(clips, outputPath, music = null) {
+// Volumes are multipliers: 1 leaves the level alone, 0.5 halves it, 0 mutes.
+function volumeFilter(volume) {
+  return volume === 1 ? "" : `volume=${volume},`;
+}
+
+// music: { path, keepOriginalSound, volume } or null. The song loops to cover the whole stitched video.
+// videoVolume applies to the clips' own sound.
+function buildConcatFilterArgs(clips, outputPath, music = null, videoVolume = 1) {
   const useClipSound = !music || music.keepOriginalSound;
   const totalDuration = clips.reduce((sum, clip) => sum + clip.segmentDuration, 0);
   const inputArgs = [];
@@ -172,7 +178,10 @@ function buildConcatFilterArgs(clips, outputPath, music = null) {
   const clipSoundLabel = music ? "[clipsound]" : "[outa]";
   if (useClipSound) {
     const streamRefs = clips.map((_, i) => `[v${i}][a${i}]`).join("");
-    filters.push(`${streamRefs}concat=n=${clips.length}:v=1:a=1[outv]${clipSoundLabel}`);
+    // The clips' sound is joined first, then its level set once.
+    const joined = videoVolume === 1 ? clipSoundLabel : "[clipsraw]";
+    filters.push(`${streamRefs}concat=n=${clips.length}:v=1:a=1[outv]${joined}`);
+    if (videoVolume !== 1) filters.push(`[clipsraw]${volumeFilter(videoVolume)}anull${clipSoundLabel}`);
   } else {
     const streamRefs = clips.map((_, i) => `[v${i}]`).join("");
     filters.push(`${streamRefs}concat=n=${clips.length}:v=1:a=0[outv]`);
@@ -182,9 +191,11 @@ function buildConcatFilterArgs(clips, outputPath, music = null) {
     inputArgs.push("-stream_loop", "-1", "-i", music.path);
     const musicLabel = music.keepOriginalSound ? "[music]" : "[outa]";
     filters.push(
-      `[${inputIndex++}:a:0]aformat=sample_rates=${TARGET_SAMPLE_RATE}:channel_layouts=stereo,atrim=duration=${totalDuration},asetpts=PTS-STARTPTS${musicLabel}`,
+      `[${inputIndex++}:a:0]aformat=sample_rates=${TARGET_SAMPLE_RATE}:channel_layouts=stereo,atrim=duration=${totalDuration},asetpts=PTS-STARTPTS,${volumeFilter(music.volume)}anull${musicLabel}`,
     );
-    if (music.keepOriginalSound) filters.push("[clipsound][music]amix=inputs=2:duration=first[outa]");
+    // normalize=0 keeps each track at the level set above; amix's default
+    // scales every input down by the number of inputs, halving both here.
+    if (music.keepOriginalSound) filters.push("[clipsound][music]amix=inputs=2:duration=first:normalize=0[outa]");
   }
 
   return [
@@ -241,6 +252,13 @@ function parseEventBody(event) {
   return JSON.parse(raw);
 }
 
+// A volume is a number from 0 (silent) to 1 (unchanged); above 1 boosts.
+function parseVolume(value, name) {
+  const volume = Number(value);
+  if (!Number.isFinite(volume) || volume < 0) throw new Error(`${name} must be a number >= 0, got ${JSON.stringify(value)}`);
+  return volume;
+}
+
 // Accepts either "https://..." or { url, start?, end? } (seconds).
 function normalizeClip(item) {
   if (typeof item === "string") return { url: item, start: 0, end: null };
@@ -265,9 +283,19 @@ async function prepareClip(clip, i) {
 }
 
 export const handler = async (event) => {
-  const { videoUrls, audio, keepOriginalSound = false, filename = "stitched.mp4", folder = "videos" } = parseEventBody(event);
+  const {
+    videoUrls,
+    audio,
+    keepOriginalSound = false,
+    videoVolume = 1,
+    musicVolume = 1,
+    filename = "stitched.mp4",
+    folder = "videos",
+  } = parseEventBody(event);
 
   if (!BACKEND_API_URL) throw new Error("BACKEND_API_URL env var is not set");
+  const clipVolume = parseVolume(videoVolume, "videoVolume");
+  const songVolume = parseVolume(musicVolume, "musicVolume");
 
   const clips = [];
   for (let i = 0; i < videoUrls.length; i++) {
@@ -287,12 +315,13 @@ export const handler = async (event) => {
   if (audio?.uri) {
     const path = `/tmp/music${extname(new URL(audio.uri).pathname) || ".mp3"}`;
     await downloadFromUrl(audio.uri, path);
-    music = { path, keepOriginalSound: Boolean(keepOriginalSound) };
-    console.log(`music: "${audio.title ?? audio.uri}", keepOriginalSound: ${music.keepOriginalSound}`);
+    music = { path, keepOriginalSound: Boolean(keepOriginalSound), volume: songVolume };
+    console.log(`music: "${audio.title ?? audio.uri}", keepOriginalSound: ${music.keepOriginalSound}, volume: ${songVolume}`);
   }
+  console.log(`videoVolume: ${clipVolume}`);
 
   const outputPath = "/tmp/output.mp4";
-  await runFfmpeg(buildConcatFilterArgs(clips, outputPath, music));
+  await runFfmpeg(buildConcatFilterArgs(clips, outputPath, music, clipVolume));
 
   const outputDuration = await getDuration(outputPath);
   console.log(`output.mp4 duration: ${outputDuration}s`);
