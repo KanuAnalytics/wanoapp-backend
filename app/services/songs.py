@@ -6,9 +6,12 @@ saved on a post.
 
 Songs come from the `songs` collection:
     { _id: ObjectId, id: "6adf...", title, uri, thumbnail, duration: "2:23",
-      duration_sec: 143.2, category: "pan-africa", order: 1, is_active }
+      duration_sec: 143.2, category: ["kizomba", "semba"], order: 1, is_active }
 and genres from `song_genres`:
-    { _id: ObjectId, key: "pan-africa", name: "Pan-Africa", order: 14, createdAt, is_active }
+    { _id: ObjectId, key: "kizomba", name: "Kizomba", order: 14, createdAt, is_active }
+
+A song can be in several genres, so `category` is a list of genre keys. Older
+documents hold a single key as a string; both are read.
 
 `id` is the id the app sees, so ids stored in favourites and on posts never
 change. Songs are listed by genre order, then by their order inside the genre.
@@ -66,12 +69,21 @@ def load_json_songs() -> List[dict]:
     return _json_songs
 
 
+def song_genres(doc: dict) -> List[str]:
+    """Genre keys of a song; `category` may be one key or a list of keys."""
+    category = doc.get("category")
+    if isinstance(category, str):
+        category = [category]
+    if not isinstance(category, list):
+        return []
+    return [c for c in category if isinstance(c, str) and c]
+
+
 def song_out(doc: dict) -> dict:
     """
     API shape of a song. id/title/uri/duration are the fields older app
     versions read and must keep their meaning; the rest are additions.
     """
-    category = doc.get("category")
     return {
         "id": str(doc.get("id")),
         "title": (doc.get("title") or "").strip(),
@@ -80,8 +92,7 @@ def song_out(doc: dict) -> dict:
         "duration_sec": doc.get("duration_sec") or duration_to_seconds(doc.get("duration")),
         "artist": doc.get("artist") or None,
         "cover_url": doc.get("thumbnail") or None,
-        # A song has one category today; a list keeps room for more later.
-        "genres": [category] if isinstance(category, str) and category else [],
+        "genres": song_genres(doc),
     }
 
 
@@ -110,8 +121,12 @@ async def list_songs() -> List[dict]:
             except Exception:
                 logger.exception("Reading song genres failed; songs keep their own order")
                 genre_rank = {}
-            # sorted() is stable, so songs keep their in-genre order.
-            docs.sort(key=lambda d: genre_rank.get(d.get("category"), len(genre_rank)))
+            # A song sorts under its earliest genre. sorted() is stable, so
+            # songs keep their in-genre order.
+            docs.sort(key=lambda d: min(
+                (genre_rank.get(g, len(genre_rank)) for g in song_genres(d)),
+                default=len(genre_rank),
+            ))
             return [song_out(d) for d in docs]
     except Exception:
         logger.exception("Reading songs from the database failed; using songs.json")
