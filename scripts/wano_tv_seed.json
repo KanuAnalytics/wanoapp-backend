@@ -98,6 +98,41 @@
       "featured": true,
       "popularity": 100,
       "captions": []
+    },
+    {
+      "slug": "geniuses",
+      "title": "Geniuses",
+      "type": "movie",
+      "genres": [
+        "Drama"
+      ],
+      "year": 2026,
+      "release_date": "2026-11-01",
+      "duration_minutes": 11,
+      "age_rating": "16+",
+      "description": "Over an intimate picnic, two curious minds debate what it truly means to be a genius.",
+      "synopsis": "Against the serene backdrop of an intimate picnic, GENIUSES follows Kuku and Ribigbe as a seemingly casual conversation develops into a fascinating exploration of exceptional intellect, artistic ingenuity and human creativity. Through engaging exchanges, contrasting perspectives and subtle humour, their discussion explores the mysteries surrounding extraordinary achievements. Blending romance, philosophical reflection and unexpected moments, GENIUSES offers a compelling perspective on intellectual brilliance, human connection and the essence of creativity.",
+      "trailer": {
+        "duration_seconds": 56,
+        "thumbnail": "https://wano-africadev.lon1.cdn.digitaloceanspaces.com/wanoafrica-dospaces-key/wano-tv/geniuses/GENIUSES_landscape_3x2.png",
+        "video_url": "https://wano-africadev.lon1.cdn.digitaloceanspaces.com/wanoafrica-dospaces-key/wano-tv/geniuses/trailer/master.m3u8"
+      },
+      "credits": {
+        "director": "Lord 'Segun (Oluwasegun Babatunde)",
+        "cast": [
+          "Motunrayo Abiodun",
+          "Akanni Ifeoluwa Isaac"
+        ],
+        "production": "Storibud Studios",
+        "distributor": "Wano TV"
+      },
+      "poster": "https://wano-africadev.lon1.cdn.digitaloceanspaces.com/wanoafrica-dospaces-key/wano-tv/geniuses/GENIUSES_poster_9x16.jpg",
+      "backdrop": "https://wano-africadev.lon1.cdn.digitaloceanspaces.com/wanoafrica-dospaces-key/wano-tv/geniuses/GENIUSES_poster_9x16.jpg",
+      "video_url": "https://wano-africadev.lon1.cdn.digitaloceanspaces.com/wanoafrica-dospaces-key/wano-tv/geniuses/master.m3u8",
+      "featured": true,
+      "popularity": 100,
+      "captions": [],
+      "makers": []
     }
   ],
   "genres": [
