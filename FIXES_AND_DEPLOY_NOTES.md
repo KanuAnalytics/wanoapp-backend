@@ -55,8 +55,8 @@ Run the tests on Python 3.11:
   50 MB for audio; presigned uploads at 2 GB. SVG is rejected.
 - **Stitch input is restricted.** Clips must be Cloudflare Stream URLs and audio must be on the
   Spaces CDN or be a library song. The limit is 20 clips.
-- **Comment rules.** Replying to a reply returns 400. Commenting on a video with comments
-  disabled returns 403.
+- **Comment rules.** Commenting on a video with comments disabled returns 403. Replies to
+  replies are still allowed.
 - **Page sizes are capped.** The cap is usually 50; drafts and user lists allow up to 100.
 - **Admin-only endpoints.** These now require an admin: broadcast, Recombee tools, metrics
   flush and status, and `/debug/tasks`.

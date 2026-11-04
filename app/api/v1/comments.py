@@ -274,7 +274,8 @@ async def create_comment(
             detail="User not found"
         )
 
-    # If it's a reply, verify the parent is a live top-level comment on this video
+    # If it's a reply, verify the parent is a live comment on this video. Replies
+    # to replies are allowed: the app threads them under the reply.
     parent_comment = None
     parent_oid = None
     if comment.parent_id:
@@ -289,11 +290,6 @@ async def create_comment(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Parent comment belongs to a different video"
-            )
-        if parent_comment.get("parent_id"):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Cannot reply to a reply"
             )
 
     # Create comment document with user display name (fallback to Anonymous)
