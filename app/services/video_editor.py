@@ -49,7 +49,7 @@ async def convert_image_to_video(
         
     except Exception as e:
         logger.error(f"Error converting image to video: {e}")
-        raise HTTPException(status_code=400, detail=f"Failed to convert image to video: {str(e)}")
+        raise HTTPException(status_code=400, detail="Failed to convert image to video")
 
 async def download_file_from_url(url: str, temp_dir: Optional[str] = "temp_videos") -> str:
     """
@@ -109,7 +109,7 @@ async def download_file_from_url(url: str, temp_dir: Optional[str] = "temp_video
         
     except Exception as e:
         logger.error(f"Error downloading file from {url}: {e}")
-        raise HTTPException(status_code=400, detail=f"Failed to download video from URL: {str(e)}")
+        raise HTTPException(status_code=400, detail="Failed to download video from URL")
 
 async def change_video_ratio(video_path: str, new_ratio: str, output_dir: Optional[str] = "output") -> str:
     """
@@ -169,7 +169,7 @@ async def change_video_ratio(video_path: str, new_ratio: str, output_dir: Option
         
     except Exception as e:
         logger.error(f"Error changing video aspect ratio: {e}")
-        raise HTTPException(status_code=400, detail=f"Failed to change video aspect ratio: {str(e)}")
+        raise HTTPException(status_code=400, detail="Failed to change video aspect ratio")
 
 def is_url(path: str) -> bool:
     """Check if the given path is a URL"""
@@ -219,7 +219,7 @@ async def stitch_videos(video_path1, video_path2, output_dir="output"):
         return output_path
     except Exception as e:
         print(f"Error stitching videos: {e}")
-        raise HTTPException(status_code=400, detail=f"Failed to stitch videos: {str(e)}")
+        raise HTTPException(status_code=400, detail="Failed to stitch videos")
 
 async def trim_video(video_path, start_time, end_time, output_dir="temp_videos"):
     """
@@ -263,7 +263,7 @@ async def trim_video(video_path, start_time, end_time, output_dir="temp_videos")
         return output_path
     except Exception as e:
         print(f"Error trimming video: {e}")
-        raise HTTPException(status_code=400, detail=f"Failed to trim video: {str(e)}")
+        raise HTTPException(status_code=400, detail="Failed to trim video")
 
 from moviepy import VideoFileClip, AudioFileClip
 
@@ -313,4 +313,4 @@ async def add_audio_to_video(video_path, audio_path, output_dir="output"):
         return output_path
     except Exception as e:
         print(f"Error adding audio to video: {e}")
-        raise HTTPException(status_code=400, detail=f"Failed to add audio to video: {str(e)}")
+        raise HTTPException(status_code=400, detail="Failed to add audio to video")

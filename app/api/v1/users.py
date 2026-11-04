@@ -20,7 +20,8 @@ from app.core.disposable_email import ensure_not_disposable_email
 from app.services.video_deletion import delete_spaces_file_if_unused, soft_delete_video
 from app.services.scheduled_publisher import PUBLISHING, SCHEDULED
 from app.core.security import get_password_hash, create_verification_token
-from app.api.deps import get_current_active_user
+from app.api.deps import get_current_active_user, get_current_user, oauth2_scheme_optional
+from app.api.v1.auth import predict_prob, BANNED_WORDS
 from pydantic import BaseModel, Field, EmailStr, HttpUrl, ValidationError, validator
 from app.models.video import VideoUrls
 import logging
@@ -30,6 +31,73 @@ from app.services.expo import send_push_message
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Fields only the profile owner (or an admin) may see.
+PRIVATE_USER_FIELDS = ("email", "phone_number", "date_of_birth", "gender")
+USERNAME_RE = re.compile(r"^[a-zA-Z0-9_.]{3,30}$")
+
+
+def _parse_object_id(value: Any, detail: str = "Invalid user ID") -> ObjectId:
+    """Turn user input into an ObjectId, or fail with 400 instead of a 500."""
+    if isinstance(value, ObjectId):
+        return value
+    if not isinstance(value, str) or not ObjectId.is_valid(value):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+    return ObjectId(value)
+
+
+def _is_admin_doc(user_doc: Optional[dict]) -> bool:
+    if not user_doc:
+        return False
+    user_type = user_doc.get("user_type")
+    user_type = getattr(user_type, "value", user_type)
+    return isinstance(user_type, str) and user_type.lower() == UserType.ADMIN.value
+
+
+async def _viewer_is_admin(db, viewer_id: Optional[str]) -> bool:
+    if not viewer_id or not ObjectId.is_valid(viewer_id):
+        return False
+    viewer = await db.users.find_one({"_id": ObjectId(viewer_id)}, {"user_type": 1})
+    return _is_admin_doc(viewer)
+
+
+def _strip_private_fields(user_doc: dict) -> dict:
+    """Null out contact/demographic fields so other users never see them."""
+    for field in PRIVATE_USER_FIELDS:
+        if field in user_doc:
+            user_doc[field] = None
+    return user_doc
+
+
+async def get_optional_viewer(token: Optional[str] = Depends(oauth2_scheme_optional)) -> Optional[str]:
+    """Return the logged-in user's id when a valid token is sent, else None."""
+    if not token:
+        return None
+    try:
+        return await get_current_user(token)
+    except HTTPException:
+        return None
+
+
+def _check_profile_names(username: Optional[str] = None, display_name: Optional[str] = None) -> None:
+    """Same username/display-name rules as registration (auth.register)."""
+    if username is not None:
+        if not USERNAME_RE.match(username):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Username must be 3-30 characters and contain only letters, numbers, underscores and periods"
+            )
+        if predict_prob([username])[0] > 0.7 or any(w in username.lower() for w in BANNED_WORDS):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Username contains inappropriate language"
+            )
+    if display_name is not None:
+        if predict_prob([display_name])[0] > 0.7 or any(w in display_name.lower() for w in BANNED_WORDS):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Display name contains inappropriate language"
+            )
 
 
 @router.get("/search")
@@ -442,8 +510,10 @@ async def patch_user_profile(
     
     # Process each field if provided
     if "display_name" in updates_dict:
+        if updates.display_name is not None and user.get("display_name") != updates.display_name:
+            _check_profile_names(display_name=updates.display_name)
         update_doc["display_name"] = updates.display_name
-        if user["display_name"] != updates.display_name:
+        if user.get("display_name") != updates.display_name:
             display_name_changed = True
     
     if "bio" in updates_dict:
@@ -467,18 +537,15 @@ async def patch_user_profile(
     # Handle nested objects
     if "localization" in updates_dict:
         # Merge with existing localization settings
-        current_localization = user.get("localization", {})
-        updated_localization = {**current_localization, **updates.localization}
+        current_localization = user.get("localization") or {}
+        updated_localization = {**current_localization, **(updates.localization or {})}
         update_doc["localization"] = updated_localization
     
     if "theme" in updates_dict:
         update_doc["theme"] = updates.theme
     
-    if "features" in updates_dict:
-        # Merge with existing features
-        current_features = user.get("features", {})
-        updated_features = {**current_features, **updates.features}
-        update_doc["features"] = updated_features
+    # "features" holds server-controlled flags; users may not change them, so
+    # anything sent in the patch is ignored.
     
     # Check if any updates were provided
     if not update_doc:
@@ -563,20 +630,19 @@ async def remove_push_token(
 async def permanently_delete_user(
     current_user: str = Depends(get_current_active_user),
 ):
+    """
+    Permanently delete a user:
+    - Sets is_active to False
+    - Sets username to 'deleted_user-<user_id>' (unique)
+    - Sets display_name to 'Deleted User'
+    - Removes cover_picture, profile_picture, and bio
+    - Soft deletes all their videos
+    - Removes phone number, reset OTP and password so the account can't be
+      recovered or logged into
+    """
     try:
-        """
-        Permanently delete a user:
-        - Sets is_deleted to True
-        - Sets username and email to 'deleted_user-<user_id>' (unique)
-        - Sets display_name to 'Deleted User'
-        - Removes cover_picture, profile_picture, and bio
-        - Only user themselves or admins can perform this action
-        - Soft deletes all their videos
-        """
         db = get_database()
         now = datetime.utcnow()
-        
-        print('trying to delete the user:', current_user)
 
         # Check if user exists
         user = await db.users.find_one({"_id": ObjectId(current_user)})
@@ -593,13 +659,21 @@ async def permanently_delete_user(
                 "$set": {
                     "is_active": False,
                     "username": f"deleted_user-{current_user}",
-                    "email": f"deleted_user-{current_user}@wanoafrica.com",
                     "display_name": "Deleted User",
                     "profile_picture": None,
                     "cover_picture": None,
                     "bio": None,
+                    "password_hash": "",
                     "updated_at": now
-                }
+                },
+                # users.email has a partial unique index (string emails only),
+                # so many deleted accounts without an email don't clash.
+                "$unset": {
+                    "phone_number": "",
+                    "email": "",
+                    "password_reset_otp_hash": "",
+                    "password_reset_otp_expires": "",
+                },
             }
         )
 
@@ -610,6 +684,8 @@ async def permanently_delete_user(
         )
         
         return
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error permanently deleting user {current_user}: {str(e)}")
         raise HTTPException(
@@ -633,9 +709,9 @@ async def ban_user(
     db = get_database()
     now = datetime.utcnow()
 
-    # Ensure the requester is an admin
-    requesting_user = await db.users.find_one({"_id": ObjectId(current_user)})
-    if not requesting_user or requesting_user.get("user_type") != UserType.ADMIN:
+    # Ensure the requester is an admin (checked here, not only via a
+    # dependency, so direct calls are protected too).
+    if not await _viewer_is_admin(db, current_user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin privileges required to ban users"
@@ -704,29 +780,39 @@ async def ban_user(
     return
 
 @router.post('/block_user/{target_user}', status_code=status.HTTP_204_NO_CONTENT)
-def block_user(
+async def block_user(
     target_user: str,
     current_user: str = Depends(get_current_active_user)):
-    
+    """
+    Block a user:
+    - Adds target_user to current_user's blocked_users list
+    - Adds current_user to target_user's blocked_by list
+    """
+    db = get_database()
+
+    current_user_id = _parse_object_id(current_user)
+    target_user_id = _parse_object_id(target_user)
+    if current_user_id == target_user_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot block yourself"
+        )
+
+    if not await db.users.find_one({"_id": target_user_id}, {"_id": 1}):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+
     try:
-        """
-        Block a user:
-        - Adds target_user to current_user's blocked_users list
-            - Adds current_user to target_user's blocked_by list
-        """
-        
-        db = get_database()
-        
-        current_user_id = ObjectId(current_user)
-        target_user_id = ObjectId(target_user)
         # 1. Add target_user to blocked_users of current_user
-        db.users.update_one(
+        await db.users.update_one(
             {"_id": current_user_id},
             {"$addToSet": {"blocked_users": target_user_id}}
         )
-        
+
         # 2. Add current_user to blocked_by of target_user
-        db.users.update_one(
+        await db.users.update_one(
             {"_id": target_user_id},
             {"$addToSet": {"blocked_by": current_user_id}}
         )
@@ -736,32 +822,41 @@ def block_user(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error blocking user"
         )
-        
+
 @router.post('/unblock_user/{target_user}', status_code=status.HTTP_204_NO_CONTENT)
-def unblock_user(
+async def unblock_user(
     target_user: str,
     current_user: str = Depends(get_current_active_user)):
-    
+    """
+    Unblock a user:
+    - Removes target_user from current_user's blocked_users list
+    - Removes current_user from target_user's blocked_by list
+    """
+    db = get_database()
+
+    current_user_id = _parse_object_id(current_user)
+    target_user_id = _parse_object_id(target_user)
+    if current_user_id == target_user_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot unblock yourself"
+        )
+
+    if not await db.users.find_one({"_id": target_user_id}, {"_id": 1}):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+
     try:
-        """
-        Unblock a user:
-        - Removes target_user from current_user's blocked_users list
-            - Removes current_user from target_user's blocked_by list
-        """
-        
-        db = get_database()
-        
-        current_user_id = ObjectId(current_user)
-        target_user_id = ObjectId(target_user)
-        
         # 1. Remove target_user from blocked_users of current_user
-        db.users.update_one(
+        await db.users.update_one(
             {"_id": current_user_id},
             {"$pull": {"blocked_users": target_user_id}}
         )
-        
+
         # 2. Remove current_user from blocked_by of target_user
-        db.users.update_one(
+        await db.users.update_one(
             {"_id": target_user_id},
             {"$pull": {"blocked_by": current_user_id}}
         )
@@ -772,423 +867,12 @@ def unblock_user(
             detail="Error unblocking user"
         )
 
-@router.get("/{user_id}/complete", response_model=UserWithDetailsResponse)
-async def get_user_complete(
-    user_id: str,
-    include_videos: bool = Query(False, description="Include user's recent videos"),
-    include_liked: bool = Query(False, description="Include user's liked videos details"),
-    video_skip: int = Query(0, ge=0, description="Skip N recent videos when include_videos is true"),
-    video_limit: int = Query(200, ge=1, le=200, description="Limit recent videos when include_videos is true"),
-    current_user: str = Depends(get_current_active_user)
-):
-    """
-    Get complete user data with ALL fields
-    
-    - Returns all user fields including video details (not just IDs)
-    - Includes relationship status with current user
-    - Optionally includes recent videos
-    - Sensitive fields like password_hash are excluded
-    """
-    db = get_database()
-    
-    # Validate user_id
-    if not ObjectId.is_valid(user_id):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid user ID format"
-        )
-    
-    # Get the requested user
-    user = await db.users.find_one({"_id": ObjectId(user_id)})
-    
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
-        )
-    
-    # Get video details for bookmarked and liked videos
-    if current_user == user_id:
-        bookmarked_video_details = await get_video_details(
-            db, 
-            user.get("bookmarked_videos", [])
-        )
-    else:
-        bookmarked_video_details = []
-
-    if include_liked:
-        liked_video_details = await get_video_details(
-            db, 
-            user.get("liked_videos", [])
-        )
-    else:
-        liked_video_details = []
-    
-    like_count = await metrics_buffer.get_user_videos_like_count(user_id)
-    
-    # Convert ObjectId fields to strings
-    user_data = {
-        **user,
-        "_id": str(user["_id"]),
-        "bookmarked_videos": bookmarked_video_details,
-        "liked_videos": liked_video_details,
-        "likes_count": like_count,
-        "following": [str(uid) for uid in user.get("following", [])],
-        "followers": [str(uid) for uid in user.get("followers", [])]
-    }
-    
-    # Remove sensitive fields
-    user_data.pop("password_hash", None)
-    user_data.pop("verification_token", None)
-    user_data.pop("verification_token_expires", None)
-    
-    # Create base response
-    try:
-        complete_user = CompleteUserResponse(**user_data)
-    except Exception:
-        # A single malformed document must not take the whole profile screen down
-        # without telling us which one it was.
-        logger.exception("Failed to build CompleteUserResponse for user %s", user_id)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Could not load this profile. Please try again."
-        )
-    
-    # Calculate relationship status
-    current_user_oid = ObjectId(current_user)
-    is_following = current_user_oid in user.get("followers", [])
-    is_followed_by = current_user_oid in user.get("following", [])
-    
-    # Calculate mutual followers
-    if current_user != user_id:
-         # 🔒 Blocking check (current user’s perspective)
-        current_user_oid = ObjectId(current_user)
-
-        # Fetch current user’s blocking info
-        current_user_data = await db.users.find_one(
-            {"_id": current_user_oid},
-            {"blocked_users": 1, "blocked_by": 1}
-        )
-
-        if not current_user_data:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Current user not found"
-            )
-
-        blocked_users = current_user_data.get("blocked_users", [])
-        blocked_by = current_user_data.get("blocked_by", [])
-
-        is_blocked_by_me = ObjectId(user_id) in blocked_users
-        is_blocked_by_them = ObjectId(user_id) in blocked_by
-
-        if is_blocked_by_me or is_blocked_by_them:
-            # Return a sanitized "deleted account" representation when there's a blocking relationship
-            deleted_user = {
-                **user,
-                "_id": str(user["_id"]),
-                "username": f"deleted_user",
-                "email": f"deleted_user@wanoafrica.com",
-                "display_name": "Deleted Account",
-                "bio": None,
-                "profile_picture": None,
-                "cover_picture": None,
-                "is_active": False,
-                "is_verified": False,
-                "verification_token": None,
-                "verification_token_expires": None,
-                "verified_at": None,
-                "localization": user.get("localization", {}),
-                "theme": None,
-                "features": {},
-                "tags": [],
-                "bookmarked_videos": [],
-                "liked_videos": [],
-                "following": [],
-                "followers": [],
-                "followers_count": 0,
-                "following_count": 0,
-                "videos_count": 0,
-                "likes_count": 0,
-                "created_at": user.get("created_at") or datetime.utcnow(),
-                "updated_at": datetime.utcnow()
-            }
-
-            complete_blocked = CompleteUserResponse(**deleted_user)
-
-            response = UserWithDetailsResponse(
-                user=complete_blocked,
-                is_following=False,
-                is_followed_by=False,
-                mutual_followers_count=0,
-                recent_videos=[],
-                views=0,
-                can_unblock=is_blocked_by_me,
-                blocked=is_blocked_by_them or is_blocked_by_me,
-            )
-            return response
-        else:
-            # Calculate mutual followers
-            current_user_data = await db.users.find_one(
-                {"_id": current_user_oid},
-                {"followers": 1}
-            )
-            if current_user_data:
-                # mutuals disabled for now
-                # user_followers_set = set(user.get("followers", []))
-                # current_followers_set = set(current_user_data.get("followers", []))
-                # mutual_followers_count = len(user_followers_set.intersection(current_followers_set))
-                mutual_followers_count = 0
-            else:
-                mutual_followers_count = 0
-    else:
-        mutual_followers_count = 0
-    
-    # Prepare response
-    response_data = {
-        "user": complete_user,
-        "is_following": is_following,
-        "is_followed_by": is_followed_by,
-        "mutual_followers_count": mutual_followers_count,
-        "recent_videos": []
-    }
-    
-    # Include recent videos if requested
-    if include_videos:
-        videos_cursor = db.videos.find(
-            {
-            "creator_id": ObjectId(user_id),
-            "is_active": True,
-            "privacy": "public",
-            "$and": [
-                {
-                "$or": [
-                    {"isReadyToStream": True},
-                    {"isReadyToStream": {"$exists": False}}
-                ]
-                }
-            ]
-            }
-        ).sort("created_at", -1).skip(video_skip).limit(video_limit)
-        
-        recent_videos = []
-        async for video in videos_cursor:
-            recent_videos.append(VideoDetail(
-                id=str(video["_id"]),
-                description=video.get("description"),
-                title=video.get("title"),
-                thumbnail_url=video.get("urls", {}).get("thumbnail") if video.get("urls") else None,
-                created_at=video.get("created_at"),
-                views_count=video.get("views_count"),
-                remoteUrl_CF=video.get("remoteUrl_CF"),
-                media_type=video.get("media_type"),
-                images=video.get("images") or [],
-                supports_landscape=bool(video.get("supports_landscape")),
-            ))
-        
-        response_data["recent_videos"] = recent_videos
-    
-    return UserWithDetailsResponse(**response_data)
-
-@router.get("/{user_id}/raw", response_model=Dict[str, Any])
-async def get_user_raw(
-    user_id: str,
-    current_user: str = Depends(get_current_active_user)
-):
-    """
-    Get raw user data (admin endpoint or self only)
-    
-    - Returns absolutely ALL fields except password_hash
-    - Includes internal fields
-    - Restricted to user themselves or admins
-    """
-    db = get_database()
-    
-    # Check permissions - only allow user to view their own complete data
-    # or implement admin check here
-    if current_user != user_id:
-        # Check if current user is admin
-        requesting_user = await db.users.find_one({"_id": ObjectId(current_user)})
-        if not requesting_user or requesting_user.get("user_type") != "ADMIN":
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You can only view your own complete data"
-            )
-    
-    # Get user with all fields
-    user = await db.users.find_one({"_id": ObjectId(user_id)})
-    
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
-        )
-    
-    # Convert all ObjectIds to strings
-    def convert_objectids(obj):
-        if isinstance(obj, ObjectId):
-            return str(obj)
-        elif isinstance(obj, list):
-            return [convert_objectids(item) for item in obj]
-        elif isinstance(obj, dict):
-            return {key: convert_objectids(value) for key, value in obj.items()}
-        elif isinstance(obj, datetime):
-            return obj.isoformat()
-        return obj
-    
-    user_dict = convert_objectids(dict(user))
-    
-    # Remove only the password hash for security
-    user_dict.pop("password_hash", None)
-    
-    return user_dict
-
-@router.get("/{user_id}/stats/detailed")
-async def get_user_detailed_stats(
-    user_id: str,
-    current_user: str = Depends(get_current_active_user)
-):
-    """
-    Get detailed statistics about a user
-    
-    Includes:
-    - Total video views
-    - Total likes received
-    - Engagement rate
-    - Growth metrics
-    - Content categories
-    """
-    db = get_database()
-    
-    # Verify user exists
-    user = await db.users.find_one({"_id": ObjectId(user_id)})
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
-        )
-    
-    # Aggregate video statistics
-    pipeline = [
-        {"$match": {
-            "creator_id": ObjectId(user_id), 
-            "is_active": True,
-            "$and": [
-                        {
-            "$or": [
-                {"isReadyToStream": True},
-                {"isReadyToStream": {"$exists": False}}
-                ]
-            }
-            ]
-            }},
-        {
-            "$group": {
-                "_id": None,
-                "total_videos": {"$sum": 1},
-                "total_views": {"$sum": "$views_count"},
-                "total_likes": {"$sum": "$likes_count"},
-                "total_comments": {"$sum": "$comments_count"},
-                "total_shares": {"$sum": "$shares_count"},
-                "avg_duration": {"$avg": "$duration"},
-                "categories": {"$addToSet": "$category"},
-                "hashtags": {"$push": "$hashtags"}
-            }
-        }
-    ]
-    
-    stats_result = await db.videos.aggregate(pipeline).to_list(1)
-    video_stats = stats_result[0] if stats_result else {
-        "total_videos": 0,
-        "total_views": 0,
-        "total_likes": 0,
-        "total_comments": 0,
-        "total_shares": 0,
-        "avg_duration": 0,
-        "categories": [],
-        "hashtags": []
-    }
-    
-    # Add buffered counts to the totals
-    user_videos = await db.videos.find(
-        {"creator_id": ObjectId(user_id), "is_active": True}, 
-        {"_id": 1}
-    ).to_list(None)
-    
-    total_buffered_views = 0
-    total_buffered_likes = 0  
-    total_buffered_comments = 0
-    
-    for video in user_videos:
-        video_id = str(video["_id"])
-        # Get only the buffered portion (not total), since DB counts are already included
-        async with metrics_buffer._lock:
-            total_buffered_views += metrics_buffer.views_buffer.get(video_id, 0)
-            total_buffered_likes += metrics_buffer.likes_buffer.get(video_id, 0)
-            total_buffered_comments += metrics_buffer.comments_buffer.get(video_id, 0)
-    
-    # Add buffered counts to database totals
-    video_stats["total_views"] += total_buffered_views
-    video_stats["total_likes"] += total_buffered_likes
-    video_stats["total_comments"] += total_buffered_comments
-    
-    # Flatten and count hashtags
-    all_hashtags = []
-    for hashtag_list in video_stats.get("hashtags", []):
-        if isinstance(hashtag_list, list):
-            all_hashtags.extend(hashtag_list)
-    
-    hashtag_counts = {}
-    for tag in all_hashtags:
-        hashtag_counts[tag] = hashtag_counts.get(tag, 0) + 1
-    
-    # Sort hashtags by frequency
-    top_hashtags = sorted(hashtag_counts.items(), key=lambda x: x[1], reverse=True)[:10]
-    
-    # Calculate engagement rate
-    total_engagements = (
-        video_stats["total_likes"] + 
-        video_stats["total_comments"] + 
-        video_stats["total_shares"]
-    )
-    engagement_rate = (
-        (total_engagements / video_stats["total_views"] * 100) 
-        if video_stats["total_views"] > 0 else 0
-    )
-    
-    return {
-        "user_id": user_id,
-        "username": user["username"],
-        "account_stats": {
-            "followers_count": user.get("followers_count", 0),
-            "following_count": user.get("following_count", 0),
-            "videos_count": user.get("videos_count", 0),
-            "liked_videos_count": len(user.get("liked_videos", [])),
-            "bookmarked_videos_count": len(user.get("bookmarked_videos", []))
-        },
-        "content_stats": {
-            "total_videos": video_stats["total_videos"],
-            "total_views": video_stats["total_views"],
-            "total_likes": video_stats["total_likes"],
-            "total_comments": video_stats["total_comments"],
-            "total_shares": video_stats["total_shares"],
-            "average_video_duration": round(video_stats["avg_duration"], 2) if video_stats["avg_duration"] else 0,
-            "engagement_rate": round(engagement_rate, 2),
-            "categories": video_stats["categories"],
-            "top_hashtags": [{"tag": tag, "count": count} for tag, count in top_hashtags]
-        },
-        "profile_info": {
-            "is_verified": user.get("is_verified", False),
-            "created_at": user["created_at"].isoformat(),
-            "tags": user.get("tags", []),
-            "localization": user.get("localization", {})
-        }
-    }
-
+# All /me... routes are declared before the /{user_id}... routes so that
+# e.g. PUT /users/me is not captured by PUT /users/{user_id} (user_id="me").
 @router.get("/me/liked-videos", response_model=List[VideoDetail])
 async def get_my_liked_videos(
-    skip: int = 0,
-    limit: int = 20,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
     current_user: str = Depends(get_current_active_user)
 ):
     """Get current user's liked videos with details"""
@@ -1203,7 +887,7 @@ async def get_my_liked_videos(
         )
     
     # Get liked video IDs with pagination
-    liked_video_ids = user.get("liked_videos", [])[skip:skip + limit]
+    liked_video_ids = (user.get("liked_videos") or [])[skip:skip + limit]
     
     # Get video details
     video_details = await get_video_details(db, liked_video_ids)
@@ -1212,8 +896,8 @@ async def get_my_liked_videos(
 
 @router.get("/me/bookmarked-videos", response_model=List[VideoDetail])
 async def get_my_bookmarked_videos(
-    skip: int = 0,
-    limit: int = 20,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
     current_user: str = Depends(get_current_active_user)
 ):
     """Get current user's bookmarked videos with details"""
@@ -1228,7 +912,7 @@ async def get_my_bookmarked_videos(
         )
     
     # Get bookmarked video IDs with pagination
-    bookmarked_video_ids = user.get("bookmarked_videos", [])[skip:skip + limit]
+    bookmarked_video_ids = (user.get("bookmarked_videos") or [])[skip:skip + limit]
     
     # Get video details
     video_details = await get_video_details(db, bookmarked_video_ids)
@@ -1297,7 +981,7 @@ async def patch_user_theme(
         {"theme": 1}
     )
     
-    current_theme = user.get("theme", {})
+    current_theme = dict((user or {}).get("theme") or {})
     
     # Merge updates with current theme
     if primary_color is not None:
@@ -1331,336 +1015,6 @@ async def patch_user_theme(
     updated_user["_id"] = str(updated_user["_id"])
     
     return UserPatchResponse(**updated_user)
-
-# Helper function (should already exist from previous updates)
-async def update_user_comments_display_name(db, user_id: str, new_display_name: str):
-    """Update display name in all user's comments"""
-    try:
-        result = await db.comments.update_many(
-            {"user_id": ObjectId(user_id)},
-            {
-                "$set": {
-                    "user_display_name": new_display_name,
-                    "updated_at": datetime.utcnow()
-                }
-            }
-        )
-        logger.info(f"Updated {result.modified_count} comments with new display name for user {user_id}")
-    except Exception as e:
-        logger.error(f"Failed to update comments display name: {e}")
-
-@router.post("/", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-async def create_user(
-    user: UserCreate,
-    current_user: str = Depends(get_current_active_user),
-):
-    """Create a new user (admin only).
-
-    This endpoint lets the caller choose `user_type`, including admin, so it
-    must never be reachable without an admin login: an open version let anyone
-    mint an admin account and then ban users or delete any video. Regular
-    signups go through POST /auth/register, which always creates a standard
-    account.
-    """
-    db = get_database()
-
-    requesting_user = await db.users.find_one(
-        {"_id": ObjectId(current_user)}, {"user_type": 1}
-    )
-    if not requesting_user or requesting_user.get("user_type") != UserType.ADMIN:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin privileges required to create users"
-        )
-
-    ensure_not_disposable_email(user.email)
-    
-    # Check if username or email already exists
-    existing_user = await db.users.find_one({
-        "$or": [
-            {"username": user.username},
-            {"email": user.email}
-        ]
-    })
-    
-    if existing_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Username or email already registered"
-        )
-    
-    # Generate verification token
-    verification_data = create_verification_token(user.email)
-    
-    # Create user document
-    user_doc = {
-        **user.dict(exclude={"password"}),
-        "password_hash": get_password_hash(user.password),
-        "created_at": datetime.utcnow(),
-        "updated_at": datetime.utcnow(),
-        "is_active": True,
-        "is_verified": False,  # Not verified by default
-        "verification_token": verification_data["token"],
-        "verification_token_expires": verification_data["expires"],
-        "verified_at": None,
-        "followers_count": 0,
-        "following_count": 0,
-        "videos_count": 0,
-        "likes_count": 0,
-        "gender": user.gender,
-        "date_of_birth": user.date_of_birth,
-        "tags": user.tags if user.tags else []
-    }
-    
-    # Add type-specific fields
-    if user.user_type == UserType.STANDARD:
-        user_doc.update({
-            "bookmarked_videos": [],
-            "liked_videos": [],
-            "following": [],
-            "followers": []
-        })
-    
-    result = await db.users.insert_one(user_doc)
-    user_doc["_id"] = str(result.inserted_id)
-    
-    return UserResponse(**user_doc)
-
-@router.get("/", response_model=List[UserResponse])
-async def get_users(
-    skip: int = 0,
-    limit: int = 20,
-    user_type: Optional[UserType] = None
-):
-    """Get all users with pagination"""
-    db = get_database()
-    
-    query = {"is_active": True}
-    if user_type:
-        query["user_type"] = user_type
-    
-    cursor = db.users.find(query).skip(skip).limit(limit)
-    users = []
-    async for user in cursor:
-        user["_id"] = str(user["_id"])
-        users.append(UserResponse(**user))
-    
-    return users
-
-@router.get("/{user_id}", response_model=UserResponse)
-async def get_user(user_id: str):
-    """Get a specific user by ID"""
-    db = get_database()
-    
-    if not ObjectId.is_valid(user_id):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid user ID"
-        )
-    
-    user = await db.users.find_one({"_id": ObjectId(user_id)})
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
-        )
-    
-    user["_id"] = str(user["_id"])
-    return UserResponse(**user)
-
-@router.put("/{user_id}", response_model=UserResponse)
-async def update_user(
-    user_id: str,
-    user_update: UserUpdate,
-    current_user: str = Depends(get_current_active_user)
-):
-    """Update a user (only the user themselves can update)"""
-    try:
-        db = get_database()
-        
-    except Exception as e:
-            raise e
-    
-    # Verify user is updating their own profile
-    if user_id != current_user:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Can only update your own profile"
-        )
-    
-    # Check for username uniqueness if username is being updated
-    if user_update.username is not None:
-        # Validate username format
-        username = user_update.username.strip()
-        if len(username) < 3:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Username must be at least 3 characters long"
-            )
-        if len(username) > 30:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Username must be at most 30 characters long"
-            )
-        if not re.match("^[a-zA-Z0-9_.-]+$", username):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Username can only contain letters, numbers, underscores, hyphens, and periods"
-            )
-        
-        # Keep original case for username
-        user_update.username = username
-        
-        # Get current user to check if username is actually changing
-        current_user_doc = await db.users.find_one({"_id": ObjectId(user_id)})
-        if current_user_doc and current_user_doc["username"] != user_update.username:
-            # Check if the new username is already taken
-            existing_user = await db.users.find_one({
-                "username": user_update.username,
-                "_id": {"$ne": ObjectId(user_id)}  # Exclude current user
-            })
-            
-            if existing_user:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Username is already taken"
-                )
-    
-    update_data = {
-        k: v for k, v in user_update.dict(exclude_unset=True).items()
-    }
-    update_data["updated_at"] = datetime.utcnow()
-    
-    result = await db.users.update_one(
-        {"_id": ObjectId(user_id)},
-        {"$set": update_data}
-    )
-    
-    if result.matched_count == 0:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
-        )
-    
-    user = await db.users.find_one({"_id": ObjectId(user_id)})
-    user["_id"] = str(user["_id"])
-    return UserResponse(**user)
-
-@router.post("/{user_id}/follow", status_code=status.HTTP_200_OK)
-async def follow_user(
-    user_id: str,
-    current_user: str = Depends(get_current_active_user),
-    background_tasks: BackgroundTasks = None,
-):
-    """Follow a user"""
-    db = get_database()
-    
-    if user_id == current_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot follow yourself"
-        )
-    
-    # Check if target user exists
-    target_user = await db.users.find_one({"_id": ObjectId(user_id)})
-    if not target_user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
-        )
-    
-    # Check if already following
-    current_user_doc = await db.users.find_one({"_id": ObjectId(current_user)})
-    if ObjectId(user_id) in current_user_doc.get("following", []):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Already following this user"
-        )
-    
-    # Add to following list
-    await db.users.update_one(
-        {"_id": ObjectId(current_user)},
-        {
-            "$addToSet": {"following": ObjectId(user_id)},
-            "$inc": {"following_count": 1}
-        }
-    )
-    
-    # Add to followers list
-    await db.users.update_one(
-        {"_id": ObjectId(user_id)},
-        {
-            "$addToSet": {"followers": ObjectId(current_user)},
-            "$inc": {"followers_count": 1}
-        }
-    )
-
-    await db.notifications.insert_one({
-        "recipient_id": ObjectId(user_id),
-        "type": "follow",
-        "user_id": ObjectId(current_user),
-        "post_id": None,
-        "date": datetime.utcnow(),
-    })
-
-    if background_tasks is not None:
-        display_name = current_user_doc.get("display_name") or current_user_doc.get("username") or "Someone"
-        username = current_user_doc.get("username") or "unknown"
-        profile_image = current_user_doc.get("profile_picture")
-        recipient_tokens = target_user.get("expo_push_tokens") or []
-        for token in recipient_tokens:
-            background_tasks.add_task(
-                send_push_message,
-                token,
-                "Tap to view their profile",
-                {"follower_id": str(current_user)},
-                f"{display_name}(@{username}) started following you",
-                profile_image,
-            )
-    
-    return {"message": "Successfully followed user"}
-
-@router.delete("/{user_id}/follow", status_code=status.HTTP_200_OK)
-async def unfollow_user(
-    user_id: str,
-    current_user: str = Depends(get_current_active_user)
-):
-    """Unfollow a user"""
-    db = get_database()
-    
-    # Check if actually following
-    current_user_doc = await db.users.find_one({"_id": ObjectId(current_user)})
-    if ObjectId(user_id) not in current_user_doc.get("following", []):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Not following this user"
-        )
-    
-    # Remove from following list
-    await db.users.update_one(
-        {"_id": ObjectId(current_user)},
-        {
-            "$pull": {"following": ObjectId(user_id)},
-            "$inc": {"following_count": -1}
-        }
-    )
-    
-    # Remove from followers list
-    await db.users.update_one(
-        {"_id": ObjectId(user_id)},
-        {
-            "$pull": {"followers": ObjectId(current_user)},
-            "$inc": {"followers_count": -1}
-        }
-    )
-
-    await db.notifications.delete_one({
-        "type": "follow",
-        "recipient_id": ObjectId(user_id),
-        "user_id": ObjectId(current_user),
-    })
-
-    return {"message": "Successfully unfollowed user"}
 
 @router.get("/me/profile", response_model=UserResponse)
 async def get_my_profile(current_user: str = Depends(get_current_active_user)):
@@ -1784,7 +1138,8 @@ async def update_me(
     if user_update.display_name is not None:
         update_doc["display_name"] = user_update.display_name
         # Check if display name is changing
-        if user["display_name"] != user_update.display_name:
+        if user.get("display_name") != user_update.display_name:
+            _check_profile_names(display_name=user_update.display_name)
             display_name_changed = True
             
     if user_update.bio is not None:
@@ -1834,15 +1189,788 @@ async def update_me(
     user["_id"] = str(user["_id"])
     return UserResponse(**user)
 
+@router.get("/{user_id}/complete", response_model=UserWithDetailsResponse)
+async def get_user_complete(
+    user_id: str,
+    include_videos: bool = Query(False, description="Include user's recent videos"),
+    include_liked: bool = Query(False, description="Include user's liked videos details"),
+    video_skip: int = Query(0, ge=0, description="Skip N recent videos when include_videos is true"),
+    video_limit: int = Query(200, ge=1, le=200, description="Limit recent videos when include_videos is true"),
+    current_user: str = Depends(get_current_active_user)
+):
+    """
+    Get complete user data with ALL fields
+    
+    - Returns all user fields including video details (not just IDs)
+    - Includes relationship status with current user
+    - Optionally includes recent videos
+    - Sensitive fields like password_hash are excluded
+    """
+    db = get_database()
+    
+    # Validate user_id
+    if not ObjectId.is_valid(user_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid user ID format"
+        )
+    
+    # Get the requested user
+    user = await db.users.find_one({"_id": ObjectId(user_id)})
+    
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    # Get video details for bookmarked and liked videos
+    if current_user == user_id:
+        bookmarked_video_details = await get_video_details(
+            db, 
+            user.get("bookmarked_videos", [])
+        )
+    else:
+        bookmarked_video_details = []
+
+    if include_liked:
+        liked_video_details = await get_video_details(
+            db, 
+            user.get("liked_videos", [])
+        )
+    else:
+        liked_video_details = []
+    
+    like_count = await metrics_buffer.get_user_videos_like_count(user_id)
+    
+    # Convert ObjectId fields to strings
+    user_data = {
+        **user,
+        "_id": str(user["_id"]),
+        "bookmarked_videos": bookmarked_video_details,
+        "liked_videos": liked_video_details,
+        "likes_count": like_count,
+        "following": [str(uid) for uid in user.get("following", [])],
+        "followers": [str(uid) for uid in user.get("followers", [])]
+    }
+    
+    # Remove sensitive fields
+    user_data.pop("password_hash", None)
+    user_data.pop("verification_token", None)
+    user_data.pop("verification_token_expires", None)
+
+    # Contact and demographic fields are for the owner (and admins) only.
+    is_owner = current_user == user_id
+    if not is_owner and not await _viewer_is_admin(db, current_user):
+        _strip_private_fields(user_data)
+    
+    # Create base response
+    try:
+        complete_user = CompleteUserResponse(**user_data)
+    except Exception:
+        # A single malformed document must not take the whole profile screen down
+        # without telling us which one it was.
+        logger.exception("Failed to build CompleteUserResponse for user %s", user_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not load this profile. Please try again."
+        )
+    
+    # Calculate relationship status
+    current_user_oid = ObjectId(current_user)
+    is_following = current_user_oid in user.get("followers", [])
+    is_followed_by = current_user_oid in user.get("following", [])
+    
+    # Calculate mutual followers
+    if current_user != user_id:
+         # 🔒 Blocking check (current user’s perspective)
+        current_user_oid = ObjectId(current_user)
+
+        # Fetch current user’s blocking info
+        current_user_data = await db.users.find_one(
+            {"_id": current_user_oid},
+            {"blocked_users": 1, "blocked_by": 1}
+        )
+
+        if not current_user_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Current user not found"
+            )
+
+        blocked_users = current_user_data.get("blocked_users", [])
+        blocked_by = current_user_data.get("blocked_by", [])
+
+        is_blocked_by_me = ObjectId(user_id) in blocked_users
+        is_blocked_by_them = ObjectId(user_id) in blocked_by
+
+        if is_blocked_by_me or is_blocked_by_them:
+            # Return a sanitized "deleted account" representation when there's a blocking relationship
+            deleted_user = {
+                **user,
+                "_id": str(user["_id"]),
+                "username": f"deleted_user",
+                "email": f"deleted_user@wanoafrica.com",
+                "phone_number": None,
+                "date_of_birth": None,
+                "gender": None,
+                "display_name": "Deleted Account",
+                "bio": None,
+                "profile_picture": None,
+                "cover_picture": None,
+                "is_active": False,
+                "is_verified": False,
+                "verification_token": None,
+                "verification_token_expires": None,
+                "verified_at": None,
+                "localization": user.get("localization", {}),
+                "theme": None,
+                "features": {},
+                "tags": [],
+                "bookmarked_videos": [],
+                "liked_videos": [],
+                "following": [],
+                "followers": [],
+                "followers_count": 0,
+                "following_count": 0,
+                "videos_count": 0,
+                "likes_count": 0,
+                "created_at": user.get("created_at") or datetime.utcnow(),
+                "updated_at": datetime.utcnow()
+            }
+
+            complete_blocked = CompleteUserResponse(**deleted_user)
+
+            response = UserWithDetailsResponse(
+                user=complete_blocked,
+                is_following=False,
+                is_followed_by=False,
+                mutual_followers_count=0,
+                recent_videos=[],
+                views=0,
+                can_unblock=is_blocked_by_me,
+                blocked=is_blocked_by_them or is_blocked_by_me,
+            )
+            return response
+        else:
+            # Calculate mutual followers
+            current_user_data = await db.users.find_one(
+                {"_id": current_user_oid},
+                {"followers": 1}
+            )
+            if current_user_data:
+                # mutuals disabled for now
+                # user_followers_set = set(user.get("followers", []))
+                # current_followers_set = set(current_user_data.get("followers", []))
+                # mutual_followers_count = len(user_followers_set.intersection(current_followers_set))
+                mutual_followers_count = 0
+            else:
+                mutual_followers_count = 0
+    else:
+        mutual_followers_count = 0
+    
+    # Prepare response
+    response_data = {
+        "user": complete_user,
+        "is_following": is_following,
+        "is_followed_by": is_followed_by,
+        "mutual_followers_count": mutual_followers_count,
+        "recent_videos": []
+    }
+    
+    # Include recent videos if requested
+    if include_videos:
+        videos_cursor = db.videos.find(
+            {
+            "creator_id": ObjectId(user_id),
+            "is_active": True,
+            "privacy": "public",
+            "$and": [
+                {
+                "$or": [
+                    {"isReadyToStream": True},
+                    {"isReadyToStream": {"$exists": False}}
+                ]
+                }
+            ]
+            }
+        ).sort("created_at", -1).skip(video_skip).limit(video_limit)
+        
+        recent_videos = []
+        async for video in videos_cursor:
+            recent_videos.append(VideoDetail(
+                id=str(video["_id"]),
+                description=video.get("description"),
+                title=video.get("title"),
+                thumbnail_url=video.get("urls", {}).get("thumbnail") if video.get("urls") else None,
+                created_at=video.get("created_at"),
+                views_count=video.get("views_count"),
+                remoteUrl_CF=video.get("remoteUrl_CF"),
+                media_type=video.get("media_type"),
+                images=video.get("images") or [],
+                supports_landscape=bool(video.get("supports_landscape")),
+            ))
+        
+        response_data["recent_videos"] = recent_videos
+    
+    return UserWithDetailsResponse(**response_data)
+
+@router.get("/{user_id}/raw", response_model=Dict[str, Any])
+async def get_user_raw(
+    user_id: str,
+    current_user: str = Depends(get_current_active_user)
+):
+    """
+    Get raw user data (admin endpoint or self only)
+    
+    - Returns absolutely ALL fields except password_hash
+    - Includes internal fields
+    - Restricted to user themselves or admins
+    """
+    db = get_database()
+    target_oid = _parse_object_id(user_id)
+    
+    # Check permissions - only allow user to view their own complete data, or admins
+    if current_user != user_id:
+        if not await _viewer_is_admin(db, current_user):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You can only view your own complete data"
+            )
+    
+    # Get user with all fields
+    user = await db.users.find_one({"_id": target_oid})
+    
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    # Convert all ObjectIds to strings
+    def convert_objectids(obj):
+        if isinstance(obj, ObjectId):
+            return str(obj)
+        elif isinstance(obj, list):
+            return [convert_objectids(item) for item in obj]
+        elif isinstance(obj, dict):
+            return {key: convert_objectids(value) for key, value in obj.items()}
+        elif isinstance(obj, datetime):
+            return obj.isoformat()
+        return obj
+    
+    user_dict = convert_objectids(dict(user))
+    
+    # Remove only the password hash for security
+    user_dict.pop("password_hash", None)
+    
+    return user_dict
+
+STATS_MAX_VIDEOS = 1000
+
+@router.get("/{user_id}/stats/detailed")
+async def get_user_detailed_stats(
+    user_id: str,
+    current_user: str = Depends(get_current_active_user)
+):
+    """
+    Get detailed statistics about a user
+    
+    Includes:
+    - Total video views
+    - Total likes received
+    - Engagement rate
+    - Growth metrics
+    - Content categories
+    """
+    db = get_database()
+    target_oid = _parse_object_id(user_id)
+    
+    # Verify user exists
+    user = await db.users.find_one({"_id": target_oid})
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    # Aggregate video statistics
+    pipeline = [
+        {"$match": {
+            "creator_id": target_oid, 
+            "is_active": True,
+            "$and": [
+                        {
+            "$or": [
+                {"isReadyToStream": True},
+                {"isReadyToStream": {"$exists": False}}
+                ]
+            }
+            ]
+            }},
+        {
+            "$group": {
+                "_id": None,
+                "total_videos": {"$sum": 1},
+                "total_views": {"$sum": "$views_count"},
+                "total_likes": {"$sum": "$likes_count"},
+                "total_comments": {"$sum": "$comments_count"},
+                "total_shares": {"$sum": "$shares_count"},
+                "avg_duration": {"$avg": "$duration"},
+                "categories": {"$addToSet": "$category"},
+                "hashtags": {"$push": "$hashtags"}
+            }
+        }
+    ]
+    
+    stats_result = await db.videos.aggregate(pipeline).to_list(1)
+    video_stats = stats_result[0] if stats_result else {
+        "total_videos": 0,
+        "total_views": 0,
+        "total_likes": 0,
+        "total_comments": 0,
+        "total_shares": 0,
+        "avg_duration": 0,
+        "categories": [],
+        "hashtags": []
+    }
+    
+    # Add buffered counts to the totals
+    user_videos = await db.videos.find(
+        {"creator_id": target_oid, "is_active": True}, 
+        {"_id": 1}
+    ).limit(STATS_MAX_VIDEOS).to_list(STATS_MAX_VIDEOS)
+    
+    total_buffered_views = 0
+    total_buffered_likes = 0  
+    total_buffered_comments = 0
+    
+    # Get only the buffered portion (not total), since DB counts are already
+    # included. One lock for the whole pass instead of one per video.
+    async with metrics_buffer._lock:
+        for video in user_videos:
+            video_id = str(video["_id"])
+            total_buffered_views += metrics_buffer.views_buffer.get(video_id, 0)
+            total_buffered_likes += metrics_buffer.likes_buffer.get(video_id, 0)
+            total_buffered_comments += metrics_buffer.comments_buffer.get(video_id, 0)
+    
+    # Add buffered counts to database totals
+    video_stats["total_views"] += total_buffered_views
+    video_stats["total_likes"] += total_buffered_likes
+    video_stats["total_comments"] += total_buffered_comments
+    
+    # Flatten and count hashtags
+    all_hashtags = []
+    for hashtag_list in video_stats.get("hashtags", []):
+        if isinstance(hashtag_list, list):
+            all_hashtags.extend(hashtag_list)
+    
+    hashtag_counts = {}
+    for tag in all_hashtags:
+        hashtag_counts[tag] = hashtag_counts.get(tag, 0) + 1
+    
+    is_owner = current_user == user_id
+    can_see_private = is_owner or await _viewer_is_admin(db, current_user)
+
+    # Sort hashtags by frequency
+    top_hashtags = sorted(hashtag_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+    
+    # Calculate engagement rate
+    total_engagements = (
+        video_stats["total_likes"] + 
+        video_stats["total_comments"] + 
+        video_stats["total_shares"]
+    )
+    engagement_rate = (
+        (total_engagements / video_stats["total_views"] * 100) 
+        if video_stats["total_views"] > 0 else 0
+    )
+    
+    return {
+        "user_id": user_id,
+        "username": user["username"],
+        "account_stats": {
+            "followers_count": user.get("followers_count", 0),
+            "following_count": user.get("following_count", 0),
+            "videos_count": user.get("videos_count", 0),
+            "liked_videos_count": len(user.get("liked_videos", [])),
+            "bookmarked_videos_count": len(user.get("bookmarked_videos", []))
+        },
+        "content_stats": {
+            "total_videos": video_stats["total_videos"],
+            "total_views": video_stats["total_views"],
+            "total_likes": video_stats["total_likes"],
+            "total_comments": video_stats["total_comments"],
+            "total_shares": video_stats["total_shares"],
+            "average_video_duration": round(video_stats["avg_duration"], 2) if video_stats["avg_duration"] else 0,
+            "engagement_rate": round(engagement_rate, 2),
+            "categories": video_stats["categories"],
+            "top_hashtags": [{"tag": tag, "count": count} for tag, count in top_hashtags]
+        },
+        "profile_info": {
+            "is_verified": user.get("is_verified", False),
+            "created_at": user["created_at"].isoformat() if user.get("created_at") else None,
+            "tags": user.get("tags", []),
+            "localization": (user.get("localization") or {}) if can_see_private else {}
+        }
+    }
+
+# Helper function (should already exist from previous updates)
+async def update_user_comments_display_name(db, user_id: str, new_display_name: str):
+    """Update display name in all user's comments"""
+    try:
+        result = await db.comments.update_many(
+            {"user_id": ObjectId(user_id)},
+            {
+                "$set": {
+                    "user_display_name": new_display_name,
+                    "updated_at": datetime.utcnow()
+                }
+            }
+        )
+        logger.info(f"Updated {result.modified_count} comments with new display name for user {user_id}")
+    except Exception as e:
+        logger.error(f"Failed to update comments display name: {e}")
+
+@router.post("/", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+async def create_user(
+    user: UserCreate,
+    current_user: str = Depends(get_current_active_user),
+):
+    """Create a new user (admin only).
+
+    This endpoint lets the caller choose `user_type`, including admin, so it
+    must never be reachable without an admin login: an open version let anyone
+    mint an admin account and then ban users or delete any video. Regular
+    signups go through POST /auth/register, which always creates a standard
+    account.
+    """
+    db = get_database()
+
+    requesting_user = await db.users.find_one(
+        {"_id": ObjectId(current_user)}, {"user_type": 1}
+    )
+    if not requesting_user or requesting_user.get("user_type") != UserType.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin privileges required to create users"
+        )
+
+    ensure_not_disposable_email(user.email)
+    
+    # Check if username or email already exists
+    existing_user = await db.users.find_one({
+        "$or": [
+            {"username": user.username},
+            {"email": user.email}
+        ]
+    })
+    
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username or email already registered"
+        )
+    
+    # Generate verification token
+    verification_data = create_verification_token(user.email)
+    
+    # Create user document
+    user_doc = {
+        **user.dict(exclude={"password"}),
+        "password_hash": get_password_hash(user.password),
+        "created_at": datetime.utcnow(),
+        "updated_at": datetime.utcnow(),
+        "is_active": True,
+        "is_verified": False,  # Not verified by default
+        "verification_token": verification_data["token"],
+        "verification_token_expires": verification_data["expires"],
+        "verified_at": None,
+        "followers_count": 0,
+        "following_count": 0,
+        "videos_count": 0,
+        "likes_count": 0,
+        "gender": user.gender,
+        "date_of_birth": user.date_of_birth,
+        "tags": user.tags if user.tags else []
+    }
+    
+    # Add type-specific fields
+    if user.user_type == UserType.STANDARD:
+        user_doc.update({
+            "bookmarked_videos": [],
+            "liked_videos": [],
+            "following": [],
+            "followers": []
+        })
+    
+    result = await db.users.insert_one(user_doc)
+    user_doc["_id"] = str(result.inserted_id)
+    
+    return UserResponse(**user_doc)
+
+@router.get("/", response_model=List[UserResponse])
+async def get_users(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+    user_type: Optional[UserType] = None,
+    current_user: str = Depends(get_current_active_user),
+):
+    """Get all users with pagination (login required).
+
+    Contact and demographic fields are only included for the viewer's own
+    entry, or for every entry when the viewer is an admin.
+    """
+    db = get_database()
+    viewer_is_admin = await _viewer_is_admin(db, current_user)
+    
+    query = {"is_active": True}
+    if user_type:
+        query["user_type"] = user_type
+    
+    cursor = db.users.find(query).skip(skip).limit(limit)
+    users = []
+    async for user in cursor:
+        user["_id"] = str(user["_id"])
+        if not viewer_is_admin and user["_id"] != current_user:
+            _strip_private_fields(user)
+        users.append(UserResponse(**user))
+    
+    return users
+
+@router.get("/{user_id}", response_model=UserResponse)
+async def get_user(
+    user_id: str,
+    viewer: Optional[str] = Depends(get_optional_viewer),
+):
+    """Get a specific user by ID (public; private fields only for owner/admin)"""
+    db = get_database()
+    target_oid = _parse_object_id(user_id)
+    
+    user = await db.users.find_one({"_id": target_oid})
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    user["_id"] = str(user["_id"])
+    if viewer != user["_id"] and not await _viewer_is_admin(db, viewer):
+        _strip_private_fields(user)
+    return UserResponse(**user)
+
+@router.put("/{user_id}", response_model=UserResponse)
+async def update_user(
+    user_id: str,
+    user_update: UserUpdate,
+    current_user: str = Depends(get_current_active_user)
+):
+    """Update a user (only the user themselves can update)"""
+    db = get_database()
+    target_oid = _parse_object_id(user_id)
+    
+    # Verify user is updating their own profile
+    if user_id != current_user:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Can only update your own profile"
+        )
+    
+    # Check for username uniqueness if username is being updated
+    if user_update.username is not None:
+        # Keep original case for username
+        user_update.username = user_update.username.strip()
+    
+    current_user_doc = await db.users.find_one({"_id": target_oid})
+    if not current_user_doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    # Same name rules as registration, applied only when the value changes.
+    new_username = user_update.username
+    if new_username is not None and new_username == current_user_doc.get("username"):
+        new_username = None
+    new_display_name = user_update.display_name
+    if new_display_name is not None and new_display_name == current_user_doc.get("display_name"):
+        new_display_name = None
+    _check_profile_names(username=new_username, display_name=new_display_name)
+    
+    if new_username is not None:
+        # Check if the new username is already taken
+        existing_user = await db.users.find_one({
+            "username": new_username,
+            "_id": {"$ne": target_oid}  # Exclude current user
+        })
+        
+        if existing_user:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Username is already taken"
+            )
+    
+    update_data = {
+        k: v for k, v in user_update.dict(exclude_unset=True).items()
+    }
+    update_data["updated_at"] = datetime.utcnow()
+    
+    result = await db.users.update_one(
+        {"_id": target_oid},
+        {"$set": update_data}
+    )
+    
+    if result.matched_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    user = await db.users.find_one({"_id": target_oid})
+    user["_id"] = str(user["_id"])
+    return UserResponse(**user)
+
+@router.post("/{user_id}/follow", status_code=status.HTTP_200_OK)
+async def follow_user(
+    user_id: str,
+    current_user: str = Depends(get_current_active_user),
+    background_tasks: BackgroundTasks = None,
+):
+    """Follow a user"""
+    db = get_database()
+    target_oid = _parse_object_id(user_id)
+    me_oid = _parse_object_id(current_user)
+    
+    if target_oid == me_oid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot follow yourself"
+        )
+    
+    # Check if target user exists
+    target_user = await db.users.find_one({"_id": target_oid})
+    if not target_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    # Add to following list only if not already there. The filter makes the
+    # check and the write one atomic step, so double taps / concurrent
+    # requests can't count the same follow twice.
+    result = await db.users.update_one(
+        {"_id": me_oid, "following": {"$ne": target_oid}},
+        {
+            "$addToSet": {"following": target_oid},
+            "$inc": {"following_count": 1}
+        }
+    )
+    if result.modified_count != 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Already following this user"
+        )
+    
+    # Add to followers list
+    await db.users.update_one(
+        {"_id": target_oid, "followers": {"$ne": me_oid}},
+        {
+            "$addToSet": {"followers": me_oid},
+            "$inc": {"followers_count": 1}
+        }
+    )
+
+    current_user_doc = await db.users.find_one(
+        {"_id": me_oid}, {"display_name": 1, "username": 1, "profile_picture": 1}
+    ) or {}
+
+    await db.notifications.insert_one({
+        "recipient_id": target_oid,
+        "type": "follow",
+        "user_id": me_oid,
+        "post_id": None,
+        "date": datetime.utcnow(),
+    })
+
+    if background_tasks is not None:
+        display_name = current_user_doc.get("display_name") or current_user_doc.get("username") or "Someone"
+        username = current_user_doc.get("username") or "unknown"
+        profile_image = current_user_doc.get("profile_picture")
+        recipient_tokens = target_user.get("expo_push_tokens") or []
+        for token in recipient_tokens:
+            background_tasks.add_task(
+                send_push_message,
+                token,
+                "Tap to view their profile",
+                {"follower_id": str(current_user)},
+                f"{display_name}(@{username}) started following you",
+                profile_image,
+            )
+    
+    return {"message": "Successfully followed user"}
+
+@router.delete("/{user_id}/follow", status_code=status.HTTP_200_OK)
+async def unfollow_user(
+    user_id: str,
+    current_user: str = Depends(get_current_active_user)
+):
+    """Unfollow a user"""
+    db = get_database()
+    target_oid = _parse_object_id(user_id)
+    me_oid = _parse_object_id(current_user)
+    
+    if target_oid == me_oid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot unfollow yourself"
+        )
+    
+    if not await db.users.find_one({"_id": target_oid}, {"_id": 1}):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    # Remove from following list only if actually following (atomic check).
+    result = await db.users.update_one(
+        {"_id": me_oid, "following": target_oid},
+        {
+            "$pull": {"following": target_oid},
+            "$inc": {"following_count": -1}
+        }
+    )
+    if result.modified_count != 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Not following this user"
+        )
+    
+    # Remove from followers list
+    await db.users.update_one(
+        {"_id": target_oid, "followers": me_oid},
+        {
+            "$pull": {"followers": me_oid},
+            "$inc": {"followers_count": -1}
+        }
+    )
+
+    await db.notifications.delete_one({
+        "type": "follow",
+        "recipient_id": target_oid,
+        "user_id": me_oid,
+    })
+
+    return {"message": "Successfully unfollowed user"}
+
 @router.get("/{user_id}/relationships", response_model=List[FollowerResponse])
 async def get_user_relationships_endpoint(
     user_id: str,
     relationship_type: RelationshipType,
-    skip: Optional[int] = None,
-    limit: Optional[int] = None,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=100),
     current_user: str = Depends(get_current_active_user),
 ):
-    """Get list of user relationships (followers or following). If skip and limit are not provided, returns all."""
+    """Get a page of user relationships (followers or following); at most 100 per request."""
     db = get_database()
     
     # Validate user_id format
@@ -1865,15 +1993,14 @@ async def get_user_relationships_endpoint(
     if not relationship_ids:
         return []
     
-    # Apply pagination only if skip and limit are provided
-    if skip is not None and limit is not None:
-        relationship_ids = relationship_ids[skip:skip + limit]
+    # Always paginate so a huge follower list can't be fetched in one call
+    relationship_ids = relationship_ids[skip:skip + limit]
     
     # Get relationship details using the reusable function
     relationships = await get_user_relationships(
         db,
         relationship_ids,
-        ObjectId(current_user)
+        _parse_object_id(current_user)
     )
     
     return relationships

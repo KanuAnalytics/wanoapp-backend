@@ -14,10 +14,38 @@ from recombee_api_client.api_requests import SetItemValues
 
 from app.core.database import get_database
 from app.services.recombee_service import recombee_send
+from app.services.upload_DO import extract_stream_uid
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_THUMBNAIL = "https://wano-africadev.lon1.digitaloceanspaces.com/wanoafrica-dospaces-key/profile-pictures/thumbnail_placeholder.png"
+
+
+def post_stream_uid(remote_url_cf: Optional[str], remote_url: Optional[str] = None) -> Optional[str]:
+    """The Cloudflare Stream UID a post plays, stored on the video as `stream_uid`."""
+    return extract_stream_uid(remote_url_cf) or extract_stream_uid(remote_url)
+
+
+def stream_uid_exact_query(stream_uid: str) -> dict:
+    """Videos whose stored stream_uid is this UID, or (older docs without
+    stream_uid) whose playback URL has it as its first path segment."""
+    anchored = {"$regex": f"^https?://[^/]+/{re.escape(stream_uid)}(/|$)"}
+    return {"$or": [
+        {"stream_uid": stream_uid},
+        {"remoteUrl_CF": anchored},
+        {"remoteUrl": anchored},
+    ]}
+
+
+def stream_uid_reference_query(stream_uid: str) -> dict:
+    """Anything that mentions the UID anywhere, for deciding whether deleting
+    the stream is safe (errs towards keeping it)."""
+    loose = {"$regex": re.escape(stream_uid)}
+    return {"$or": [
+        {"stream_uid": stream_uid},
+        {"remoteUrl_CF": loose},
+        {"remoteUrl": loose},
+    ]}
 
 
 async def create_video_post(
@@ -91,6 +119,8 @@ async def create_video_post(
         "duration": duration,
         "remoteUrl": remote_url,
         "remoteUrl_CF": remote_url_cf,
+        # Exact-match key for the Cloudflare webhook and stream cleanup.
+        "stream_uid": None if is_photo_post else post_stream_uid(remote_url_cf, remote_url),
         "media_type": media_type,
         "images": images or [],
         "type": media_type,

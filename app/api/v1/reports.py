@@ -5,8 +5,9 @@ Video reporting API endpoints
 """
 
 from typing import List, Optional
-from fastapi import APIRouter, HTTPException, Depends, status, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends, status, Query
 from bson import ObjectId
+from pymongo.errors import DuplicateKeyError
 from datetime import datetime
 from app.models.report import VideoReport, ReportCreate, ReportResponse
 from app.core.database import get_database
@@ -18,10 +19,44 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+REPORT_NOTIFICATION_EMAIL = "eilmer@wanoafrica.com"
+
+
+class CreatorReportResponse(ReportResponse):
+    """Report as the video's creator sees it: the reporter stays anonymous."""
+    reporter_id: Optional[str] = None
+
+
+async def _is_admin(db, user_id: str) -> bool:
+    user = await db.users.find_one({"_id": ObjectId(user_id)}, {"user_type": 1})
+    return bool(user) and str(user.get("user_type", "")).lower() == "admin"
+
+
+async def _send_report_email(video: dict, reporter_id: str, video_id: str):
+    """Background task: notify the admin inbox about a new report. Never raises."""
+    try:
+        db = get_database()
+        creator = await db.users.find_one({"_id": video.get("creator_id")})
+        reporter = await db.users.find_one({"_id": ObjectId(reporter_id)})
+        if creator and reporter:
+            video_link = f"https://share.wanoafrica.com/pages/feed?videoId={video_id}&single=true"
+            await email_service.send_report_notification(
+                to_email=REPORT_NOTIFICATION_EMAIL,
+                creator=creator,
+                reporter=reporter,
+                video=video,
+                video_link=video_link
+            )
+        else:
+            logger.warning("Report notification email skipped: creator or reporter not found.")
+    except Exception as e:
+        logger.warning(f"Report notification email failed: {str(e)}")
+
 @router.post("/videos/{video_id}/report", response_model=ReportResponse, status_code=status.HTTP_201_CREATED)
 async def report_video(
     video_id: str,
     report_data: ReportCreate,
+    background_tasks: BackgroundTasks,
     current_user: str = Depends(get_current_active_user)
 ):
     """
@@ -53,10 +88,12 @@ async def report_video(
             detail="Video not found"
         )
     
-    # Check if user has already reported this video
+    # Check if user already has an open report on this video (a withdrawn
+    # report doesn't stop them reporting again)
     existing_report = await db.reports.find_one({
         "video_id": ObjectId(video_id),
-        "reporter_id": ObjectId(current_user)
+        "reporter_id": ObjectId(current_user),
+        "is_active": True
     })
     
     if existing_report:
@@ -95,6 +132,12 @@ async def report_video(
     try:
         result = await db.reports.insert_one(report_doc)
         report_id = str(result.inserted_id)
+    except DuplicateKeyError:
+        # Lost a race with a concurrent identical report.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You have already reported this video"
+        )
     except Exception as e:
         logger.error(f"Failed to create report: {e}")
         raise HTTPException(
@@ -102,7 +145,7 @@ async def report_video(
             detail="Failed to submit report"
         )
     
-    # Increment report count on video
+    # Increment report count on video (only reached after a successful insert)
     await db.videos.update_one(
         {"_id": ObjectId(video_id)},
         {"$inc": {"report_count": 1}}
@@ -113,38 +156,24 @@ async def report_video(
     report_doc["video_id"] = video_id
     report_doc["reporter_id"] = current_user
 
-    # Send report notification email (non-blocking)
-    try:
-        creator = await db.users.find_one({"_id": video.get("creator_id")})
-        reporter = await db.users.find_one({"_id": ObjectId(current_user)})
-        if creator and reporter:
-            video_link = f"https://share.wanoafrica.com/pages/feed?videoId={video_id}&single=true"
-            await email_service.send_report_notification(
-                to_email="eilmer@wanoafrica.com",
-                creator=creator,
-                reporter=reporter,
-                video=video,
-                video_link=video_link
-            )
-        else:
-            logger.warning("Report notification email skipped: creator or reporter not found.")
-    except Exception as e:
-        logger.warning(f"Report notification email failed: {str(e)}")
-    
+    # Send report notification email after the response (doesn't hold up the request)
+    background_tasks.add_task(_send_report_email, video, current_user, video_id)
+
     return ReportResponse(**report_doc)
 
-@router.get("/videos/{video_id}/reports", response_model=List[ReportResponse])
+@router.get("/videos/{video_id}/reports", response_model=List[CreatorReportResponse])
 async def get_video_reports(
     video_id: str,
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
-    status_filter: Optional[str] = Query(None, description="Filter by report status"),
+    status_filter: Optional[str] = Query(None, max_length=50, description="Filter by report status"),
     current_user: str = Depends(get_current_active_user)
 ):
     """
     Get reports for a specific video
     
-    - Only video creator can see reports for their videos
+    - Only video creator (or an admin) can see reports for their videos
+    - reporter_id is only included for admins; creators get null
     - Supports pagination and status filtering
     """
     db = get_database()
@@ -168,7 +197,8 @@ async def get_video_reports(
             detail="Video not found"
         )
     
-    if str(video["creator_id"]) != current_user:
+    is_admin = await _is_admin(db, current_user)
+    if str(video.get("creator_id")) != current_user and not is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You can only view reports for your own videos"
@@ -190,8 +220,11 @@ async def get_video_reports(
     async for report in cursor:
         report["_id"] = str(report["_id"])
         report["video_id"] = str(report["video_id"])
-        report["reporter_id"] = str(report["reporter_id"])
-        reports.append(ReportResponse(**report))
+        if is_admin:
+            report["reporter_id"] = str(report["reporter_id"])
+        else:
+            report.pop("reporter_id", None)
+        reports.append(CreatorReportResponse(**report))
     
     return reports
 
@@ -199,7 +232,7 @@ async def get_video_reports(
 async def get_my_reports(
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
-    status_filter: Optional[str] = Query(None, description="Filter by report status"),
+    status_filter: Optional[str] = Query(None, max_length=50, description="Filter by report status"),
     current_user: str = Depends(get_current_active_user)
 ):
     """
@@ -277,9 +310,10 @@ async def withdraw_report(
             detail="Only pending reports can be withdrawn"
         )
     
-    # Soft delete the report
-    await db.reports.update_one(
-        {"_id": ObjectId(report_id)},
+    # Soft delete the report; only the request that actually withdraws it
+    # lowers the video's report count.
+    result = await db.reports.update_one(
+        {"_id": ObjectId(report_id), "is_active": True, "status": "pending"},
         {
             "$set": {
                 "is_active": False,
@@ -289,11 +323,11 @@ async def withdraw_report(
         }
     )
     
-    # Decrement report count on video
-    await db.videos.update_one(
-        {"_id": report["video_id"]},
-        {"$inc": {"report_count": -1}}
-    )
+    if result.modified_count:
+        await db.videos.update_one(
+            {"_id": report["video_id"], "report_count": {"$gt": 0}},
+            {"$inc": {"report_count": -1}}
+        )
 
 @router.get("/reports/{report_id}", response_model=ReportResponse)
 async def get_report_details(

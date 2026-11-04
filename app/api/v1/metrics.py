@@ -5,23 +5,22 @@ app/api/v1/metrics.py
 
 """
 from fastapi import APIRouter, Depends
-from app.api.deps import get_current_active_user
+from app.api.deps import require_admin
 from app.services.metrics_service import metrics_buffer
 
 router = APIRouter()  # Make sure this line exists!
 
 @router.post("/flush")
 async def flush_metrics(
-    current_user: str = Depends(get_current_active_user)
+    current_user: str = Depends(require_admin)
 ):
     """Manually flush all buffered metrics (admin only)"""
-    # In production, check if user is admin
     await metrics_buffer.flush_all()
     return {"message": "Metrics flushed successfully"}
 
 @router.get("/buffer-status")
 async def get_buffer_status(
-    current_user: str = Depends(get_current_active_user)
+    current_user: str = Depends(require_admin)
 ):
     """Get current buffer status (admin only)"""
     # Get some statistics about the buffer

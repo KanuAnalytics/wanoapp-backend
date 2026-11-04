@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     MONGODB_URI: str
     # App
     APP_NAME: str = "WanoApp"
-    DEBUG: bool = True
+    DEBUG: bool = False
     SECRET_KEY: str
     
     # Database
@@ -45,6 +45,17 @@ class Settings(BaseSettings):
 
 
     BACKEND_URL: str = "https://devbe.wanoafrica.com"
+
+    # Share links (/v/{id}), link previews and app deep links.
+    # SHARE_BASE_URL is the public origin the share pages are served from.
+    SHARE_BASE_URL: str = "https://wanoafrica.com"
+    APP_SCHEME: str = "wano"                  # custom scheme, e.g. wano://v/{id}
+    IOS_APP_IDS: str = ""                     # comma-separated "TEAMID.bundle.id"
+    IOS_APP_STORE_ID: str = ""                # numeric App Store id (Smart App Banner)
+    IOS_APP_STORE_URL: str = ""
+    ANDROID_PACKAGE: str = ""                 # e.g. com.wanoafrica.app
+    ANDROID_SHA256_FINGERPRINTS: str = ""     # comma-separated signing cert fingerprints
+    ANDROID_PLAY_STORE_URL: str = ""
     FRONTEND_URL: str = "http://localhost:3000"
     
     # Redis (optional)

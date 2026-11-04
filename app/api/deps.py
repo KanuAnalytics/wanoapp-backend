@@ -1,5 +1,6 @@
 #app/api/deps.py
 
+from datetime import datetime, timezone
 from typing import Optional
 from fastapi import Depends, HTTPException, status, Query
 from fastapi.security import OAuth2PasswordBearer
@@ -8,9 +9,9 @@ from app.core.config import settings
 from app.core.database import get_database
 from bson import ObjectId
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/v1/auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/v1/auth/login/json")
 oauth2_scheme_optional = OAuth2PasswordBearer(
-    tokenUrl="api/v1/auth/login",
+    tokenUrl="api/v1/auth/login/json",
     auto_error=False,
 )
 
@@ -32,7 +33,54 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
     
     return user_id
 
-async def get_current_active_user(current_user: str = Depends(get_current_user)):
+
+def _token_issued_at(token: Optional[str]) -> Optional[int]:
+    """Return the token's `iat` (epoch seconds), or None if absent/undecodable.
+
+    get_current_user has already verified the signature; this only reads the
+    claim so get_current_user can keep returning a bare user_id string."""
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+    except JWTError:
+        return None
+    iat = payload.get("iat")
+    try:
+        return int(iat) if iat is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _ensure_token_not_revoked(user: dict, token: Optional[str]) -> None:
+    """401 if the token was issued before the user's last password change.
+
+    Tokens issued before `iat` existed are treated as issued at epoch, but
+    only matter when password_changed_at is set, so users who never changed
+    their password keep their old tokens."""
+    changed_at = user.get("password_changed_at")
+    if not isinstance(changed_at, datetime):
+        return
+    if changed_at.tzinfo is None:
+        changed_at = changed_at.replace(tzinfo=timezone.utc)
+    iat = _token_issued_at(token)
+    if iat is None:
+        iat = 0
+    # iat has whole-second precision; compare at the same precision so a
+    # token minted in the same second as the change (e.g. login right after
+    # reset) is not rejected.
+    if iat < int(changed_at.timestamp()):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
+async def get_current_active_user(
+    current_user: str = Depends(get_current_user),
+    token: str = Depends(oauth2_scheme),
+):
     """Verify user is active"""
     db = get_database()
     user = await db.users.find_one({"_id": ObjectId(current_user), "is_active": True})
@@ -42,7 +90,9 @@ async def get_current_active_user(current_user: str = Depends(get_current_user))
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Inactive user"
         )
-    
+
+    _ensure_token_not_revoked(user, token)
+
     return current_user
 
 async def get_optional_active_user(
@@ -71,17 +121,33 @@ async def get_optional_active_user(
             detail="Inactive user"
         )
 
+    _ensure_token_not_revoked(user, token)
+
     return user_id
 
 async def get_verified_user(current_user: str = Depends(get_current_active_user)):
     """Get current user and verify they have verified email"""
     db = get_database()
     user = await db.users.find_one({"_id": ObjectId(current_user)})
-    
+
+    # Deliberately NOT enforced (review M11/M12): accounts created before
+    # registration required a verified OTP were never marked is_verified, so
+    # turning this check on would lock out the existing user base. Enable it
+    # only after backfilling is_verified for legacy accounts (or migrating
+    # them through a verification flow).
     # if not user.get("is_verified", False):
     #     raise HTTPException(
     #         status_code=status.HTTP_403_FORBIDDEN,
     #         detail="Email verification required. Please check your email and verify your account."
     #     )
     
+    return current_user
+
+
+async def require_admin(current_user: str = Depends(get_current_active_user)) -> str:
+    """Allow only admin accounts (401 if not logged in, 403 if not admin)."""
+    db = get_database()
+    user = await db.users.find_one({"_id": ObjectId(current_user)}, {"user_type": 1})
+    if not user or str(user.get("user_type", "")).lower() != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
     return current_user

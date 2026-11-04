@@ -1,4 +1,5 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from app.api.deps import require_admin
 from app.core.database import get_database
 from app.core.config import settings
 from bson import json_util
@@ -13,7 +14,7 @@ router = APIRouter()
 
 
 @router.post("/test-first-item")
-async def get_first_video():
+async def get_first_video(current_user: str = Depends(require_admin)):
     db = get_database()
     videos = await db.videos.find().sort("created_at", -1).to_list(length=10)
     return json.loads(json_util.dumps(videos))
@@ -41,7 +42,7 @@ async def fetch_cf_dimensions(video_id: str) -> tuple[int, int] | None:
 
 
 @router.post("/ingest-videos")
-async def ingest_videos():
+async def ingest_videos(current_user: str = Depends(require_admin)):
     db = get_database()
     videos = await db.videos.find({"recombee": {"$ne": True}, "privacy": "public", "is_active": True}).sort("created_at", -1).to_list(length=None)
 
@@ -83,7 +84,7 @@ async def ingest_videos():
 
 
 @router.post("/backfill-hashtags")
-async def backfill_hashtags():
+async def backfill_hashtags(current_user: str = Depends(require_admin)):
     db = get_database()
     videos = await db.videos.find({"supports_landscape": {"$exists": False}}).sort("created_at", -1).skip(0).to_list(length=1100)
 
