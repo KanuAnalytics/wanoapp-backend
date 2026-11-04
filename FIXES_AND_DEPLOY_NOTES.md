@@ -22,8 +22,9 @@ Run the tests on Python 3.11:
    signups and account deletion can still fail.
 2. **Add the `stream_uid` index.** Run `db.videos.createIndex({stream_uid: 1}, {partialFilterExpression: {stream_uid: {$type: "string"}}})`.
    Optional: `pending_videos {status: 1, updated_at: 1}`.
-3. **Set the new env var `LAMBDA_CALLBACK_SECRET`.** Use the same value on the backend and on
-   the stitch Lambda. Without it, the Lambda's presign call gets a 401 and stitching fails.
+3. **Deploy the updated `lambda.mjs` to the stitch Lambda.** No shared secret is needed:
+   `/video/v2/presigned-upload` stays open to callers without a token, as before, because the
+   Lambda calls it without credentials.
    - Optional, Lambda only: `EXTRA_MEDIA_HOSTS`, a comma-separated list of extra hosts the
      Lambda may fetch from.
 4. **Check `CLOUDFLARE_STREAM_WEBHOOK_SECRET` is set.** If it is missing, the webhook now
@@ -50,7 +51,7 @@ Run the tests on Python 3.11:
   REST, GraphQL and in the feeds.
 - **Views are counted only by `POST /videos/{id}/watch`.** `GET /videos/{id}` no longer counts
   a view.
-- **Upload endpoints need login.** Uploads are capped at 200 MB for video, 20 MB for images and
+- **Upload endpoints need login** (except `/video/v2/presigned-upload`, which the Lambda calls without one). Uploads are capped at 200 MB for video, 20 MB for images and
   50 MB for audio; presigned uploads at 2 GB. SVG is rejected.
 - **Stitch input is restricted.** Clips must be Cloudflare Stream URLs and audio must be on the
   Spaces CDN or be a library song. The limit is 20 clips.

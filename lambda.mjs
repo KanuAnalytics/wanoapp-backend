@@ -11,8 +11,6 @@ const FFPROBE_PATH = "/opt/bin/ffprobe";
 const TUS_CHUNK_SIZE = 50 * 1024 * 1024; // 50MB
 const HLS_DOWNLOAD_CONCURRENCY = 8;
 const BACKEND_API_URL = process.env.BACKEND_API_URL;
-// Sent to /video/v2/presigned-upload; must equal the backend's LAMBDA_CALLBACK_SECRET.
-const LAMBDA_CALLBACK_SECRET = process.env.LAMBDA_CALLBACK_SECRET;
 const MAX_CLIPS = 20;
 
 // Every URL this function fetches (clips, HLS playlists/segments, music) must be
@@ -248,11 +246,9 @@ function buildConcatFilterArgs(clips, outputPath, music = null, videoVolume = 1)
 }
 
 async function getPresignedUploadUrl(filename, fileSize, folder = "videos") {
-  const headers = { "Content-Type": "application/json" };
-  if (LAMBDA_CALLBACK_SECRET) headers["X-Lambda-Callback-Secret"] = LAMBDA_CALLBACK_SECRET;
   const res = await fetch(`${BACKEND_API_URL}/video/v2/presigned-upload`, {
     method: "POST",
-    headers,
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ filename, fileSize, folder }),
   });
   if (!res.ok) throw new Error(`Presign request failed: ${res.status} ${await res.text()}`);

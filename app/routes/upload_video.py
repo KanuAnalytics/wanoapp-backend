@@ -44,7 +44,6 @@ FIRST_VIDEO_WELCOME_COMMENT = (
 MAX_PRESIGN_FILE_SIZE = 2 * 1024 * 1024 * 1024  # 2 GB
 UPLOAD_READ_CHUNK = 1024 * 1024
 WEBHOOK_TOLERANCE_SECONDS = 300
-LAMBDA_SECRET_HEADER = "x-lambda-callback-secret"
 _STREAM_UID_RE = re.compile(r"^[A-Za-z0-9]{1,64}$")
 
 
@@ -55,24 +54,14 @@ class PresignRequest(BaseModel):
     folder: Optional[str] = Field('videos', max_length=64, pattern=r"^[A-Za-z0-9_-]*$")
 
 
-def _lambda_secret_ok(request: Request) -> bool:
-    """The editVideo Lambda authenticates with a shared secret (LAMBDA_CALLBACK_SECRET),
-    not a user token. Unset secret means no Lambda access."""
-    expected = os.environ.get("LAMBDA_CALLBACK_SECRET") or ""
-    supplied = request.headers.get(LAMBDA_SECRET_HEADER) or ""
-    return bool(expected) and hmac.compare_digest(expected.encode(), supplied.encode())
+async def get_uploader(token: Optional[str] = Depends(oauth2_scheme_optional)) -> str:
+    """The signed-in user, or "anonymous" when no token is sent.
 
-
-async def get_uploader(request: Request, token: Optional[str] = Depends(oauth2_scheme_optional)) -> str:
-    """A verified user, or the editVideo Lambda presenting the shared secret."""
-    if _lambda_secret_ok(request):
-        return "lambda"
+    The editVideo Lambda calls /v2/presigned-upload without credentials, so
+    that route stays open to anonymous callers, as it was before. A token
+    that is sent must still be valid."""
     if not token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        return "anonymous"
     user_id = await get_current_user(token)
     if not ObjectId.is_valid(user_id):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Could not validate credentials")
@@ -177,7 +166,7 @@ async def get_presigned_upload_url_v2(
 ):
     """
     Get a Cloudflare Stream TUS upload URL. Called by the app (user token) and
-    by the editVideo Lambda (shared-secret header).
+    by the editVideo Lambda (no credentials).
     """
     try:
         result = await asyncio.to_thread(

@@ -96,7 +96,8 @@ async def test_C3_C4_admin_endpoints_reject_anonymous_and_standard(client, db, p
 @pytest.mark.parametrize("path,kwargs", [
     ("/video/upload", {"files": {"video": ("a.mp4", b"x", "video/mp4")}}),
     ("/video/presigned-upload", {"json": {"filename": "a.mp4", "fileSize": 10}}),
-    ("/video/v2/presigned-upload", {"json": {"filename": "a.mp4", "fileSize": 10}}),
+    # /video/v2/presigned-upload is deliberately left open: the editVideo
+    # Lambda calls it without credentials.
     ("/video/check-stream-status", {"json": {"videoId": "x", "uId": "y"}}),
 ])
 async def test_C5_upload_routes_require_login(client, db, path, kwargs):
