@@ -32,6 +32,16 @@
         "production": "Ondore Media",
         "distributor": "Wano TV"
       },
+      "makers": [
+        {
+          "user_id": "6845fdb76cd85e35c8f722f6",
+          "role": "Filmmaker"
+        },
+        {
+          "user_id": "69d30fd5b2e8ecd62ce39905",
+          "role": "Featured in film"
+        }
+      ],
       "poster": "https://wano-africadev.lon1.cdn.digitaloceanspaces.com/wanoafrica-dospaces-key/wano-tv/one-field-v2/ONE_FIELD_Poster_9x16_1080.jpg",
       "backdrop": "https://wano-africadev.lon1.cdn.digitaloceanspaces.com/wanoafrica-dospaces-key/wano-tv/one-field-v2/ONE_FIELD_Poster_9x16_1080.jpg",
       "video_url": "https://wano-africadev.lon1.cdn.digitaloceanspaces.com/wanoafrica-dospaces-key/wano-tv/one-field-v2/master.m3u8",
@@ -72,6 +82,16 @@
         "production": "Ondore Media",
         "distributor": "Wano TV"
       },
+      "makers": [
+        {
+          "user_id": "6845fdb76cd85e35c8f722f6",
+          "role": "Filmmaker"
+        },
+        {
+          "user_id": "6a4e96aa1a1c9b6d0fc70af3",
+          "role": "Featured in film"
+        }
+      ],
       "poster": "https://wano-africadev.lon1.cdn.digitaloceanspaces.com/wanoafrica-dospaces-key/wano-tv/middleton/MIDDLETON_poster_9x16_1080x1920.jpg",
       "backdrop": "https://wano-africadev.lon1.cdn.digitaloceanspaces.com/wanoafrica-dospaces-key/wano-tv/middleton/MIDDLETON_poster_9x16_1080x1920.jpg",
       "video_url": "https://wano-africadev.lon1.cdn.digitaloceanspaces.com/wanoafrica-dospaces-key/wano-tv/middleton/master.m3u8",

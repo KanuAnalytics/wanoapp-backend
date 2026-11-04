@@ -35,6 +35,19 @@ class TvCredits(BaseModel):
     distributor: str
 
 
+class TvMaker(BaseModel):
+    """
+    A Wano user credited on a title, shown under "Meet the Makers". The title
+    stores only `user_id` and `role`; the rest is read from the user's account
+    when the catalogue is served, so it follows profile changes.
+    """
+    user_id: str
+    username: str
+    display_name: Optional[str] = None
+    profile_picture: Optional[str] = None
+    role: str = Field(..., description="e.g. Filmmaker, Featured in film")
+
+
 class TvTitleResponse(BaseModel):
     """A movie or series as the app shows it."""
     id: str
@@ -56,6 +69,7 @@ class TvTitleResponse(BaseModel):
     featured: bool = False
     popularity: int = 0
     captions: List[TvCaption] = Field(default_factory=list)
+    makers: List[TvMaker] = Field(default_factory=list)
 
 
 class TvGenreResponse(BaseModel):

@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 from datetime import datetime
+from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorClient
 from app.core.config import settings
 
@@ -27,6 +28,14 @@ async def seed():
 
     try:
         for title in data["titles"]:
+            # Makers are Wano users, stored by account id ("Meet the Makers").
+            title = {
+                **title,
+                "makers": [
+                    {"user_id": ObjectId(m["user_id"]), "role": m["role"]}
+                    for m in title.get("makers", [])
+                ],
+            }
             await db.tv_titles.update_one(
                 {"slug": title["slug"]},
                 {

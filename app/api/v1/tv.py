@@ -13,7 +13,7 @@ from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, status
 from app.api.deps import get_current_active_user
 from app.core.database import get_database
-from app.models.tv import TvGenreResponse, TvTitleResponse, TvWatchResponse
+from app.models.tv import TvGenreResponse, TvMaker, TvTitleResponse, TvWatchResponse
 
 router = APIRouter()
 
@@ -21,9 +21,43 @@ router = APIRouter()
 HISTORY_LIMIT = 50
 
 
-def _title_response(doc: dict) -> TvTitleResponse:
-    doc["id"] = str(doc.pop("_id"))
-    return TvTitleResponse(**doc)
+async def _title_responses(db, docs: List[dict]) -> List[TvTitleResponse]:
+    """
+    Builds the responses, filling in each title's makers from their user
+    accounts in one query. Makers whose account is gone or deactivated are
+    left out, so the app never links to a deleted profile.
+    """
+    maker_ids = {
+        maker["user_id"]
+        for doc in docs
+        for maker in doc.get("makers") or []
+    }
+    users = {}
+    if maker_ids:
+        async for user in db.users.find(
+            {"_id": {"$in": list(maker_ids)}, "is_active": True},
+            {"username": 1, "display_name": 1, "profile_picture": 1},
+        ):
+            users[user["_id"]] = user
+
+    responses = []
+    for doc in docs:
+        makers = []
+        for maker in doc.get("makers") or []:
+            user = users.get(maker["user_id"])
+            if not user:
+                continue
+            makers.append(TvMaker(
+                user_id=str(user["_id"]),
+                username=(user.get("username") or "").strip(),
+                display_name=user.get("display_name"),
+                profile_picture=user.get("profile_picture"),
+                role=maker["role"],
+            ))
+        doc = {**doc, "id": str(doc["_id"]), "makers": makers}
+        doc.pop("_id")
+        responses.append(TvTitleResponse(**doc))
+    return responses
 
 
 def _title_object_id(title_id: str) -> ObjectId:
@@ -42,7 +76,7 @@ async def get_titles(current_user: str = Depends(get_current_active_user)):
     docs = await db.tv_titles.find({"is_active": True}).sort(
         [("popularity", -1), ("_id", 1)]
     ).to_list(length=None)
-    return [_title_response(doc) for doc in docs]
+    return await _title_responses(db, docs)
 
 
 @router.get("/genres", response_model=List[TvGenreResponse])
@@ -70,7 +104,7 @@ async def get_history(current_user: str = Depends(get_current_active_user)):
     by_id = {doc["_id"]: doc for doc in docs}
 
     # Keep the history order; skip titles that have since been taken down.
-    return [_title_response(by_id[i]) for i in title_ids if i in by_id]
+    return await _title_responses(db, [by_id[i] for i in title_ids if i in by_id])
 
 
 @router.post("/history/{title_id}", response_model=TvWatchResponse)
