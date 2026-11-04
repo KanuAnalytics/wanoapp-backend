@@ -146,10 +146,11 @@ async def test_C7_deleting_post_does_not_delete_library_song(client, db, calls):
 
 # ---------------------------------------------------------------- High
 
-async def test_H1_tokens_expire():
+async def test_H1_tokens_carry_iat_and_no_expiry():
+    # Tokens deliberately don't expire; iat drives revocation on password change.
     tok = create_access_token({"sub": str(ObjectId())})
     claims = jwt.get_unverified_claims(tok)
-    assert "exp" in claims and "iat" in claims
+    assert "iat" in claims and "exp" not in claims
 
 
 async def test_H1_password_change_revokes_old_tokens(client, db):

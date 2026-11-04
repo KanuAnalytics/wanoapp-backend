@@ -42,8 +42,8 @@ Run the tests on Python 3.11:
   the user must request a new one.
 - **Login throttling.** Login returns 429 after 10 failures in 15 minutes. Banned users can't
   log in.
-- **Tokens expire.** Tokens now carry an expiry (`ACCESS_TOKEN_EXPIRE_MINUTES`, currently
-  180 days). A password reset logs out every existing session.
+- **Tokens still don't expire.** A password reset logs out every existing session (tokens now
+  carry `iat`, checked against the user's last password change).
 - **Profiles are trimmed for other viewers.** `email`, `phone_number`, `date_of_birth` and
   `gender` come back `null` unless you are the owner or an admin. `GET /users/` requires login
   and returns at most 100 users.

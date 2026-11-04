@@ -23,16 +23,15 @@ def get_password_hash(password: str) -> str:
     return pwd_context.hash(password)
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
-    """Create JWT access token with `iat` and `exp` claims.
+    """Create a JWT access token with an `iat` claim and no expiry.
 
-    `iat` lets deps reject tokens issued before a password change
-    (users.password_changed_at)."""
+    Tokens don't expire (as before), so ACCESS_TOKEN_EXPIRE_MINUTES and
+    `expires_delta` are ignored: a short value in the server's env would
+    otherwise sign everyone out. `iat` still lets deps reject tokens issued
+    before a password change (users.password_changed_at)."""
     to_encode = data.copy()
     now = datetime.now(timezone.utc)
-    if expires_delta is None:
-        expires_delta = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.setdefault("iat", int(now.timestamp()))
-    to_encode["exp"] = int((now + expires_delta).timestamp())
     encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
     return encoded_jwt
 
