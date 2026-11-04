@@ -113,6 +113,12 @@ class VideoDetail(BaseModel):
     created_at: Optional[datetime] = None
     url: Optional[VideoUrls] = None
     views_count: Optional[int] = None
+    # What the app needs to start playing a tapped grid tile before the
+    # scoped feed's own request returns.
+    remoteUrl_CF: Optional[str] = None
+    media_type: Optional[str] = None
+    images: List[str] = Field(default_factory=list)
+    supports_landscape: bool = False
 
 class CompleteUserResponse(BaseModel):
     """Complete user response model with ALL fields"""
@@ -973,7 +979,11 @@ async def get_user_complete(
                 title=video.get("title"),
                 thumbnail_url=video.get("urls", {}).get("thumbnail") if video.get("urls") else None,
                 created_at=video.get("created_at"),
-                views_count=video.get("views_count")
+                views_count=video.get("views_count"),
+                remoteUrl_CF=video.get("remoteUrl_CF"),
+                media_type=video.get("media_type"),
+                images=video.get("images") or [],
+                supports_landscape=bool(video.get("supports_landscape")),
             ))
         
         response_data["recent_videos"] = recent_videos
