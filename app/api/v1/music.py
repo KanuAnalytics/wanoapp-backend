@@ -16,6 +16,16 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# Song ids are short app-facing strings (not ObjectIds); anything longer is junk.
+MAX_SONG_ID_LENGTH = 64
+
+
+def _song_id(song_id: str) -> str:
+    song_id = str(song_id)
+    if not song_id or len(song_id) > MAX_SONG_ID_LENGTH:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid song ID")
+    return song_id
+
 
 @router.get("/songs")
 async def get_songs():
@@ -43,6 +53,7 @@ async def get_favorite_songs(current_user: str = Depends(get_current_active_user
 
 @router.post("/songs/{song_id}/favorite")
 async def add_favorite_song(song_id: str, current_user: str = Depends(get_current_active_user)):
+    song_id = _song_id(song_id)
     song = await find_song(song_id)
     if song is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Song not found")
@@ -56,6 +67,7 @@ async def add_favorite_song(song_id: str, current_user: str = Depends(get_curren
 
 @router.delete("/songs/{song_id}/favorite")
 async def remove_favorite_song(song_id: str, current_user: str = Depends(get_current_active_user)):
+    song_id = _song_id(song_id)
     db = get_database()
     await db.users.update_one(
         {"_id": ObjectId(current_user)},

@@ -6,11 +6,34 @@ app/graphql/mutations_folder/video_editor.py
 import strawberry
 import httpx
 import asyncio
-from typing import Dict, Any
+from collections import defaultdict
+from typing import Dict, Any, Set
 from app.graphql.types import ResponseType
 from app.graphql.inputs.video_editor import CompileVideoInput
 from fastapi import HTTPException, BackgroundTasks
 from app.core.config import settings
+
+# Strong references to running compile tasks so they are not garbage
+# collected mid-flight, plus a per-user count of running jobs.
+MAX_CONCURRENT_COMPILES_PER_USER = 2
+_background_tasks: Set[asyncio.Task] = set()
+_running_compiles: Dict[str, int] = defaultdict(int)
+
+
+def _start_compile_task(input: "CompileVideoInput", user_id: str) -> asyncio.Task:
+    _running_compiles[user_id] += 1
+    task = asyncio.create_task(call_video_service_api_background(input, user_id))
+    _background_tasks.add(task)
+
+    def _done(t: asyncio.Task) -> None:
+        _background_tasks.discard(t)
+        _running_compiles[user_id] -= 1
+        if _running_compiles[user_id] <= 0:
+            _running_compiles.pop(user_id, None)
+
+    task.add_done_callback(_done)
+    return task
+
 
 # this is for updating the Deployment
 async def call_video_service_api(input: CompileVideoInput, user_id: str) -> Dict[str, Any]:
@@ -128,25 +151,20 @@ async def call_video_service_api_background(input: CompileVideoInput, user_id: s
 class VideoEditorMutation:
     @strawberry.mutation
     async def compile_video(self, info, input: CompileVideoInput) -> ResponseType:
-        try:
-            # Check authentication
-            user_id = info.context.get("user_id")
-            if not user_id:
-                raise Exception("Authentication required")
-            
-            print(user_id)
-            
-            # Fire and forget - start the background task without waiting
-            asyncio.create_task(call_video_service_api_background(input, user_id))
-            
-            # Return immediately with a success response
-            return ResponseType(
-                message="Video compilation request submitted successfully. Processing in background.",
-                status="accepted"
+        user_id = info.context.get("user_id")
+        if not user_id:
+            raise Exception("Authentication required")
+
+        if _running_compiles.get(user_id, 0) >= MAX_CONCURRENT_COMPILES_PER_USER:
+            raise Exception(
+                f"You already have {MAX_CONCURRENT_COMPILES_PER_USER} videos compiling. "
+                "Please wait for one to finish."
             )
-            
-        except HTTPException:
-            # Re-raise HTTP exceptions
-            raise
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
+
+        # Fire and forget - the task is tracked in _background_tasks
+        _start_compile_task(input, user_id)
+
+        return ResponseType(
+            message="Video compilation request submitted successfully. Processing in background.",
+            status="accepted"
+        )

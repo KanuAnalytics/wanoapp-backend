@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
-import { open, readFile, stat } from "node:fs/promises";
-import { extname } from "node:path";
+import { mkdtemp, open, readFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { extname, join } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
 
@@ -10,6 +11,40 @@ const FFPROBE_PATH = "/opt/bin/ffprobe";
 const TUS_CHUNK_SIZE = 50 * 1024 * 1024; // 50MB
 const HLS_DOWNLOAD_CONCURRENCY = 8;
 const BACKEND_API_URL = process.env.BACKEND_API_URL;
+// Sent to /video/v2/presigned-upload; must equal the backend's LAMBDA_CALLBACK_SECRET.
+const LAMBDA_CALLBACK_SECRET = process.env.LAMBDA_CALLBACK_SECRET;
+const MAX_CLIPS = 20;
+
+// Every URL this function fetches (clips, HLS playlists/segments, music) must be
+// https on one of these hosts. Cloudflare Stream for video, DigitalOcean Spaces
+// for music. EXTRA_MEDIA_HOSTS (comma-separated) adds exact hosts.
+const ALLOWED_HOSTS = new Set([
+  "videodelivery.net",
+  ...(process.env.EXTRA_MEDIA_HOSTS || "").split(",").map((h) => h.trim().toLowerCase()).filter(Boolean),
+]);
+const ALLOWED_HOST_SUFFIXES = [".videodelivery.net", ".cloudflarestream.com", ".digitaloceanspaces.com"];
+
+function assertAllowedUrl(url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error(`Invalid URL: ${url}`);
+  }
+  const host = parsed.hostname.toLowerCase();
+  const allowed = ALLOWED_HOSTS.has(host) || ALLOWED_HOST_SUFFIXES.some((sfx) => host.endsWith(sfx));
+  if (parsed.protocol !== "https:" || !allowed || parsed.username || parsed.password || parsed.port) {
+    throw new Error(`Refusing to fetch ${parsed.protocol}//${host}: not an allowed media host`);
+  }
+  return parsed.href;
+}
+
+// Redirects are not followed, so an allowed host can't bounce the fetch elsewhere.
+async function safeFetch(url) {
+  const res = await fetch(assertAllowedUrl(url), { redirect: "error" });
+  if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`);
+  return res;
+}
 
 const TARGET_WIDTH = 1080;
 const TARGET_HEIGHT = 1920;
@@ -17,20 +52,17 @@ const TARGET_FPS = 30;
 const TARGET_SAMPLE_RATE = 44100;
 
 async function downloadFromUrl(url, destPath) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Failed to download ${url}: ${res.status}`);
+  const res = await safeFetch(url);
   await pipeline(Readable.fromWeb(res.body), createWriteStream(destPath));
 }
 
 async function fetchText(url) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`);
+  const res = await safeFetch(url);
   return res.text();
 }
 
 async function fetchBuffer(url) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`);
+  const res = await safeFetch(url);
   return Buffer.from(await res.arrayBuffer());
 }
 
@@ -52,7 +84,7 @@ function parseMasterManifest(text, masterUrl) {
   const audioLine = audioLines.find((l) => l.includes("DEFAULT=YES")) ?? audioLines[0];
   const audioUrl = audioLine ? new URL(audioLine.match(/URI="([^"]+)"/)[1], masterUrl).href : null;
 
-  return { videoUrl: best.url, audioUrl };
+  return { videoUrl: assertAllowedUrl(best.url), audioUrl: audioUrl ? assertAllowedUrl(audioUrl) : null };
 }
 
 // Saves one HLS track as a single local MP4 (init section followed by every segment, in order).
@@ -61,9 +93,11 @@ async function downloadHlsTrack(playlistUrl, destPath) {
 
   const mapLine = lines.find((l) => l.startsWith("#EXT-X-MAP"));
   if (!mapLine) throw new Error(`Unsupported HLS track (no MP4 init section): ${playlistUrl}`);
-  const initUrl = new URL(mapLine.match(/URI="([^"]+)"/)[1], playlistUrl).href;
+  const initUrl = assertAllowedUrl(new URL(mapLine.match(/URI="([^"]+)"/)[1], playlistUrl).href);
 
-  const segmentUrls = lines.filter((l) => l && !l.startsWith("#")).map((l) => new URL(l, playlistUrl).href);
+  const segmentUrls = lines
+    .filter((l) => l && !l.startsWith("#"))
+    .map((l) => assertAllowedUrl(new URL(l, playlistUrl).href));
   if (segmentUrls.length === 0) throw new Error(`HLS track has no segments: ${playlistUrl}`);
 
   const duration = lines
@@ -214,9 +248,11 @@ function buildConcatFilterArgs(clips, outputPath, music = null, videoVolume = 1)
 }
 
 async function getPresignedUploadUrl(filename, fileSize, folder = "videos") {
+  const headers = { "Content-Type": "application/json" };
+  if (LAMBDA_CALLBACK_SECRET) headers["X-Lambda-Callback-Secret"] = LAMBDA_CALLBACK_SECRET;
   const res = await fetch(`${BACKEND_API_URL}/video/v2/presigned-upload`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify({ filename, fileSize, folder }),
   });
   if (!res.ok) throw new Error(`Presign request failed: ${res.status} ${await res.text()}`);
@@ -240,7 +276,12 @@ async function uploadViaTus(filePath, uploadUrl) {
       body: chunk,
     });
     if (!res.ok) throw new Error(`TUS PATCH failed at offset ${offset}: ${res.status} ${await res.text()}`);
-    offset = Number(res.headers.get("Upload-Offset"));
+    const next = Number(res.headers.get("Upload-Offset"));
+    // A missing/garbage offset, or one that didn't move forward, would loop forever.
+    if (!Number.isFinite(next) || next <= offset || next > buffer.length) {
+      throw new Error(`TUS PATCH at offset ${offset} returned bad Upload-Offset ${res.headers.get("Upload-Offset")}`);
+    }
+    offset = next;
   }
 
   return uploadUrl;
@@ -265,11 +306,12 @@ function normalizeClip(item) {
   return { url: item.url, start: Number(item.start ?? 0), end: item.end == null ? null : Number(item.end) };
 }
 
-async function prepareClip(clip, i) {
-  if (clip.url.includes(".m3u8")) {
-    const { videoUrl, audioUrl } = parseMasterManifest(await fetchText(clip.url), clip.url);
-    const videoPath = `/tmp/input_${i}_video.mp4`;
-    const audioPath = audioUrl ? `/tmp/input_${i}_audio.mp4` : null;
+async function prepareClip(clip, i, workDir) {
+  const clipUrl = assertAllowedUrl(clip.url);
+  if (new URL(clipUrl).pathname.endsWith(".m3u8")) {
+    const { videoUrl, audioUrl } = parseMasterManifest(await fetchText(clipUrl), clipUrl);
+    const videoPath = join(workDir, `input_${i}_video.mp4`);
+    const audioPath = audioUrl ? join(workDir, `input_${i}_audio.mp4`) : null;
     const [video] = await Promise.all([
       downloadHlsTrack(videoUrl, videoPath),
       audioUrl ? downloadHlsTrack(audioUrl, audioPath) : null,
@@ -277,8 +319,8 @@ async function prepareClip(clip, i) {
     return { kind: "hls", videoPath, audioPath, fullDuration: video.duration, hasAudio: Boolean(audioPath) };
   }
 
-  const path = `/tmp/input_${i}.mp4`;
-  await downloadFromUrl(clip.url, path);
+  const path = join(workDir, `input_${i}.mp4`);
+  await downloadFromUrl(clipUrl, path);
   return { kind: "mp4", path, fullDuration: await getDuration(path), hasAudio: await hasAudioStream(path) };
 }
 
@@ -294,48 +336,64 @@ export const handler = async (event) => {
   } = parseEventBody(event);
 
   if (!BACKEND_API_URL) throw new Error("BACKEND_API_URL env var is not set");
+  if (!Array.isArray(videoUrls) || videoUrls.length === 0 || videoUrls.length > MAX_CLIPS) {
+    throw new Error(`videoUrls must have 1 to ${MAX_CLIPS} clips`);
+  }
   const clipVolume = parseVolume(videoVolume, "videoVolume");
   const songVolume = parseVolume(musicVolume, "musicVolume");
 
-  const clips = [];
-  for (let i = 0; i < videoUrls.length; i++) {
-    const requested = normalizeClip(videoUrls[i]);
-    const prepared = await prepareClip(requested, i);
+  // Validate every URL before fetching anything.
+  const requestedClips = videoUrls.map(normalizeClip);
+  for (const clip of requestedClips) assertAllowedUrl(clip.url);
+  if (audio?.uri) assertAllowedUrl(audio.uri);
 
-    const start = Math.max(0, Math.min(requested.start, prepared.fullDuration));
-    const end = requested.end == null ? prepared.fullDuration : Math.min(requested.end, prepared.fullDuration);
-    const segmentDuration = end - start;
-    if (segmentDuration <= 0) throw new Error(`input_${i}: invalid segment ${start}s -> ${end}s (clip is ${prepared.fullDuration}s)`);
+  // A private directory per invocation: a warm container reuses /tmp, so
+  // fixed names would mix one request's files into the next.
+  const workDir = await mkdtemp(join(tmpdir(), "stitch-"));
+  try {
+    const clips = [];
+    for (let i = 0; i < requestedClips.length; i++) {
+      const requested = requestedClips[i];
+      const prepared = await prepareClip(requested, i, workDir);
 
-    console.log(`input_${i} (${prepared.kind}) full: ${prepared.fullDuration}s, segment: ${start}s -> ${end}s (${segmentDuration}s), hasAudio: ${prepared.hasAudio}`);
-    clips.push({ ...prepared, start, segmentDuration });
+      const start = Math.max(0, Math.min(requested.start, prepared.fullDuration));
+      const end = requested.end == null ? prepared.fullDuration : Math.min(requested.end, prepared.fullDuration);
+      const segmentDuration = end - start;
+      if (!(segmentDuration > 0)) throw new Error(`input_${i}: invalid segment ${start}s -> ${end}s (clip is ${prepared.fullDuration}s)`);
+
+      console.log(`input_${i} (${prepared.kind}) full: ${prepared.fullDuration}s, segment: ${start}s -> ${end}s (${segmentDuration}s), hasAudio: ${prepared.hasAudio}`);
+      clips.push({ ...prepared, start, segmentDuration });
+    }
+
+    let music = null;
+    if (audio?.uri) {
+      const ext = extname(new URL(audio.uri).pathname).replace(/[^A-Za-z0-9.]/g, "") || ".mp3";
+      const path = join(workDir, `music${ext}`);
+      await downloadFromUrl(audio.uri, path);
+      music = { path, keepOriginalSound: Boolean(keepOriginalSound), volume: songVolume };
+      console.log(`music: "${audio.title ?? audio.uri}", keepOriginalSound: ${music.keepOriginalSound}, volume: ${songVolume}`);
+    }
+    console.log(`videoVolume: ${clipVolume}`);
+
+    const outputPath = join(workDir, "output.mp4");
+    await runFfmpeg(buildConcatFilterArgs(clips, outputPath, music, clipVolume));
+
+    const outputDuration = await getDuration(outputPath);
+    console.log(`output.mp4 duration: ${outputDuration}s`);
+
+    const { size: fileSize } = await stat(outputPath);
+    console.log(`output.mp4 fileSize: ${fileSize} bytes`);
+
+    const { upload_url: uploadUrl, stream_uid, file_url } = await getPresignedUploadUrl(filename, fileSize, folder);
+
+    await uploadViaTus(outputPath, uploadUrl);
+
+    return {
+      statusCode: 200,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ stream_uid, file_url }),
+    };
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
   }
-
-  let music = null;
-  if (audio?.uri) {
-    const path = `/tmp/music${extname(new URL(audio.uri).pathname) || ".mp3"}`;
-    await downloadFromUrl(audio.uri, path);
-    music = { path, keepOriginalSound: Boolean(keepOriginalSound), volume: songVolume };
-    console.log(`music: "${audio.title ?? audio.uri}", keepOriginalSound: ${music.keepOriginalSound}, volume: ${songVolume}`);
-  }
-  console.log(`videoVolume: ${clipVolume}`);
-
-  const outputPath = "/tmp/output.mp4";
-  await runFfmpeg(buildConcatFilterArgs(clips, outputPath, music, clipVolume));
-
-  const outputDuration = await getDuration(outputPath);
-  console.log(`output.mp4 duration: ${outputDuration}s`);
-
-  const { size: fileSize } = await stat(outputPath);
-  console.log(`output.mp4 fileSize: ${fileSize} bytes`);
-
-  const { upload_url: uploadUrl, stream_uid, file_url } = await getPresignedUploadUrl(filename, fileSize, folder);
-
-  await uploadViaTus(outputPath, uploadUrl);
-
-  return {
-    statusCode: 200,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ stream_uid, file_url }),
-  };
 };

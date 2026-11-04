@@ -7,19 +7,20 @@ app/main.py
 import asyncio
 import traceback
 
-from fastapi import FastAPI
+from bson.errors import InvalidId
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 from contextlib import asynccontextmanager
 import logging
-from motor.motor_asyncio import AsyncIOMotorClient
 from app.core.config import settings
-from app.core.database import connect_to_mongo, close_mongo_connection
+from app.core.database import connect_to_mongo, close_mongo_connection, get_database
+from app.api.deps import require_admin
 from app.api.v1 import api_router  # This imports the router
 from app.graphql.schema import graphql_app
 from app.services.metrics_service import metrics_buffer
 from app.services.scheduled_publisher import scheduled_publisher
-from app.routes import upload_video
+from app.routes import upload_video, share
 from collections.abc import Mapping
 
 
@@ -89,9 +90,8 @@ async def ensure_indexes(db):
 async def lifespan(app: FastAPI):
     # Startup
     await connect_to_mongo()
-    # Ensure indexes
-    db = AsyncIOMotorClient(settings.MONGODB_URI)[settings.DATABASE_NAME]
-    await ensure_indexes(db)
+    # Ensure indexes on the shared connection (no second client to leak)
+    await ensure_indexes(get_database())
     await metrics_buffer.start()  # Start the metrics buffer
     await scheduled_publisher.start()  # Publishes scheduled posts when they come due
     yield
@@ -126,6 +126,14 @@ async def unhandled_exception_handler(request, exc):
         status_code=500,
     )
 
+# A malformed ObjectId in a path/body (e.g. /videos/notanid) is a client
+# error, not a server fault. Registered for the specific exception class so
+# it is matched before the generic Exception handler above.
+@app.exception_handler(InvalidId)
+async def invalid_object_id_handler(request, exc):
+    return JSONResponse({"detail": "Invalid ID"}, status_code=400)
+
+
 # Request timeout: any request exceeding this is cancelled, logged, and returns 504.
 # Prevents hung awaits (deadlocks, dead connections) from spinning forever invisibly.
 REQUEST_TIMEOUT_SECONDS = 30
@@ -149,12 +157,12 @@ async def timeout_middleware(request, call_next):
 
 
 @app.get("/debug/tasks", response_class=PlainTextResponse)
-async def dump_tasks():
+async def dump_tasks(_admin: str = Depends(require_admin)):
     """
     Dump the current stack of every asyncio task in the event loop.
     Use this while a request is hanging to see the exact line each
     coroutine is parked on (e.g. waiting on a lock, DB call, network).
-    TODO: put behind admin auth before this becomes a permanent fixture.
+    Admin only: stack frames expose internals.
     """
     out = []
     tasks = asyncio.all_tasks()
@@ -187,6 +195,7 @@ app.add_middleware(
 app.include_router(api_router, prefix="/api/v1")
 
 app.include_router(upload_video.router)
+app.include_router(share.router)  # /v/{id} share links, sitemaps, app-link files
 
 # Include GraphQL endpoint
 app.include_router(graphql_app, prefix="/graphql")

@@ -7,13 +7,17 @@ The app downloads the whole catalogue and searches/filters it on the client,
 so there is no server-side search or home layout here.
 """
 
+import logging
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 from bson import ObjectId
+from pydantic import ValidationError
 from fastapi import APIRouter, Depends, HTTPException, status
 from app.api.deps import get_current_active_user
 from app.core.database import get_database
 from app.models.tv import TvGenreResponse, TvTitleResponse, TvWatchResponse
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -21,9 +25,25 @@ router = APIRouter()
 HISTORY_LIMIT = 50
 
 
-def _title_response(doc: dict) -> TvTitleResponse:
-    doc["id"] = str(doc.pop("_id"))
-    return TvTitleResponse(**doc)
+def _title_response(doc: dict) -> Optional[TvTitleResponse]:
+    """The title as the app sees it, or None (logged) if the document is malformed,
+    so one bad catalogue entry can't 500 the whole list."""
+    raw_id = doc.get("_id")
+    try:
+        data = {**doc, "id": str(doc["_id"])}
+        data.pop("_id", None)
+        return TvTitleResponse(**data)
+    except (ValidationError, KeyError, TypeError, ValueError) as e:
+        logger.warning("Skipping invalid tv_titles document %s: %s", raw_id, e)
+        return None
+
+
+def _genre_response(doc: dict) -> Optional[TvGenreResponse]:
+    try:
+        return TvGenreResponse(name=doc["name"], image=doc["image"])
+    except (ValidationError, KeyError, TypeError, ValueError) as e:
+        logger.warning("Skipping invalid tv_genres document %s: %s", doc.get("_id"), e)
+        return None
 
 
 def _title_object_id(title_id: str) -> ObjectId:
@@ -42,7 +62,8 @@ async def get_titles(current_user: str = Depends(get_current_active_user)):
     docs = await db.tv_titles.find({"is_active": True}).sort(
         [("popularity", -1), ("_id", 1)]
     ).to_list(length=None)
-    return [_title_response(doc) for doc in docs]
+    titles = (_title_response(doc) for doc in docs)
+    return [t for t in titles if t is not None]
 
 
 @router.get("/genres", response_model=List[TvGenreResponse])
@@ -52,7 +73,8 @@ async def get_genres(current_user: str = Depends(get_current_active_user)):
     docs = await db.tv_genres.find({"is_active": True}).sort("order", 1).to_list(
         length=None
     )
-    return [TvGenreResponse(name=doc["name"], image=doc["image"]) for doc in docs]
+    genres = (_genre_response(doc) for doc in docs)
+    return [g for g in genres if g is not None]
 
 
 @router.get("/history", response_model=List[TvTitleResponse])
@@ -70,7 +92,8 @@ async def get_history(current_user: str = Depends(get_current_active_user)):
     by_id = {doc["_id"]: doc for doc in docs}
 
     # Keep the history order; skip titles that have since been taken down.
-    return [_title_response(by_id[i]) for i in title_ids if i in by_id]
+    titles = (_title_response(by_id[i]) for i in title_ids if i in by_id)
+    return [t for t in titles if t is not None]
 
 
 @router.post("/history/{title_id}", response_model=TvWatchResponse)

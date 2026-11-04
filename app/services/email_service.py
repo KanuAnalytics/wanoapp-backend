@@ -3,7 +3,9 @@ Email service using SendGrid
 
 app/services/email_service.py
 """
+import asyncio
 import sendgrid
+from html import escape
 from sendgrid.helpers.mail import Mail, Email, To, Content
 from app.core.config import settings
 import logging
@@ -29,14 +31,15 @@ class EmailService:
         return "".join(secrets.choice(digits) for _ in range(length))
 
     def _format_report_value(self, value: object) -> str:
-        """Format report values for email output."""
+        """Format report values for email output (HTML-escaped: these are
+        user-controlled and interpolated into email HTML)."""
         if value is None:
             return "N/A"
         if isinstance(value, str) and not value.strip():
             return "N/A"
         if isinstance(value, datetime):
             return value.strftime("%Y-%m-%d %H:%M:%S UTC")
-        return str(value)
+        return escape(str(value))
 
     def _normalize_recipients(self, to_email: str | Iterable[str]) -> list[str]:
         """Normalize recipient list from a string or iterable."""
@@ -57,7 +60,7 @@ class EmailService:
         Returns a tuple: (success: bool, otp: str)
         """
         otp_code = otp or self._generate_otp(6)
-        greeting_name = username or "there"
+        greeting_name = escape(username or "there")
 
         if not self.is_configured:
             logger.warning("SendGrid not configured. Using OTP above for testing.")
@@ -89,7 +92,7 @@ class EmailService:
         mail = Mail(self.from_email, to_email_obj, subject, content)
 
         try:
-            response = self.sg.send(mail)
+            response = await asyncio.to_thread(self.sg.send, mail)
             logger.info(f"Registration OTP sent to {to_email}. Status code: {response.status_code}")
             return True, otp_code
         except Exception as e:
@@ -115,7 +118,7 @@ class EmailService:
         <html>
             <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
                 <h2 style="color: #333;">Password reset request</h2>
-                <p>Hi {username},</p>
+                <p>Hi {escape(str(username or "there"))},</p>
                 <p>Use the following one-time code to reset your password:</p>
                 <div style="text-align: center; margin: 24px 0;">
                     <div style="display: inline-block; font-size: 28px; letter-spacing: 6px; font-weight: bold; padding: 12px 20px; border: 1px dashed #ccc; border-radius: 8px;">
@@ -136,7 +139,7 @@ class EmailService:
         mail = Mail(self.from_email, to_email_obj, subject, content)
 
         try:
-            response = self.sg.send(mail)
+            response = await asyncio.to_thread(self.sg.send, mail)
             logger.info(f"Password reset OTP sent to {to_email}. Status code: {response.status_code}")
             return True, otp_code
         except Exception as e:
@@ -172,6 +175,7 @@ class EmailService:
         reporter_phone = self._format_report_value(reporter.get("phone_number"))
 
         video_description = self._format_report_value(video.get("description"))
+        video_link_safe = escape(str(video_link or ""), quote=True)
 
         subject = f"New report submitted by {reporter_display_name}"
         html_content = f"""
@@ -183,7 +187,7 @@ class EmailService:
                 <h3 style="color: #333;">Video</h3>
                 <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
                     <tr><td style="padding: 6px 0; font-weight: bold;">Description</td><td>{video_description}</td></tr>
-                    <tr><td style="padding: 6px 0; font-weight: bold;">Link</td><td><a href="{video_link}">{video_link}</a></td></tr>
+                    <tr><td style="padding: 6px 0; font-weight: bold;">Link</td><td><a href="{video_link_safe}">{video_link_safe}</a></td></tr>
                 </table>
 
                 <h3 style="color: #333;">Creator</h3>
@@ -214,7 +218,7 @@ class EmailService:
                 to_email_obj = To(recipient)
                 content = Content("text/html", html_content)
                 mail = Mail(self.from_email, to_email_obj, subject, content)
-                response = self.sg.send(mail)
+                response = await asyncio.to_thread(self.sg.send, mail)
                 logger.info(
                     f"Report notification email sent to {recipient}. Status code: {response.status_code}"
                 )

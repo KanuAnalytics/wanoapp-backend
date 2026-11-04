@@ -1,6 +1,6 @@
 from typing import List, Optional
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from app.core.database import get_database
 from app.api.deps import get_optional_active_user
 from app.services.metrics_service import metrics_buffer
@@ -84,8 +84,8 @@ def _feed_video(video: dict, **fields) -> FeedVideo:
 async def get_feed(
     response: Response,
     current_user: Optional[str] = Depends(get_optional_active_user),
-    skip: int = 0,
-    limit: int = 20,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=50),
     user_id: Optional[str] = None,
     video_id: Optional[str] = None,
     saved: bool = False,
@@ -95,6 +95,17 @@ async def get_feed(
 ):
     """Get personalized video feed, videos from a specific user, or saved videos"""
     db = get_database()
+
+    if user_id is not None and not ObjectId.is_valid(user_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid user_id format",
+        )
+    if video_id is not None and not ObjectId.is_valid(video_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid video_id format",
+        )
 
     user_doc = None
     liked_video_ids = set()
@@ -128,10 +139,15 @@ async def get_feed(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Authentication required to access saved videos",
             )
-        # For saved videos, start from users collection
-        target_user_id = user_id if user_id else current_user
+        # Saved videos are private to their owner: always the caller's own
+        # list, whatever user_id says.
+        viewer_oid = ObjectId(current_user)
+        raw_saved = (user_doc or {}).get("bookmarked_videos") or []
+        # has_more comes from the raw slice, before inactive/private videos
+        # are filtered out, so a page with hidden entries still pages on.
+        has_more = len(raw_saved[skip:skip + limit]) == limit
         pipeline = [
-            {"$match": {"_id": ObjectId(target_user_id)}},
+            {"$match": {"_id": viewer_oid}},
             {
             "$project": {
                 "bookmarked_videos": {
@@ -150,10 +166,18 @@ async def get_feed(
             {"$unwind": "$videos"},
             {"$match": {
             "videos.is_active": True,
-            "$or": [
-                {"videos.isReadyToStream": True},
-                {"videos.isReadyToStream": {"$exists": False}}
-            ]
+            "$and": [
+                {"$or": [
+                    {"videos.isReadyToStream": True},
+                    {"videos.isReadyToStream": {"$exists": False}}
+                ]},
+                # A post saved while public and since made private stays
+                # visible only to its creator.
+                {"$or": [
+                    {"videos.privacy": "public"},
+                    {"videos.creator_id": viewer_oid},
+                ]},
+            ],
             }},
             # The creator, so saved posts show who posted them like the other feeds do.
             {
@@ -178,7 +202,6 @@ async def get_feed(
             {"$project": {"videos": 1}},
         ]
         docs = await db.users.aggregate(pipeline).to_list(length=limit)
-        has_more = len(docs) == limit
     else:
         # For all other cases, use videos collection with dynamic match conditions
         match_conditions = {
@@ -340,12 +363,6 @@ async def get_feed(
         )
 
     if video_id and skip == 0:
-        if not ObjectId.is_valid(video_id):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid video_id format",
-            )
-
         featured_pipeline = [
             {
                 "$match": {
@@ -440,14 +457,14 @@ async def get_feed(
 async def get_feed_v2(
     scenario: str,
     current_user: Optional[str] = Depends(get_optional_active_user),
-    limit: int = 20,
+    limit: int = Query(20, ge=1, le=50),
     next_recomm_id: Optional[str] = None,
     video_id: Optional[str] = None,
 ):
     db = get_database()
 
     recombee_user_id = current_user or "temp-user"
-    recombee_limit = limit - 1 if video_id else limit
+    recombee_limit = max(1, limit - 1) if video_id else limit
 
     base_filter = "'is_active' == true AND 'privacy' == \"public\" AND 'is_ready_to_stream' == true"
 
@@ -493,22 +510,24 @@ async def get_feed_v2(
 
     recomm_id = result.get("recommId")
 
-    recommended_ids = [ObjectId(r["id"]) for r in result.get("recomms", [])]
+    recommended_ids = [ObjectId(r["id"]) for r in result.get("recomms", []) if ObjectId.is_valid(r.get("id", ""))]
 
     if not recommended_ids:
         return []
 
-    user_doc = await db.users.find_one(
+    user_doc = (await db.users.find_one(
         {"_id": ObjectId(current_user)},
         {"liked_videos": 1, "bookmarked_videos": 1, "following": 1},
-    ) or {}
+    ) or {}) if current_user else {}
 
     liked_video_ids = set(str(v) for v in user_doc.get("liked_videos", []))
     bookmarked_video_ids = set(str(v) for v in user_doc.get("bookmarked_videos", []))
     following_ids = set(str(v) for v in user_doc.get("following", []))
 
+    # Recombee's copy can lag behind a delete or a privacy change, so the
+    # database has the final say on what may be shown.
     pipeline = [
-        {"$match": {"_id": {"$in": recommended_ids}}},
+        {"$match": {"_id": {"$in": recommended_ids}, "is_active": True, "privacy": "public"}},
         {
             "$lookup": {
                 "from": "users",
@@ -590,7 +609,7 @@ async def get_feed_v2(
         featured_doc = await db.videos.aggregate(featured_pipeline).to_list(length=1)
         if featured_doc:
             f = featured_doc[0]
-            if f.get("privacy") == "public" or str(f.get("creator_id")) == current_user:
+            if f.get("privacy") == "public" or (current_user and str(f.get("creator_id")) == current_user):
                 fid = f["_id"]
                 videos = [v for v in videos if v.id != fid]
                 videos.insert(0, _feed_video(

@@ -11,6 +11,8 @@ files (like the default thumbnail) are shared.
 """
 
 import asyncio
+import logging
+import re
 from datetime import datetime
 from typing import Any, Optional
 
@@ -20,15 +22,34 @@ from recombee_api_client.api_requests import DeleteItem
 from app.services.recombee_service import recombee_send
 from app.services.scheduled_publisher import CANCELLED, PUBLISHING, SCHEDULED
 from app.services.upload_DO import (
+    DELETED_VIDEO_PLACEHOLDER_UID,
     DELETED_VIDEO_PLACEHOLDER_URL,
     delete_from_spaces,
     delete_stream_video,
-    extract_stream_uid,
+    is_server_upload_path,
 )
-from app.services.video_posts import DEFAULT_THUMBNAIL
+from app.services.video_posts import DEFAULT_THUMBNAIL, post_stream_uid, stream_uid_reference_query
+
+logger = logging.getLogger(__name__)
 
 # Files that must never be deleted however they're referenced.
 _PROTECTED_SPACES_URLS = frozenset({DEFAULT_THUMBNAIL})
+
+
+# Where a Spaces URL can be referenced from outside videos/users.
+_SONG_URL_FIELDS = ("uri", "thumbnail", "artwork", "artwork_url", "cover_url", "cover_art_url", "audio_url")
+_TV_TITLE_URL_FIELDS = (
+    "poster", "backdrop", "video_url", "hls", "trailer", "trailer.thumbnail",
+    "trailer.video_url", "captions.url",
+)
+_DRAFT_URL_FIELDS = ("audioUrl", "clips.remoteUrl", "clips.trimmedUri")
+
+
+async def _any_references(collection, fields, url, extra: Optional[dict] = None) -> bool:
+    query: dict[str, Any] = {"$or": [{f: url} for f in fields]}
+    if extra:
+        query.update(extra)
+    return await collection.find_one(query, {"_id": 1}) is not None
 
 
 async def is_spaces_file_referenced(
@@ -38,9 +59,11 @@ async def is_spaces_file_referenced(
     exclude_video_id: Optional[ObjectId] = None,
     exclude_user_id: Optional[ObjectId] = None,
 ) -> bool:
-    """True if any video or user, other than the excluded ones, uses `url`."""
+    """True if anything other than the excluded video/user still uses `url`:
+    a video (media, thumbnail, images, sound), a user picture, a draft, a
+    library song, or a TV title/genre."""
     video_query: dict[str, Any] = {
-        "$or": [{"remoteUrl": url}, {"urls.thumbnail": url}, {"images": url}]
+        "$or": [{"remoteUrl": url}, {"urls.thumbnail": url}, {"images": url}, {"sound.uri": url}]
     }
     if exclude_video_id is not None:
         video_query["_id"] = {"$ne": exclude_video_id}
@@ -52,7 +75,41 @@ async def is_spaces_file_referenced(
     }
     if exclude_user_id is not None:
         user_query["_id"] = {"$ne": exclude_user_id}
-    return await db.users.find_one(user_query, {"_id": 1}) is not None
+    if await db.users.find_one(user_query, {"_id": 1}) is not None:
+        return True
+
+    if await _any_references(db.drafts, _DRAFT_URL_FIELDS, url, {"is_active": {"$ne": False}}):
+        return True
+    if await _any_references(db.songs, _SONG_URL_FIELDS, url):
+        return True
+    if await _any_references(db.tv_titles, _TV_TITLE_URL_FIELDS, url):
+        return True
+    return await _any_references(db.tv_genres, ("image",), url)
+
+
+async def is_stream_uid_referenced(db, stream_uid: str, *, exclude_video_id: Optional[ObjectId] = None) -> bool:
+    """True if another video, an active draft, or an unfinished stitch job
+    uses this Cloudflare Stream UID. remoteUrl_CF comes from the client, so
+    two posts can point at the same stream; deleting one must not take the
+    other's video down."""
+    loose = {"$regex": re.escape(stream_uid)}
+    video_query = stream_uid_reference_query(stream_uid)
+    if exclude_video_id is not None:
+        video_query["_id"] = {"$ne": exclude_video_id}
+    if await db.videos.find_one(video_query, {"_id": 1}):
+        return True
+
+    if await db.drafts.find_one(
+        {"is_active": {"$ne": False}, "$or": [{"clips.remoteUrl": loose}, {"clips.trimmedUri": loose}]},
+        {"_id": 1},
+    ):
+        return True
+
+    return await db.pending_videos.find_one(
+        {"status": {"$in": ["waiting", "processing"]},
+         "$or": [{"clips.stream_uid": stream_uid}, {"clips.url": loose}]},
+        {"_id": 1},
+    ) is not None
 
 
 async def delete_spaces_file_if_unused(
@@ -69,6 +126,9 @@ async def delete_spaces_file_if_unused(
     """
     if not url or url in _PROTECTED_SPACES_URLS:
         return False
+    # Only files our own uploads wrote; never music, TV or other library folders.
+    if not is_server_upload_path(url):
+        return False
     if await is_spaces_file_referenced(
         db, url, exclude_video_id=exclude_video_id, exclude_user_id=exclude_user_id
     ):
@@ -77,7 +137,7 @@ async def delete_spaces_file_if_unused(
         # boto3 is blocking; keep it off the event loop.
         await asyncio.to_thread(delete_from_spaces, url)
     except Exception as e:
-        print(f"Failed to delete Spaces file {url}: {e}")
+        logger.warning("Failed to delete Spaces file %s: %s", url, e)
     return True
 
 
@@ -111,6 +171,7 @@ async def soft_delete_video(db, video: dict) -> bool:
     original_remote_url_cf = video.get("remoteUrl_CF")
     images = video.get("images") or []
     thumbnail_url = (video.get("urls") or {}).get("thumbnail")
+    stream_uid = video.get("stream_uid") or post_stream_uid(original_remote_url_cf, original_remote_url)
 
     # Soft delete, and swap in the placeholder stream so stale references
     # (feeds, bookmarks, likes) never resolve to a dead link.
@@ -121,6 +182,7 @@ async def soft_delete_video(db, video: dict) -> bool:
             "updated_at": datetime.utcnow(),
             "remoteUrl": DELETED_VIDEO_PLACEHOLDER_URL,
             "remoteUrl_CF": DELETED_VIDEO_PLACEHOLDER_URL,
+            "stream_uid": DELETED_VIDEO_PLACEHOLDER_UID,
         }},
     )
     # A scheduled post was never counted on the user.
@@ -131,12 +193,14 @@ async def soft_delete_video(db, video: dict) -> bool:
         )
 
     # Cloudflare Stream (delete_stream_video itself refuses the placeholder).
-    stream_uid = extract_stream_uid(original_remote_url_cf) or extract_stream_uid(original_remote_url)
-    if stream_uid:
+    if stream_uid and stream_uid != DELETED_VIDEO_PLACEHOLDER_UID:
         try:
-            await asyncio.to_thread(delete_stream_video, stream_uid)
+            if await is_stream_uid_referenced(db, stream_uid, exclude_video_id=video_id):
+                logger.info("Keeping Cloudflare Stream video %s: still referenced elsewhere", stream_uid)
+            else:
+                await asyncio.to_thread(delete_stream_video, stream_uid)
         except Exception as e:
-            print(f"Failed to delete Cloudflare Stream video {stream_uid}: {e}")
+            logger.warning("Failed to delete Cloudflare Stream video %s: %s", stream_uid, e)
 
     # Spaces: photo-post images, the pre-Stream original file (a Stream link
     # here is ignored by delete_from_spaces), and the thumbnail. A photo post's

@@ -5,16 +5,23 @@ app/api/v1/notifications.py
 """
 import asyncio
 import json
-from fastapi import APIRouter, BackgroundTasks
+import logging
+from fastapi import APIRouter, BackgroundTasks, HTTPException, status
 from bson import ObjectId
 from bson.json_util import dumps
 from app.core.database import get_database
-from app.api.deps import get_current_active_user
+from app.api.deps import get_current_active_user, require_admin
 from app.services.expo import send_push_batch
 from fastapi import Depends, Query
 from typing import List, Optional
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
+
+# Only one broadcast may run at a time per process; a second request while
+# one is in flight gets 409 instead of pushing every device twice.
+_broadcast_lock = asyncio.Lock()
 
 BROADCAST_TITLE = "Meet the new Wano 👀"
 BROADCAST_BODY = "A whole new look. A whole new experience.\n\nUpdate Wano now →"
@@ -40,24 +47,48 @@ async def _run_broadcast():
             send_push_batch, tokens[i:i + PUSH_BATCH_SIZE], BROADCAST_BODY, BROADCAST_TITLE
         )
 
-    print(f"broadcast_notification: done, total_tokens={len(tokens)}")
+    logger.info("broadcast_notification: done, total_tokens=%d", len(tokens))
+
+
+async def _run_broadcast_locked():
+    """Run the broadcast; the caller already acquired _broadcast_lock."""
+    try:
+        await _run_broadcast()
+    except Exception:
+        logger.exception("broadcast_notification failed")
+    finally:
+        _broadcast_lock.release()
 
 
 @router.post("/broadcast")
-async def broadcast_notification(background_tasks: BackgroundTasks):
+async def broadcast_notification(
+    background_tasks: BackgroundTasks,
+    current_user: str = Depends(require_admin),
+):
     """
-    Push-only broadcast to every registered device across all users.
+    Push-only broadcast to every registered device across all users (admin only).
     Does NOT write to db.notifications - this never shows up in the app's
     in-app notification list, it's a push notification only.
     """
-    background_tasks.add_task(_run_broadcast)
+    if _broadcast_lock.locked():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A broadcast is already running",
+        )
+    # Uncontended acquire does not yield, so check-and-take is atomic on the loop.
+    await _broadcast_lock.acquire()
+    try:
+        background_tasks.add_task(_run_broadcast_locked)
+    except Exception:
+        _broadcast_lock.release()
+        raise
     return {"message": "Broadcast started in background"}
 
 @router.get("/")
 async def get_notifications(
-    skip: int = 0,
-    limit: int = 10,
-    type: Optional[str] = Query(None, description="Filter by notification type"),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(10, ge=1, le=50),
+    type: Optional[str] = Query(None, max_length=50, description="Filter by notification type"),
     current_user: str = Depends(get_current_active_user),
 ):
     """Get notifications for the current user (fresh user/post info via lookup)"""
