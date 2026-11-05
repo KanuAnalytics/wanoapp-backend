@@ -245,3 +245,39 @@ Covered by `tests/pressure/test_app_compat.py` (10 tests).
 | A4 | Stitched posts died mid-upload: any job left `waiting` for 30 minutes was failed, and the sweep runs whenever anyone starts a stitch. The app uploads clips in the background and resumes across launches, so a slow post was cancelled by a stranger's upload and its clips could no longer start it. | `waiting` (clips still uploading) gets its own limit, `STALE_WAITING_MINUTES` (24 h). `processing` (stitching itself) keeps the 30-minute one. |
 
 Still worth checking on the server, not fixed in code: `TRUSTED_PROXY_HOPS` must match the number of proxies in front of the API, and uvicorn must be started with `--proxy-headers`. If the API sees only the proxy's address, the login lockout becomes per account rather than per device (10 wrong passwords lock anyone out for 15 minutes), and all logged-out views of a video count as one per 6 h.
+
+---
+
+## New tab (GET /api/v1/feed/)
+
+Attack tests first (tests/pressure/test_new_feed.py: 15 of 20 failed), then fixed,
+then a second round on the fix (tests/pressure/test_new_feed_round2.py, 12 tests).
+
+Problems found
+1. Paging by skip repeats videos whenever someone posts while the viewer scrolls.
+2. One creator posting many videos takes over the tab (30 posts took 8 of 10 slots).
+3. "Not interested" was ignored by New.
+4. exclude_watched could return empty pages.
+5. Old posts with no playable link (empty remoteUrl_CF and remoteUrl) showed as blank videos.
+6. One malformed video document (e.g. views_count "lots") returned 500 for the whole page.
+7. Videos of accounts deactivated before their videos still showed.
+8. Junk paging values were accepted.
+
+What changed
+- New cursor paging (app/services/new_feed.py). The app sends `cursor=start`, then the
+  `X-Next-Cursor` response header each time. New uploads no longer shift pages; every post
+  is shown once. CORS exposes X-Next-Cursor for the web client.
+- With a cursor: at most 2 posts per creator per page, never back to back. Held-back posts
+  come back on later pages (up to 20 carried; beyond that it's a flood and the extras stay on
+  the profile and For You).
+- With a cursor, exclude_watched keeps scanning to fill the page.
+- Both modes: "not interested" always hidden for logged-in viewers; unplayable legacy posts
+  hidden; deactivated creators hidden; bad documents no longer break the page.
+- skip is capped at 100000; a bad cursor returns 400; cursor with saved or non-newest sort returns 400.
+- Old app builds (skip paging) behave as before apart from the filters above, so nothing
+  breaks before the app update. The creator cap and no-repeat paging need the app update.
+
+App change (Nasir)
+- New tab: first request `GET /api/v1/feed/?cursor=start&limit=20` (plus `authenticated=false`
+  when logged out, `exclude_watched=true` if wanted). Next page: `cursor=<X-Next-Cursor>`.
+  No X-Next-Cursor header = end of feed. Don't send skip with cursor.
