@@ -30,12 +30,15 @@ from recombee_api_client.api_requests import RecommendItemsToUser, RecommendNext
 
 from app.core.config import settings
 from app.services.recombee_service import recombee_send
+from app.services.recommendations import LEGACY_ANON_USER
 
 logger = logging.getLogger(__name__)
 
 WATCHED_LOOKBACK_DAYS = 60
 WATCHED_MAX = 3000
 IMPRESSION_LOOKBACK_HOURS = 24
+# Newest first, so a very heavy day can't grow the exclusion list without end.
+IMPRESSION_MAX = 1000
 FRESH_MAX_AGE_HOURS = 72
 FRESH_MAX_VIEWS = 500
 TRENDING_DAYS = 7
@@ -219,9 +222,16 @@ async def build_page(db, *, viewer: str, current_user: Optional[str], scenario: 
         async for w in db.watch_history.find({"user_id": own, "not_interested": True}, {"video_id": 1}).limit(5000):
             watched.add(str(w["video_id"]))
     shown = set()
-    since = _now() - timedelta(hours=IMPRESSION_LOOKBACK_HOURS)
-    async for imp in db.feed_impressions.find({"viewer": viewer, "at": {"$gte": since}}, {"video_id": 1}):
-        shown.add(str(imp["video_id"]))
+    # Everyone on a build that sends no device id shares one viewer id, so
+    # those impressions say nothing about the person asking: excluding them
+    # would hide more and more of the catalogue from every logged-out
+    # viewer as the day's traffic piles up, until the feed came back empty.
+    if viewer != LEGACY_ANON_USER:
+        since = _now() - timedelta(hours=IMPRESSION_LOOKBACK_HOURS)
+        cursor = (db.feed_impressions.find({"viewer": viewer, "at": {"$gte": since}}, {"video_id": 1})
+                  .sort("at", -1).limit(IMPRESSION_MAX))
+        async for imp in cursor:
+            shown.add(str(imp["video_id"]))
     featured_id = str(featured["_id"]) if featured else None
     excluded = watched | shown | ({featured_id} if featured_id else set())
     excluded_oids = [ObjectId(x) for x in excluded if ObjectId.is_valid(x)]
@@ -308,7 +318,10 @@ async def build_page(db, *, viewer: str, current_user: Optional[str], scenario: 
 
 async def record_impressions(db, *, viewer: str, current_user: Optional[str], variant: str,
                              recomm_id: Optional[str], items: List[dict]) -> None:
-    if not items:
+    if not items or viewer == LEGACY_ANON_USER:
+        # Nothing is excluded for the shared legacy viewer, and a watch
+        # recorded under it would attach to a stranger's impression and skew
+        # the A/B figures, so don't store these at all.
         return
     now = _now()
     docs = [{
@@ -324,6 +337,8 @@ async def record_impressions(db, *, viewer: str, current_user: Optional[str], va
 
 async def record_watch(db, *, viewer: str, video_id: str, portion: float) -> None:
     """Attach the watch result to the most recent impression of that video."""
+    if viewer == LEGACY_ANON_USER:
+        return   # no impressions are stored for the shared legacy viewer
     since = _now() - timedelta(days=2)
     imp = await db.feed_impressions.find_one(
         {"viewer": viewer, "video_id": ObjectId(video_id), "at": {"$gte": since}},

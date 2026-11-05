@@ -102,6 +102,40 @@ def _identifier_query(identifier: str) -> dict:
     ]}
 
 
+def _ci_exact(value: str) -> dict:
+    """Matches `value` whatever its capitals."""
+    return {"$regex": f"^{re.escape(value)}$", "$options": "i"}
+
+
+def _email_exists_query(email: str) -> dict:
+    """Finds an account by email whatever its capitals: accounts created
+    before emails were stored lowercased still carry their original ones."""
+    return {"email": _ci_exact(email)}
+
+
+async def _find_user_by_identifier(db, identifier: str):
+    """The account behind a login/reset identifier (username, email, phone).
+
+    The exact match runs first, so an ordinary login stays a single indexed
+    lookup. Only when that finds nothing do we retry ignoring capitals, for
+    the accounts registered before emails were lowercased on the way in:
+    their stored address never equals the lowercased identifier, which
+    would otherwise shut them out of both login and password reset.
+    """
+    user = await db.users.find_one(_identifier_query(identifier))
+    if user:
+        return user
+    ident = _normalize_identifier(identifier)
+    if "@" not in ident:
+        # Only identifiers containing "@" are lowercased above; anything
+        # else was already compared exactly.
+        return None
+    return await db.users.find_one({"$or": [
+        {"username": _ci_exact(ident)},
+        {"email": _ci_exact(ident)},
+    ]})
+
+
 async def _register_otp_failure(collection, filter_: dict, counter_field: str, wipe_fields: list[str]):
     """Atomically count a wrong guess; after MAX_OTP_ATTEMPTS wipe the OTP so
     even the correct code stops working. Raises the HTTP error either way."""
@@ -313,7 +347,7 @@ async def register(request: RegisterRequest, x_device_id: Optional[str] = Header
         )
 
     if email:
-        existing_email = await db.users.find_one({"email": email})
+        existing_email = await db.users.find_one(_email_exists_query(email))
         if existing_email:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -478,7 +512,7 @@ async def request_registration_otp(request: RequestRegistrationOtpRequest):
             )
 
         # Avoid sending OTP if email is already registered
-        existing_user = await db.users.find_one({"email": email})
+        existing_user = await db.users.find_one(_email_exists_query(email))
         if existing_user:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -688,7 +722,7 @@ async def login_json(login_data: LoginRequest, http_request: Request):
     )
 
     # Find user by username, email, or phone number
-    user = await db.users.find_one(_identifier_query(login_data.username))
+    user = await _find_user_by_identifier(db, login_data.username)
 
     if not user:
         _record_login_failure(throttle_key)
@@ -830,7 +864,7 @@ async def resend_verification(request: ResendVerificationRequest):
     db = get_database()
     
     generic = {"message": "If this email is registered, a verification email will be sent"}
-    user = await db.users.find_one({"email": _normalize_email(request.email)})
+    user = await db.users.find_one(_email_exists_query(_normalize_email(request.email)))
 
     # Same response for unknown and already-verified emails (M3).
     if not user or user.get("is_verified"):
@@ -899,7 +933,7 @@ async def forgot_password(request: ForgotPasswordRequest):
 
     identifier = _normalize_identifier(request.username_or_email)
     # Find user by username, email, or phone number
-    user = await db.users.find_one(_identifier_query(identifier))
+    user = await _find_user_by_identifier(db, identifier)
 
     # Same response whether or not the account exists (M3).
     if not user:
@@ -1016,7 +1050,7 @@ async def verify_reset_otp(request: VerifyResetOtpRequest):
     """
     db = get_database()
 
-    user = await db.users.find_one(_identifier_query(request.username_or_email))
+    user = await _find_user_by_identifier(db, request.username_or_email)
 
     # Generic error to avoid enumeration
     if not user:
@@ -1034,7 +1068,7 @@ async def reset_password(request: ResetPasswordRequest):
     """
     db = get_database()
 
-    user = await db.users.find_one(_identifier_query(request.username_or_email))
+    user = await _find_user_by_identifier(db, request.username_or_email)
 
     # Generic error to avoid enumeration
     if not user:

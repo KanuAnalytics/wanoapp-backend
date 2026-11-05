@@ -43,7 +43,11 @@ STITCHED_WIDTH = 1080
 STITCHED_HEIGHT = 1920
 
 MAX_CLIPS = 20
+# How long stitching itself may run before the job is written off.
 STALE_JOB_MINUTES = 30
+# How long a job may wait for its clips to finish uploading. The app uploads
+# in the background and resumes after a relaunch, so this has to be generous.
+STALE_WAITING_MINUTES = 24 * 60
 
 _STREAM_HOSTS = ("videodelivery.net",)
 _STREAM_HOST_SUFFIXES = (".cloudflarestream.com",)
@@ -86,16 +90,30 @@ async def validate_audio_uri(db, uri: str) -> None:
     raise StitchValidationError("Audio must be a song from the library")
 
 
-async def fail_stale_jobs(db, minutes: int = STALE_JOB_MINUTES) -> int:
-    """Jobs stuck waiting/processing longer than `minutes` (a lost webhook, a
-    crashed worker) are marked failed so they stop holding clips."""
-    cutoff = datetime.utcnow() - timedelta(minutes=minutes)
+async def fail_stale_jobs(db, minutes: int = STALE_JOB_MINUTES,
+                          waiting_minutes: int = STALE_WAITING_MINUTES) -> int:
+    """Jobs whose stitching stopped responding (a lost webhook, a crashed
+    worker) are marked failed so they stop holding clips.
+
+    A job stays "waiting" for as long as its clips are still uploading, and
+    the app uploads them in the background, carrying on across app launches,
+    so a post on a slow connection can legitimately sit there for hours.
+    That state therefore gets its own, far longer limit: sweeping it after
+    half an hour threw away posts whose upload was merely slow, and the
+    clips arriving afterwards could no longer start them.
+    """
+    now = datetime.utcnow()
     result = await db.pending_videos.update_many(
-        {"status": {"$in": [STATUS_WAITING, STATUS_PROCESSING]}, "updated_at": {"$lt": cutoff}},
+        {"$or": [
+            {"status": STATUS_PROCESSING,
+             "updated_at": {"$lt": now - timedelta(minutes=minutes)}},
+            {"status": STATUS_WAITING,
+             "updated_at": {"$lt": now - timedelta(minutes=waiting_minutes)}},
+        ]},
         {"$set": {
             "status": STATUS_FAILED,
-            "error": f"timed out after {minutes} minutes",
-            "updated_at": datetime.utcnow(),
+            "error": "timed out",
+            "updated_at": now,
         }},
     )
     return result.modified_count

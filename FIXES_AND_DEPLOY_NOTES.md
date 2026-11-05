@@ -231,3 +231,17 @@ Startup creates the new indexes and TTLs (`video_stats_hourly`, `view_dedupe`, `
 These held up first time: unlisted videos never trend, even with real engagement; lowercase country codes work; a device ID can't impersonate a user account; logging in without a device ID merges nothing; 20,000 hourly stats rows compute in time.
 
 API change: 422 responses now list `loc`, `msg` and `type` for each error. FastAPI's `input` and `url` fields are dropped.
+
+## Compatibility with the builds already in the stores (4 fixes)
+
+Reviewed against both the store build and the v2 build before deploying.
+Covered by `tests/pressure/test_app_compat.py` (10 tests).
+
+| # | What would have broken | Fix |
+| --- | --- | --- |
+| A1 | Accounts whose stored email kept its capitals (1,507 of 8,922 live users) could no longer log in or reset their password: the identifier is lowercased, the stored address is not, and the comparison is case-sensitive. Forgot-password returned its generic success, so no code ever arrived. | `_find_user_by_identifier` tries the exact, indexed match first and only then retries ignoring capitals, so an ordinary login still costs one indexed lookup. Registration's duplicate-email checks ignore capitals too, so the same address can't be taken twice in different cases. |
+| A2 | Views stopped counting for every store-build user: counting moved to `POST /{id}/watch`, which only v2 calls. `views_count` would have frozen, milestone notifications stopped, and those views never reached trending. | `GET /videos/{id}` counts the view again, through the same `count_view_once` dedupe, so a build that calls both endpoints still counts one view per viewer per video per 6 h. |
+| A3 | For You emptied out for logged-out viewers: with no device ID they all share one viewer id, and each page excludes everything that id was shown in the last 24 h. The exclusion list grew with the day's traffic until pages came back short, then empty. | No impressions are read, written or matched for the shared legacy viewer. A real viewer's exclusion list is also capped at the newest `IMPRESSION_MAX` (1,000). |
+| A4 | Stitched posts died mid-upload: any job left `waiting` for 30 minutes was failed, and the sweep runs whenever anyone starts a stitch. The app uploads clips in the background and resumes across launches, so a slow post was cancelled by a stranger's upload and its clips could no longer start it. | `waiting` (clips still uploading) gets its own limit, `STALE_WAITING_MINUTES` (24 h). `processing` (stitching itself) keeps the 30-minute one. |
+
+Still worth checking on the server, not fixed in code: `TRUSTED_PROXY_HOPS` must match the number of proxies in front of the API, and uvicorn must be started with `--proxy-headers`. If the API sees only the proxy's address, the login lockout becomes per account rather than per device (10 wrong passwords lock anyone out for 15 minutes), and all logged-out views of a video count as one per 6 h.

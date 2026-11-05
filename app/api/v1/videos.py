@@ -551,8 +551,10 @@ async def get_video(
     portion: Optional[float] = None,
     time_spent: Optional[float] = None,
     auto_presented: bool = False,
+    x_device_id: Optional[str] = Header(None, alias="X-Device-Id"),
+    request: Request = None,
 ):
-    """Get a specific video by ID. Views are counted by POST /{video_id}/watch only."""
+    """Get a specific video by ID, and count the view."""
     db = get_database()
 
     video_oid = _video_oid(video_id)
@@ -566,6 +568,25 @@ async def get_video(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Video not found"
+        )
+
+    # Views are counted here as well as in POST /{video_id}/watch. Builds
+    # already in the stores count a view by opening the video and never call
+    # /watch, so counting there alone would stop their views dead.
+    # count_view_once allows one view per viewer per video every 6 hours, so
+    # a build that calls both still counts a single view.
+    viewer = viewer_id(current_user, x_device_id)
+    if await trending.count_view_once(db, viewer=viewer, video_id=video_id, ip=_client_ip(request)):
+        await metrics_buffer.increment_view(video_id)
+        await trending.record_watch(
+            db, video_id, logged_in=bool(current_user),
+            portion=portion if portion is not None else 0.0,
+            viewer=current_user, creator=video.get("creator_id"),
+        )
+        counts = await metrics_buffer.get_buffered_counts(video_id)
+        await notify_view_milestones(
+            db, video, video_id,
+            video.get("views_count", 0) + counts["views"], background_tasks,
         )
 
     if current_user and portion is not None:
