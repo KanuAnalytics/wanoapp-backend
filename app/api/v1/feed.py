@@ -1,11 +1,11 @@
 from typing import List, Optional
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 from app.core.database import get_database
-from app.api.deps import get_optional_active_user
+from app.api.deps import get_current_user, get_optional_active_user, oauth2_scheme_optional
 from app.services.metrics_service import metrics_buffer
-from app.services.recombee_service import recombee_send
-from recombee_api_client.api_requests import RecommendItemsToUser, RecommendNextItems
+from app.services import for_you, trending
+from app.services.recommendations import viewer_id
 from pydantic import BaseModel
 from bson import ObjectId
 
@@ -43,6 +43,9 @@ class FeedVideo(BaseModel):
     is_bookmarked: bool = False
     is_following: bool = False
     recomm_id: Optional[str] = None
+    # For You only: which source picked it and the A/B variant (for measurement).
+    source: Optional[str] = None
+    variant: Optional[str] = None
     supports_landscape: bool = False
     created_at: Optional[datetime] = None
     # The song on the post, if one was picked. Older posts have none.
@@ -460,168 +463,151 @@ async def get_feed_v2(
     limit: int = Query(20, ge=1, le=50),
     next_recomm_id: Optional[str] = None,
     video_id: Optional[str] = None,
+    x_device_id: Optional[str] = Header(None, alias="X-Device-Id"),
 ):
+    """For You feed. See app/services/for_you.py for how a page is put together."""
     db = get_database()
+    viewer = viewer_id(current_user, x_device_id)
 
-    recombee_user_id = current_user or "temp-user"
-    recombee_limit = max(1, limit - 1) if video_id else limit
+    featured = None
+    if video_id and ObjectId.is_valid(video_id):
+        f = await db.videos.find_one({"_id": ObjectId(video_id), "is_active": True},
+                                     {"creator_id": 1, "privacy": 1})
+        if f and (f.get("privacy") in ("public", "unlisted")
+                  or (current_user and str(f.get("creator_id")) == current_user)):
+            featured = f
 
-    base_filter = "'is_active' == true AND 'privacy' == \"public\" AND 'is_ready_to_stream' == true"
-
-    async def recombee_fallback(count: int):
-        req = RecommendItemsToUser(
-            recombee_user_id,
-            count,
-            scenario=scenario,
-            cascade_create=True,
-            rotation_rate=0.5,
-            filter=base_filter,
-        )
-        req.timeout = 5000
-        return await recombee_send(req)
-
-    if next_recomm_id:
-        req = RecommendNextItems(next_recomm_id, recombee_limit)
-        req.timeout = 5000
-        result = await recombee_send(req)
-    else:
-        recent_filter = base_filter + " AND 'created_at' > now() - (10 * 24 * 60 * 60)"
-        req = RecommendItemsToUser(
-            recombee_user_id,
-            recombee_limit,
-            scenario=scenario,
-            cascade_create=True,
-            rotation_rate=0.5,
-            filter=recent_filter,
-        )
-        req.timeout = 5000
-        result = await recombee_send(req)
-
-    recomms = result.get("recomms", [])
-
-    if len(recomms) < recombee_limit:
-        # Batch ran short (recency pool thin, or paginated batch exhausted) - top up
-        # from the unfiltered pool rather than treating "fewer than asked" as "list ended".
-        fallback_result = await recombee_fallback(recombee_limit - len(recomms))
-        seen_ids = {r["id"] for r in recomms}
-        extra_recomms = [r for r in fallback_result.get("recomms", []) if r["id"] not in seen_ids]
-        result = fallback_result
-        result["recomms"] = recomms + extra_recomms
-
-    recomm_id = result.get("recommId")
-
-    recommended_ids = [ObjectId(r["id"]) for r in result.get("recomms", []) if ObjectId.is_valid(r.get("id", ""))]
-
-    if not recommended_ids:
+    page = await for_you.build_page(
+        db, viewer=viewer, current_user=current_user, scenario=scenario, limit=limit,
+        next_recomm_id=next_recomm_id, featured=featured,
+    )
+    items = ([{"id": str(featured["_id"]), "source": "featured"}] if featured else []) + page.items
+    if not items:
         return []
 
     user_doc = (await db.users.find_one(
         {"_id": ObjectId(current_user)},
         {"liked_videos": 1, "bookmarked_videos": 1, "following": 1},
     ) or {}) if current_user else {}
-
     liked_video_ids = set(str(v) for v in user_doc.get("liked_videos", []))
     bookmarked_video_ids = set(str(v) for v in user_doc.get("bookmarked_videos", []))
     following_ids = set(str(v) for v in user_doc.get("following", []))
 
-    # Recombee's copy can lag behind a delete or a privacy change, so the
-    # database has the final say on what may be shown.
+    oids = [ObjectId(it["id"]) for it in items]
     pipeline = [
-        {"$match": {"_id": {"$in": recommended_ids}, "is_active": True, "privacy": "public"}},
-        {
-            "$lookup": {
-                "from": "users",
-                "localField": "creator_id",
-                "foreignField": "_id",
-                "as": "creator",
-            }
-        },
+        {"$match": {"_id": {"$in": oids}, "is_active": True}},
+        {"$lookup": {"from": "users", "localField": "creator_id", "foreignField": "_id", "as": "creator"}},
         {"$unwind": {"path": "$creator", "preserveNullAndEmptyArrays": True}},
-        {
-            "$project": {
-                "_id": {"$toString": "$_id"},
-                "creator_id": {"$toString": "$creator_id"},
-                "title": 1,
-                "description": 1,
-                "remoteUrl": 1,
-                "remoteUrl_CF": 1,
-                "views_count": 1,
-                "likes_count": 1,
-                "comments_count": 1,
-                "thumbnail": "$urls.thumbnail",
-                "media_type": {"$ifNull": ["$media_type", "video"]},
-                "images": {"$ifNull": ["$images", []]},
-                "sound": 1,
-                "supports_landscape": 1,
-                "created_at": 1,
-                "user": {
-                    "username": "$creator.username",
-                    "display_name": "$creator.display_name",
-                    "profile_picture": "$creator.profile_picture",
-                    "is_active": "$creator.is_active",
-                },
-            }
-        },
+        {"$project": {
+            "_id": {"$toString": "$_id"},
+            "creator_id": {"$toString": "$creator_id"},
+            "title": 1, "description": 1, "remoteUrl": 1, "remoteUrl_CF": 1,
+            "views_count": 1, "likes_count": 1, "comments_count": 1,
+            "thumbnail": "$urls.thumbnail",
+            "media_type": {"$ifNull": ["$media_type", "video"]},
+            "images": {"$ifNull": ["$images", []]},
+            "sound": 1, "supports_landscape": 1, "created_at": 1,
+            "user": {
+                "username": "$creator.username",
+                "display_name": "$creator.display_name",
+                "profile_picture": "$creator.profile_picture",
+                "is_active": "$creator.is_active",
+            },
+        }},
     ]
+    docs = await db.videos.aggregate(pipeline).to_list(length=len(oids))
+    doc_map = {d["_id"]: d for d in docs}
 
-    docs = await db.videos.aggregate(pipeline).to_list(length=limit)
+    videos, served = [], []
+    for it in items:
+        video = doc_map.get(it["id"])
+        if not video:
+            continue
+        buffered = await metrics_buffer.get_buffered_counts(it["id"])
+        videos.append(_feed_video(
+            video,
+            id=it["id"],
+            buffered_views=buffered["views"],
+            buffered_likes=buffered["likes"],
+            has_liked=it["id"] in liked_video_ids,
+            is_bookmarked=it["id"] in bookmarked_video_ids,
+            is_following=str(video["creator_id"]) in following_ids,
+            recomm_id=page.recomm_id,
+            source=it.get("source"),
+            variant=page.variant,
+        ))
+        served.append(it)
+        if len(videos) >= limit:
+            break
 
-    # preserve Recombee order
-    doc_map = {doc["_id"]: doc for doc in docs}
-    ordered = [doc_map[str(oid)] for oid in recommended_ids if str(oid) in doc_map]
-
-    videos = []
-    for video in ordered:
-        feed_video_id = video["_id"]
-        buffered = await metrics_buffer.get_buffered_counts(feed_video_id)
-        videos.append(
-            _feed_video(
-                video,
-                id=feed_video_id,
-                buffered_views=buffered["views"],
-                buffered_likes=buffered["likes"],
-                has_liked=feed_video_id in liked_video_ids,
-                is_bookmarked=feed_video_id in bookmarked_video_ids,
-                is_following=str(video["creator_id"]) in following_ids,
-                recomm_id=recomm_id,
-            )
-        )
-
-    if video_id and ObjectId.is_valid(video_id):
-        featured_pipeline = [
-            {"$match": {"_id": ObjectId(video_id), "is_active": True}},
-            {"$lookup": {"from": "users", "localField": "creator_id", "foreignField": "_id", "as": "creator"}},
-            {"$unwind": {"path": "$creator", "preserveNullAndEmptyArrays": True}},
-            {"$project": {
-                "_id": {"$toString": "$_id"},
-                "creator_id": {"$toString": "$creator_id"},
-                "title": 1, "description": 1, "remoteUrl": 1, "remoteUrl_CF": 1,
-                "views_count": 1, "likes_count": 1, "comments_count": 1,
-                "thumbnail": "$urls.thumbnail", "privacy": 1, "supports_landscape": 1,
-                "media_type": {"$ifNull": ["$media_type", "video"]},
-                "images": {"$ifNull": ["$images", []]},
-                "sound": 1,
-                "created_at": 1,
-                "user": {"username": "$creator.username", "display_name": "$creator.display_name",
-                         "profile_picture": "$creator.profile_picture", "is_active": "$creator.is_active"},
-            }},
-        ]
-        featured_doc = await db.videos.aggregate(featured_pipeline).to_list(length=1)
-        if featured_doc:
-            f = featured_doc[0]
-            if f.get("privacy") == "public" or (current_user and str(f.get("creator_id")) == current_user):
-                fid = f["_id"]
-                videos = [v for v in videos if v.id != fid]
-                videos.insert(0, _feed_video(
-                    f,
-                    id=fid,
-                    buffered_views=0,
-                    buffered_likes=0,
-                    has_liked=fid in liked_video_ids,
-                    is_bookmarked=fid in bookmarked_video_ids,
-                    is_following=str(f["creator_id"]) in following_ids,
-                    recomm_id=recomm_id,
-                ))
-                videos = videos[:limit]
-
+    await for_you.record_impressions(
+        db, viewer=viewer, current_user=current_user, variant=page.variant,
+        recomm_id=page.recomm_id, items=served,
+    )
     return videos
+
+
+async def _viewer_if_signed_in(token: Optional[str] = Depends(oauth2_scheme_optional)) -> Optional[str]:
+    if not token:
+        return None
+    try:
+        return await get_current_user(token)
+    except HTTPException:
+        return None
+
+
+@router.get("/trending", response_model=List[FeedVideo])
+async def get_trending(
+    country: Optional[str] = Query(None, min_length=2, max_length=8),
+    limit: int = Query(20, ge=1, le=100),
+    current_user: Optional[str] = Depends(_viewer_if_signed_in),
+):
+    """What is taking off on Wano right now: the viewer's country first (or
+    `country`), then the rest. See app/services/trending.py."""
+    db = get_database()
+    user_doc = {}
+    if current_user and ObjectId.is_valid(current_user):
+        user_doc = await db.users.find_one(
+            {"_id": ObjectId(current_user)},
+            {"liked_videos": 1, "bookmarked_videos": 1, "following": 1, "localization": 1, "is_active": 1},
+        ) or {}
+        if user_doc.get("is_active") is False:
+            user_doc, current_user = {}, None
+    if not country:
+        country = ((user_doc.get("localization") or {}).get("country")) or None
+
+    docs = await trending.top(db, country=country, limit=limit)
+    if not docs:
+        return []
+    oids = [d["_id"] for d in docs]
+    pipeline = [
+        {"$match": {"_id": {"$in": oids}}},
+        {"$lookup": {"from": "users", "localField": "creator_id", "foreignField": "_id", "as": "creator"}},
+        {"$unwind": {"path": "$creator", "preserveNullAndEmptyArrays": True}},
+        {"$project": {
+            "_id": {"$toString": "$_id"}, "creator_id": {"$toString": "$creator_id"},
+            "title": 1, "description": 1, "remoteUrl": 1, "remoteUrl_CF": 1,
+            "views_count": 1, "likes_count": 1, "comments_count": 1,
+            "thumbnail": "$urls.thumbnail", "media_type": {"$ifNull": ["$media_type", "video"]},
+            "images": {"$ifNull": ["$images", []]}, "sound": 1, "supports_landscape": 1, "created_at": 1,
+            "user": {"username": "$creator.username", "display_name": "$creator.display_name",
+                     "profile_picture": "$creator.profile_picture", "is_active": "$creator.is_active"},
+        }},
+    ]
+    by_id = {d["_id"]: d for d in await db.videos.aggregate(pipeline).to_list(length=len(oids))}
+    liked = {str(v) for v in user_doc.get("liked_videos", [])}
+    saved = {str(v) for v in user_doc.get("bookmarked_videos", [])}
+    following = {str(v) for v in user_doc.get("following", [])}
+    out = []
+    for d in docs:
+        vid = str(d["_id"])
+        video = by_id.get(vid)
+        if not video:
+            continue
+        buffered = await metrics_buffer.get_buffered_counts(vid)
+        out.append(_feed_video(
+            video, id=vid, buffered_views=buffered["views"], buffered_likes=buffered["likes"],
+            has_liked=vid in liked, is_bookmarked=vid in saved,
+            is_following=video["creator_id"] in following, source="trending",
+        ))
+    return out

@@ -184,7 +184,7 @@ from app.core.database import get_database
 from app.api.deps import get_current_active_user
 from app.models.comment import CommentCreate, CommentUpdate, CommentResponse
 from app.services.expo import send_push_message
-from recombee_api_client.api_requests import AddBookmark, DeleteBookmark
+from app.services import recommendations, trending
 from app.services.recombee_service import recombee_send
 
 router = APIRouter()
@@ -349,12 +349,11 @@ async def create_comment(
             "date": datetime.utcnow(),
         })
 
-    try:
-        req = AddBookmark(current_user, comment.video_id, cascade_create=True)
-        req.timeout = 5000
-        await recombee_send(req)
-    except Exception:
-        pass
+    # A comment is strong engagement; it is NOT a bookmark (that would
+    # overwrite or delete the person's real bookmark).
+    await recommendations.report_comment(current_user, comment.video_id)
+    await trending.record_once(db, comment.video_id, actor=current_user, creator=video.get("creator_id"),
+                               kind="comment", comments=1)
 
     if background_tasks is not None:
         display_name = user.get("display_name") or user.get("username") or "Someone"
@@ -642,13 +641,8 @@ async def delete_comment(
         "comment_id": comment_oid,
     })
 
-    try:
-        # The bookmark belongs to the commenter, not to whoever deleted it.
-        req = DeleteBookmark(str(deleted["user_id"]), str(deleted["video_id"]))
-        req.timeout = 5000
-        await recombee_send(req)
-    except Exception:
-        pass
+    # The engagement belongs to the commenter, not to whoever deleted it.
+    await recommendations.report_comment_deleted(str(deleted["user_id"]), str(deleted["video_id"]))
 
     return {"message": "Comment deleted successfully"}
 

@@ -11,6 +11,7 @@ from typing import List, Optional
 
 from bson import ObjectId
 from recombee_api_client.api_requests import SetItemValues
+from app.services.recommendations import item_values
 
 from app.core.database import get_database
 from app.services.recombee_service import recombee_send
@@ -173,23 +174,7 @@ async def create_video_post(
     )
 
     try:
-        values = {
-            "creator_id": str(video_doc["creator_id"]),
-            "description": video_doc.get("description") or "",
-            "video_type": video_doc.get("video_type") or "",
-            "duration": float(video_doc.get("duration") or 0.0),
-            "thumbnail": video_doc.get("urls", {}).get("thumbnail") or "",
-            "hashtags": video_doc.get("hashtags") or [],
-            "is_active": True,
-            "supports_landscape": bool(video_doc.get("supports_landscape", False)),
-            "privacy": video_doc.get("privacy") or "public",
-            "created_at": video_doc["created_at"].isoformat(),
-            # v2 (Recombee) feed filters on 'is_ready_to_stream' == true --
-            # photo posts need this true immediately since nothing else
-            # (e.g. a stream-ready webhook) will ever flip it later.
-            "is_ready_to_stream": bool(video_doc.get("isReadyToStream", False)),
-            "media_type": video_doc.get("media_type", "video"),
-        }
+        values = item_values({**video_doc, "_id": result.inserted_id})
         req = SetItemValues(str(result.inserted_id), values, cascade_create=True)
         req.timeout = 10000
         await recombee_send(req)

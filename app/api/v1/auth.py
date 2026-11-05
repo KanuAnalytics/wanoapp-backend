@@ -7,7 +7,8 @@ app/api/v1/auth.py
 from profanity_check import predict, predict_prob
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Literal
-from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, status, Query, Request
+from app.services import recommendations
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 from fastapi.security import OAuth2PasswordRequestForm
@@ -259,7 +260,7 @@ BANNED_WORDS = {
 }
 
 @router.post("/register", response_model=RegisterResponse)
-async def register(request: RegisterRequest):
+async def register(request: RegisterRequest, x_device_id: Optional[str] = Header(None, alias="X-Device-Id")):
     """Register a new user and return access token"""
     db = get_database()
 
@@ -416,6 +417,11 @@ async def register(request: RegisterRequest):
 
     # The verified OTP is single-use.
     await otp_collection.delete_one(otp_filter)
+
+    # Recommendations: what this device watched before signing up, plus the
+    # interest tags picked at signup, so the first feed isn't blank.
+    await recommendations.merge_device_into_user(x_device_id, user_id)
+    await recommendations.set_user_profile({**user_doc, "_id": user_id})
 
     # Create access token
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -698,6 +704,7 @@ async def login_json(login_data: LoginRequest, http_request: Request):
         raise invalid
 
     _clear_login_failures(throttle_key)
+    await recommendations.merge_device_into_user(http_request.headers.get("X-Device-Id"), str(user["_id"]))
 
     # Create access token
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)

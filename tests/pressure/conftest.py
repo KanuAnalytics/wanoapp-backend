@@ -77,6 +77,9 @@ async def db(monkeypatch, calls):
         if name.startswith("send") and callable(getattr(expo, name)):
             monkeypatch.setattr(expo, name, _noop_async)
 
+    from app.services import trending
+    trending.clear_cache()
+    trending.reset_limits()
     from app.services.metrics_service import metrics_buffer
     metrics_buffer.views_buffer.clear()
     metrics_buffer.likes_buffer.clear()

@@ -9,6 +9,7 @@ import re
 import httpx
 import asyncio
 from app.services.recombee_service import recombee_send
+from app.services import recommendations
 
 router = APIRouter()
 
@@ -43,44 +44,26 @@ async def fetch_cf_dimensions(video_id: str) -> tuple[int, int] | None:
 
 @router.post("/ingest-videos")
 async def ingest_videos(current_user: str = Depends(require_admin)):
+    """Send videos Recombee has never seen (kept for compatibility; sync-items covers this)."""
     db = get_database()
-    videos = await db.videos.find({"recombee": {"$ne": True}, "privacy": "public", "is_active": True}).sort("created_at", -1).to_list(length=None)
+    sent = 0
+    batch = []
+    async for video in db.videos.find({"recombee": {"$ne": True}}):
+        batch.append(SetItemValues(str(video["_id"]), recommendations.item_values(video), cascade_create=True))
+        if len(batch) >= recommendations.BATCH_SIZE:
+            await recombee_send(Batch(batch)); sent += len(batch); batch = []
+    if batch:
+        await recombee_send(Batch(batch)); sent += len(batch)
+    await db.videos.update_many({"recombee": {"$ne": True}}, {"$set": {"recombee": True}})
+    return {"total_ingested": sent}
 
-    if not videos:
-        return {"message": "No new videos to ingest", "total_ingested": 0}
 
-    requests = []
-    for video in videos:
-        item_id = str(video["_id"])
-        values = {
-            "creator_id": str(video.get("creator_id", "")),
-            "description": video.get("description") or "",
-            "video_type": video.get("video_type") or "",
-            "duration": float(video.get("duration") or video.get("metadata", {}).get("duration", 0.0)),
-            "thumbnail": video.get("urls", {}).get("thumbnail") or "",
-            "views_count": int(video.get("views_count", 0)),
-            "likes_count": int(video.get("likes_count", 0)),
-            "comments_count": int(video.get("comments_count", 0)),
-            "bookmarks_count": int(video.get("bookmarks_count", 0)),
-            "hashtags": video.get("hashtags") or [],
-            "is_active": bool(video.get("is_active", True)),
-            "supports_landscape": bool(video.get("supports_landscape", False)),
-            "privacy": video.get("privacy") or "public",
-            "created_at": video["created_at"].isoformat() if video.get("created_at") else None,
-        }
-        req = SetItemValues(item_id, values, cascade_create=True)
-        req.timeout = 30000
-        requests.append(req)
-
-    await recombee_send(Batch(requests))
-
-    ingested_ids = [video["_id"] for video in videos]
-    await db.videos.update_many(
-        {"_id": {"$in": ingested_ids}},
-        {"$set": {"recombee": True}}
-    )
-
-    return {"total_ingested": len(videos), "ingested_ids": [str(i) for i in ingested_ids]}
+@router.post("/sync-items")
+async def sync_items(current_user: str = Depends(require_admin)):
+    """Re-send every video's properties (readiness, privacy, counts) to Recombee.
+    Run once after deploying the For You fixes, then whenever Recombee's copy
+    looks out of date."""
+    return await recommendations.sync_items(get_database())
 
 
 @router.post("/backfill-hashtags")

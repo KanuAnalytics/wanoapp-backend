@@ -9,6 +9,7 @@ import traceback
 
 from bson.errors import InvalidId
 from fastapi import Depends, FastAPI
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 from contextlib import asynccontextmanager
@@ -21,6 +22,7 @@ from app.graphql.schema import graphql_app
 from app.services.metrics_service import metrics_buffer
 from app.services.scheduled_publisher import scheduled_publisher
 from app.routes import upload_video, share
+from app.services import recommendations
 from collections.abc import Mapping
 
 
@@ -94,8 +96,10 @@ async def lifespan(app: FastAPI):
     await ensure_indexes(get_database())
     await metrics_buffer.start()  # Start the metrics buffer
     await scheduled_publisher.start()  # Publishes scheduled posts when they come due
+    await recommendations.stats_sync.start()  # Pushes changed view/like counts to Recombee
     yield
     # Shutdown
+    await recommendations.stats_sync.stop()
     await scheduled_publisher.stop()
     await metrics_buffer.stop()   # Stop the metrics buffer
     await close_mongo_connection()
@@ -129,6 +133,14 @@ async def unhandled_exception_handler(request, exc):
 # A malformed ObjectId in a path/body (e.g. /videos/notanid) is a client
 # error, not a server fault. Registered for the specific exception class so
 # it is matched before the generic Exception handler above.
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request, exc):
+    # FastAPI's default echoes the rejected input back; a NaN/Infinity there
+    # can't be written as JSON and turned a 422 into a 500.
+    errors = [{"loc": list(e.get("loc", [])), "msg": e.get("msg"), "type": e.get("type")} for e in exc.errors()]
+    return JSONResponse({"detail": errors}, status_code=422)
+
+
 @app.exception_handler(InvalidId)
 async def invalid_object_id_handler(request, exc):
     return JSONResponse({"detail": "Invalid ID"}, status_code=400)
