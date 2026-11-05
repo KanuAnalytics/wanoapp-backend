@@ -7,11 +7,16 @@ app/graphql/subscriptions.py
 import strawberry
 from typing import AsyncGenerator, Optional, List
 import asyncio
-from app.graphql.types import VideoType, CommentType, UserType, VideoTypeEnum, VideoPrivacyEnum
+from app.graphql.types import (
+    VideoType, CommentType, UserType, VideoTypeEnum, VideoPrivacyEnum,
+    parse_object_id, video_from_doc, comment_from_doc,
+)
+from app.graphql.auth import require_user_id, visible_video_filter
 from datetime import datetime
 from bson import ObjectId
 from app.core.database import get_database
 from app.services.metrics_service import metrics_buffer
+from app.services import trending
 
 # Define the return types for subscriptions
 @strawberry.type
@@ -41,13 +46,16 @@ class NotificationType:
 @strawberry.type
 class Subscription:
     @strawberry.subscription
-    async def video_metrics(self, video_id: str) -> AsyncGenerator[VideoMetrics, None]:
+    async def video_metrics(self, info, video_id: str) -> AsyncGenerator[VideoMetrics, None]:
         """Subscribe to video metrics updates (views, likes, comments)"""
+        viewer = require_user_id(info)
+        vq = visible_video_filter(viewer)
+        vq["_id"] = parse_object_id(video_id)
         db = get_database()
         
         while True:
             # Get current database counts
-            video = await db.videos.find_one({"_id": ObjectId(video_id)})
+            video = await db.videos.find_one(vq)
             if video:
                 # Get buffered counts
                 buffered = await metrics_buffer.get_buffered_counts(video_id)
@@ -67,9 +75,15 @@ class Subscription:
             await asyncio.sleep(5)  # Update every 5 seconds
     
     @strawberry.subscription
-    async def new_comments(self, video_id: str) -> AsyncGenerator[CommentType, None]:
+    async def new_comments(self, info, video_id: str) -> AsyncGenerator[CommentType, None]:
         """Subscribe to new comments on a video"""
+        viewer = require_user_id(info)
+        vid = parse_object_id(video_id)
+        vq = visible_video_filter(viewer)
+        vq["_id"] = vid
         db = get_database()
+        if not await db.videos.find_one(vq, {"_id": 1}):
+            raise Exception("Video not found")
         last_check = datetime.utcnow()
         
         while True:
@@ -77,79 +91,49 @@ class Subscription:
             
             # Find new comments since last check
             cursor = db.comments.find({
-                "video_id": ObjectId(video_id),
+                "video_id": vid,
                 "created_at": {"$gt": last_check},
                 "is_active": True
             })
             
             async for comment in cursor:
-                yield CommentType(
-                    id=str(comment["_id"]),
-                    video_id=str(comment["video_id"]),
-                    user_id=str(comment["user_id"]),
-                    content=comment["content"],
-                    likes_count=comment.get("likes_count", 0),
-                    replies_count=comment.get("replies_count", 0),
-                    is_reply=comment.get("is_reply", False),
-                    parent_comment_id=str(comment["parent_comment_id"]) if comment.get("parent_comment_id") else None,
-                    created_at=comment["created_at"]
-                )
+                yield comment_from_doc(comment, viewer)
             
             last_check = datetime.utcnow()
     
     @strawberry.subscription
-    async def follower_count(self, user_id: str) -> AsyncGenerator[int, None]:
+    async def follower_count(self, info, user_id: str) -> AsyncGenerator[int, None]:
         """Subscribe to follower count updates for a user"""
+        require_user_id(info)
+        uid = parse_object_id(user_id)
         db = get_database()
         
         while True:
-            user = await db.users.find_one({"_id": ObjectId(user_id)})
+            user = await db.users.find_one({"_id": uid})
             if user:
                 yield user.get("followers_count", 0)
             
             await asyncio.sleep(10)  # Check every 10 seconds
     
     @strawberry.subscription
-    async def trending_videos(self, country: Optional[str] = None) -> AsyncGenerator[List[VideoType], None]:
+    async def trending_videos(self, info, country: Optional[str] = None) -> AsyncGenerator[List[VideoType], None]:
         """Subscribe to trending videos updates"""
+        require_user_id(info)
         db = get_database()
         
         while True:
-            # Build query
-            query = {"is_active": True, "privacy": "public"}
-            if country:
-                query["country"] = country
-            
-            # Get top 10 trending videos by views in last 24 hours
-            cursor = db.videos.find(query).sort([
-                ("views_count", -1),
-                ("likes_count", -1)
-            ]).limit(10)
-            
+            # Momentum-ranked over the last 48 hours (app/services/trending.py);
+            # `country` comes first, then the rest of Wano.
+            top = await trending.top(db, country=country, limit=10)
+            full = {d["_id"]: d async for d in db.videos.find({"_id": {"$in": [t["_id"] for t in top]}})}
             videos = []
-            async for video in cursor:
-                video_id = str(video["_id"])
-                buffered = await metrics_buffer.get_buffered_counts(video_id)
-                
-                videos.append(VideoType(
-                    id=video_id,
-                    creator_id=str(video["creator_id"]),
-                    title=video.get("title"),
-                    description=video.get("description"),
-                    video_type=VideoTypeEnum(video["video_type"]),
-                    privacy=VideoPrivacyEnum(video["privacy"]),
-                    views_count=video.get("views_count", 0),
-                    likes_count=video.get("likes_count", 0),
-                    comments_count=video.get("comments_count", 0),
-                    shares_count=video.get("shares_count", 0),
-                    hashtags=video.get("hashtags", []),
-                    categories=video.get("categories", []),
-                    created_at=video["created_at"],
-                    buffered_views=buffered["views"],
-                    buffered_likes=buffered["likes"],
-                    buffered_comments=buffered["comments"]
-                ))
-            
+            for t in top:
+                video = full.get(t["_id"])
+                if not video:
+                    continue
+                buffered = await metrics_buffer.get_buffered_counts(str(video["_id"]))
+                videos.append(video_from_doc(video, buffered))
+
             yield videos
             
             await asyncio.sleep(60)  # Update every minute

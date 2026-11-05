@@ -7,13 +7,17 @@ The app downloads the whole catalogue and searches/filters it on the client,
 so there is no server-side search or home layout here.
 """
 
+import logging
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 from bson import ObjectId
+from pydantic import ValidationError
 from fastapi import APIRouter, Depends, HTTPException, status
 from app.api.deps import get_current_active_user
 from app.core.database import get_database
 from app.models.tv import TvGenreResponse, TvMaker, TvTitleResponse, TvWatchResponse
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -25,12 +29,15 @@ async def _title_responses(db, docs: List[dict]) -> List[TvTitleResponse]:
     """
     Builds the responses, filling in each title's makers from their user
     accounts in one query. Makers whose account is gone or deactivated are
-    left out, so the app never links to a deleted profile.
+    left out, so the app never links to a deleted profile. A malformed
+    title is logged and skipped, so one bad catalogue entry can't 500 the
+    whole list.
     """
     maker_ids = {
-        maker["user_id"]
+        maker.get("user_id")
         for doc in docs
         for maker in doc.get("makers") or []
+        if isinstance(maker, dict) and maker.get("user_id")
     }
     users = {}
     if maker_ids:
@@ -42,22 +49,34 @@ async def _title_responses(db, docs: List[dict]) -> List[TvTitleResponse]:
 
     responses = []
     for doc in docs:
-        makers = []
-        for maker in doc.get("makers") or []:
-            user = users.get(maker["user_id"])
-            if not user:
-                continue
-            makers.append(TvMaker(
-                user_id=str(user["_id"]),
-                username=(user.get("username") or "").strip(),
-                display_name=user.get("display_name"),
-                profile_picture=user.get("profile_picture"),
-                role=maker["role"],
-            ))
-        doc = {**doc, "id": str(doc["_id"]), "makers": makers}
-        doc.pop("_id")
-        responses.append(TvTitleResponse(**doc))
+        raw_id = doc.get("_id")
+        try:
+            makers = []
+            for maker in doc.get("makers") or []:
+                user = users.get(maker.get("user_id"))
+                if not user:
+                    continue
+                makers.append(TvMaker(
+                    user_id=str(user["_id"]),
+                    username=(user.get("username") or "").strip(),
+                    display_name=user.get("display_name"),
+                    profile_picture=user.get("profile_picture"),
+                    role=maker["role"],
+                ))
+            data = {**doc, "id": str(doc["_id"]), "makers": makers}
+            data.pop("_id", None)
+            responses.append(TvTitleResponse(**data))
+        except (ValidationError, KeyError, TypeError, ValueError, AttributeError) as e:
+            logger.warning("Skipping invalid tv_titles document %s: %s", raw_id, e)
     return responses
+
+
+def _genre_response(doc: dict) -> Optional[TvGenreResponse]:
+    try:
+        return TvGenreResponse(name=doc["name"], image=doc["image"])
+    except (ValidationError, KeyError, TypeError, ValueError) as e:
+        logger.warning("Skipping invalid tv_genres document %s: %s", doc.get("_id"), e)
+        return None
 
 
 def _title_object_id(title_id: str) -> ObjectId:
@@ -86,7 +105,8 @@ async def get_genres(current_user: str = Depends(get_current_active_user)):
     docs = await db.tv_genres.find({"is_active": True}).sort("order", 1).to_list(
         length=None
     )
-    return [TvGenreResponse(name=doc["name"], image=doc["image"]) for doc in docs]
+    genres = (_genre_response(doc) for doc in docs)
+    return [g for g in genres if g is not None]
 
 
 @router.get("/history", response_model=List[TvTitleResponse])

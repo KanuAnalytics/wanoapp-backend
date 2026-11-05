@@ -5,7 +5,7 @@ app/core/security.py
 
 
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -23,8 +23,15 @@ def get_password_hash(password: str) -> str:
     return pwd_context.hash(password)
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
-    """Create JWT access token (never expires)"""
+    """Create a JWT access token with an `iat` claim and no expiry.
+
+    Tokens don't expire (as before), so ACCESS_TOKEN_EXPIRE_MINUTES and
+    `expires_delta` are ignored: a short value in the server's env would
+    otherwise sign everyone out. `iat` still lets deps reject tokens issued
+    before a password change (users.password_changed_at)."""
     to_encode = data.copy()
+    now = datetime.now(timezone.utc)
+    to_encode.setdefault("iat", int(now.timestamp()))
     encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
     return encoded_jwt
 

@@ -10,8 +10,9 @@ import asyncio
 import json
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
+from urllib.parse import urlparse
 
 import boto3
 from botocore.config import Config
@@ -25,7 +26,8 @@ from app.services.upload_DO import (
     get_stream_video_name,
     get_stream_video_status,
 )
-from app.services.video_posts import DEFAULT_THUMBNAIL, create_video_post
+from app.services.songs import load_json_songs
+from app.services.video_posts import DEFAULT_THUMBNAIL, create_video_post, stream_uid_exact_query
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +41,82 @@ STATUS_FAILED = "failed"
 
 STITCHED_WIDTH = 1080
 STITCHED_HEIGHT = 1920
+
+MAX_CLIPS = 20
+# How long stitching itself may run before the job is written off.
+STALE_JOB_MINUTES = 30
+# How long a job may wait for its clips to finish uploading. The app uploads
+# in the background and resumes after a relaunch, so this has to be generous.
+STALE_WAITING_MINUTES = 24 * 60
+
+_STREAM_HOSTS = ("videodelivery.net",)
+_STREAM_HOST_SUFFIXES = (".cloudflarestream.com",)
+_STREAM_UID_RE = re.compile(r"^[a-f0-9]{32}$")
+
+
+class StitchValidationError(ValueError):
+    """The request names a clip or song the Lambda must not fetch."""
+
+
+def _is_stream_host(host: str) -> bool:
+    host = (host or "").lower()
+    return host in _STREAM_HOSTS or any(host.endswith(sfx) for sfx in _STREAM_HOST_SUFFIXES)
+
+
+def validate_clip_url(url: str) -> str:
+    """Clips must be Cloudflare Stream playback URLs: https, a Stream host, and
+    a 32-hex UID as the first path segment. Returns the UID."""
+    parsed = urlparse(url or "")
+    if parsed.scheme != "https" or not _is_stream_host(parsed.hostname or "") or parsed.username or parsed.port:
+        raise StitchValidationError("Clips must be Cloudflare Stream videos")
+    parts = [p for p in parsed.path.split("/") if p]
+    if not parts or not _STREAM_UID_RE.match(parts[0]):
+        raise StitchValidationError("Clip URL has no valid Cloudflare Stream id")
+    return parts[0]
+
+
+async def validate_audio_uri(db, uri: str) -> None:
+    """Music must be on our Spaces CDN, or be the uri of a song in the library."""
+    parsed = urlparse(uri or "")
+    if parsed.scheme != "https" or parsed.username or parsed.port:
+        raise StitchValidationError("Audio must be an https URL")
+    cdn_prefix = settings.DO_SPACES_CDN_URL.rstrip("/") + "/"
+    if uri.startswith(cdn_prefix):
+        return
+    if await db.songs.find_one({"uri": uri}, {"_id": 1}):
+        return
+    if any(s.get("uri") == uri for s in load_json_songs()):
+        return
+    raise StitchValidationError("Audio must be a song from the library")
+
+
+async def fail_stale_jobs(db, minutes: int = STALE_JOB_MINUTES,
+                          waiting_minutes: int = STALE_WAITING_MINUTES) -> int:
+    """Jobs whose stitching stopped responding (a lost webhook, a crashed
+    worker) are marked failed so they stop holding clips.
+
+    A job stays "waiting" for as long as its clips are still uploading, and
+    the app uploads them in the background, carrying on across app launches,
+    so a post on a slow connection can legitimately sit there for hours.
+    That state therefore gets its own, far longer limit: sweeping it after
+    half an hour threw away posts whose upload was merely slow, and the
+    clips arriving afterwards could no longer start them.
+    """
+    now = datetime.utcnow()
+    result = await db.pending_videos.update_many(
+        {"$or": [
+            {"status": STATUS_PROCESSING,
+             "updated_at": {"$lt": now - timedelta(minutes=minutes)}},
+            {"status": STATUS_WAITING,
+             "updated_at": {"$lt": now - timedelta(minutes=waiting_minutes)}},
+        ]},
+        {"$set": {
+            "status": STATUS_FAILED,
+            "error": "timed out",
+            "updated_at": now,
+        }},
+    )
+    return result.modified_count
 
 # asyncio only keeps weak references to tasks, so running jobs are held here until they finish.
 _running_tasks = set()
@@ -58,20 +136,30 @@ async def create_stitch_job(
     post: {"title", "description", "sound", "privacy", "thumbnail", "categoryId", "subcategoryId", "comments_enabled"}
     """
     db = get_database()
-    now = datetime.utcnow()
+
+    try:
+        await fail_stale_jobs(db, STALE_JOB_MINUTES)
+    except Exception:
+        logger.exception("Could not fail stale stitch jobs")
+
+    if not clips or len(clips) > MAX_CLIPS:
+        raise StitchValidationError(f"A post can have 1 to {MAX_CLIPS} clips")
 
     clip_docs = []
     for clip in clips:
-        stream_uid = extract_stream_uid(clip["url"])
+        stream_uid = validate_clip_url(clip["url"])
         clip_docs.append({
             "url": clip["url"],
             "stream_uid": stream_uid,
             "start": clip.get("start") or 0.0,
             "end": clip.get("end"),
-            # Clips that are not on Cloudflare Stream (plain MP4 links) need no processing.
-            "ready": stream_uid is None,
+            "ready": False,
         })
 
+    if audio_url:
+        await validate_audio_uri(db, audio_url)
+
+    now = datetime.utcnow()
     result = await db.pending_videos.insert_one({
         "creator_id": ObjectId(user_id),
         "status": STATUS_WAITING,
@@ -90,15 +178,24 @@ async def create_stitch_job(
     })
     job_id = result.inserted_id
 
-    # The job is saved before the clips are checked, so a webhook that arrives
-    # during the check still finds it. A clip that finished earlier sends no
-    # further webhook, which is why each one is also asked for directly here.
-    for stream_uid in {c["stream_uid"] for c in clip_docs if c["stream_uid"]}:
-        status = await asyncio.to_thread(get_stream_video_status, stream_uid)
-        if status.get("readyToStream"):
-            await _mark_clip_ready(stream_uid)
+    try:
+        # The job is saved before the clips are checked, so a webhook that arrives
+        # during the check still finds it. A clip that finished earlier sends no
+        # further webhook, which is why each one is also asked for directly here.
+        for stream_uid in {c["stream_uid"] for c in clip_docs if c["stream_uid"]}:
+            status = await asyncio.to_thread(get_stream_video_status, stream_uid)
+            if status.get("readyToStream"):
+                await _mark_clip_ready(stream_uid)
 
-    await _start_if_all_ready(job_id)
+        await _start_if_all_ready(job_id)
+    except Exception as e:
+        # Never leave a job "waiting" forever because the checks above broke.
+        logger.exception("Stitch job %s failed while starting", job_id)
+        await db.pending_videos.update_one(
+            {"_id": job_id, "status": {"$in": [STATUS_WAITING, STATUS_PROCESSING]}},
+            {"$set": {"status": STATUS_FAILED, "error": f"could not start: {e}", "updated_at": datetime.utcnow()}},
+        )
+        raise
     return str(job_id)
 
 
@@ -170,8 +267,15 @@ async def _reason_to_keep_clip(stream_uid: str, job_id: ObjectId) -> Optional[st
     # footage is the two checks below: a video attached to a post, or still
     # needed by another job, is never deleted.
 
-    if await db.videos.find_one({"remoteUrl_CF": {"$regex": re.escape(stream_uid)}}, {"_id": 1}):
+    if await db.videos.find_one(stream_uid_exact_query(stream_uid), {"_id": 1}):
         return "it is the video of a post"
+
+    loose = {"$regex": re.escape(stream_uid)}
+    if await db.drafts.find_one(
+        {"is_active": True, "$or": [{"clips.remoteUrl": loose}, {"clips.trimmedUri": loose}]},
+        {"_id": 1},
+    ):
+        return "a draft still uses it"
 
     other_job = await db.pending_videos.find_one(
         {

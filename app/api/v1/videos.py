@@ -5,24 +5,28 @@ app/api/v1/vidoes.py
 
 """
 from typing import List, Literal, Optional
-from fastapi import APIRouter, HTTPException, Depends, status, UploadFile, File, Form, Query, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Depends, Header, Request, status, UploadFile, File, Form, Query, BackgroundTasks
 from bson import ObjectId
 from datetime import datetime
 from app.models.video import Video, VideoType, VideoPrivacy
 from app.core.database import get_database
+from app.core.config import settings
 from app.api.deps import get_current_active_user, get_optional_active_user, get_verified_user
 from app.services.expo import send_push_message
 from app.services.metrics_service import metrics_buffer
 from pydantic import BaseModel,HttpUrl, Field, model_validator
 import re
 import json
+import logging
 from bson.json_util import dumps
 from app.models.user import UserType
 from recombee_api_client.api_requests import SetViewPortion, AddRating, DeleteRating, AddBookmark, DeleteBookmark, SetItemValues, Batch, DeleteItem
 from app.services.recombee_service import recombee_send
+from app.services import for_you, recommendations, trending
+from app.services.recommendations import anon_id, viewer_id
 from app.services.video_deletion import soft_delete_video
-from app.services.stitch_jobs import create_stitch_job
-from app.services.video_posts import DEFAULT_THUMBNAIL, create_video_post
+from app.services.stitch_jobs import MAX_CLIPS, StitchValidationError, create_stitch_job
+from app.services.video_posts import DEFAULT_THUMBNAIL, create_video_post, post_stream_uid, stream_uid_reference_query
 from app.services.songs import sound_for_post
 from app.services.scheduled_publisher import normalize_schedule
 
@@ -35,6 +39,47 @@ WATCHED_PORTION_THRESHOLD = 0.25
 TITLE_MAX_LENGTH = 100
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+
+def _video_oid(video_id: str) -> ObjectId:
+    if not ObjectId.is_valid(video_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid video ID"
+        )
+    return ObjectId(video_id)
+
+
+def _client_ip(request: Optional[Request]) -> Optional[str]:
+    if request is None:
+        return None
+    # X-Forwarded-For is "client-claimed, ..., proxy-seen"; anyone can write the
+    # left part, so trust only the entries our own proxies appended (rightmost).
+    hops = max(0, int(getattr(settings, "TRUSTED_PROXY_HOPS", 1)))
+    fwd = [p.strip() for p in (request.headers.get("x-forwarded-for") or "").split(",") if p.strip()]
+    if hops and len(fwd) >= hops:
+        return fwd[-hops][:64]
+    return request.client.host if request.client else None
+
+
+def _visible_to(video: dict, current_user: Optional[str]) -> bool:
+    """Opening a post by its ID (a share link): public and unlisted posts work
+    for anyone who has the link; private ones only for the creator. Lists,
+    feeds and search still show public posts only."""
+    if video.get("privacy", "public") in ("public", "unlisted"):
+        return True
+    return bool(current_user) and str(video.get("creator_id")) == str(current_user)
+
+
+async def _active_video_or_404(db, video_oid: ObjectId, projection: Optional[dict] = None) -> dict:
+    video = await db.videos.find_one({"_id": video_oid, "is_active": True}, projection)
+    if not video:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Video not found"
+        )
+    return video
 
 
 def clean_title(title: Optional[str]) -> Optional[str]:
@@ -95,7 +140,7 @@ class StitchAudio(BaseModel):
     id: Optional[str] = None
 
 class VideoStitch(BaseModel):
-    videoUrls: List[StitchClip] = Field(..., min_length=1)
+    videoUrls: List[StitchClip] = Field(..., min_length=1, max_length=MAX_CLIPS)
     audio: Optional[StitchAudio] = None
     keepOriginalSound: bool = False
     # Volume multipliers: 1 leaves the level alone, 0.5 halves it, 0 mutes.
@@ -122,8 +167,8 @@ class VideoCreate(BaseModel):
     comments_enabled: bool = True
 
 class TrackWatchBody(BaseModel):
-    portion: float = Field(..., ge=0, le=1)
-    time_spent: Optional[float] = None
+    portion: float = Field(..., ge=0, le=1, allow_inf_nan=False)
+    time_spent: Optional[float] = Field(None, ge=0, le=86400, allow_inf_nan=False)
     recomm_id: Optional[str] = None
     auto_presented: bool = False
 
@@ -203,6 +248,22 @@ async def post_video(
                     detail="remoteUrl and remoteUrl_CF are required for video posts",
                 )
 
+            # remoteUrl_CF comes from the client: refuse a Cloudflare stream that
+            # already belongs to someone else's post, or deleting this post
+            # (or theirs) would take down the other one's video.
+            stream_uid = post_stream_uid(input.remoteUrl_CF, input.remoteUrl)
+            if stream_uid:
+                db = get_database()
+                taken = await db.videos.find_one(
+                    {**stream_uid_reference_query(stream_uid), "creator_id": {"$ne": ObjectId(current_user)}},
+                    {"_id": 1},
+                )
+                if taken:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="This video is already used by another post",
+                    )
+
         # Only photo posts play a separate song; a video's song is mixed in by /stitch.
         sound = await sound_for_post(input.sound_id) if is_photo_post and input.sound_id else None
         scheduled_at, scheduled_timezone = normalize_schedule(
@@ -239,10 +300,11 @@ async def post_video(
         return {"message": message, "video_id": video_id}
     except HTTPException:
         raise
-    except Exception as e:
+    except Exception:
+        logger.exception("Posting a video failed")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail="Could not create the post"
         )
 @router.post("/stitch", status_code=status.HTTP_202_ACCEPTED)
 async def stitch_video(
@@ -257,7 +319,23 @@ async def stitch_video(
     scheduled_at, scheduled_timezone = normalize_schedule(
         input.scheduled_at, input.timezone, require_lead_time=False
     )
-    job_id = await create_stitch_job(
+    try:
+        job_id = await _create_stitch_job(input, current_user, sound, scheduled_at, scheduled_timezone)
+    except StitchValidationError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Creating a stitch job failed")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not start processing this video"
+        )
+    return {"message": "Video submitted successfully. Processing in background.", "job_id": job_id}
+
+
+async def _create_stitch_job(input: VideoStitch, current_user: str, sound, scheduled_at, scheduled_timezone) -> str:
+    return await create_stitch_job(
         user_id=current_user,
         clips=[clip.model_dump() for clip in input.videoUrls],
         audio_url=input.audio.uri if input.audio else None,
@@ -277,7 +355,6 @@ async def stitch_video(
             "scheduled_timezone": scheduled_timezone,
         },
     )
-    return {"message": "Video submitted successfully. Processing in background.", "job_id": job_id}
 
 # Modify create_video function
 # Update the create_video endpoint to use get_verified_user
@@ -340,19 +417,21 @@ async def create_video(
 
 @router.get("/", response_model=List[VideoResponse])
 async def get_videos(
-    skip: int = 0,
-    limit: int = 20,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=50),
     video_type: Optional[VideoType] = None,
     privacy: Optional[VideoPrivacy] = None
 ):
-    """Get all videos with pagination"""
+    """Get all public videos with pagination"""
     db = get_database()
-    
-    query = {"is_active": True}
+
+    # This listing spans every creator, so it only ever shows public posts;
+    # asking for private/unlisted ones returns nothing rather than leaking them.
+    if privacy and privacy != VideoPrivacy.PUBLIC:
+        return []
+    query = {"is_active": True, "privacy": "public"}
     if video_type:
         query["video_type"] = video_type
-    if privacy:
-        query["privacy"] = privacy
     
     cursor = db.videos.find(query).skip(skip).limit(limit).sort("created_at", -1)
     videos = []
@@ -376,9 +455,9 @@ async def get_videos(
 # --- Search endpoint ---
 @router.get("/search")
 async def search_videos(
-    q: str = Query(..., description="Search query"),
-    skip: int = 0,
-    limit: int = 20,
+    q: str = Query(..., description="Search query", max_length=200),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=50),
 ):
     """
     Search videos by description field only.
@@ -386,7 +465,7 @@ async def search_videos(
     db = get_database()
     regex = {"$regex": f"^{re.escape(q.strip())}", "$options": "i"}
     pipeline = [
-        {"$match": {"description": regex, "is_active": True}},        
+        {"$match": {"description": regex, "is_active": True, "privacy": "public"}},
         {"$sort": {"created_at": -1}},
         {"$skip": skip},
         {"$limit": limit},
@@ -472,29 +551,43 @@ async def get_video(
     portion: Optional[float] = None,
     time_spent: Optional[float] = None,
     auto_presented: bool = False,
+    x_device_id: Optional[str] = Header(None, alias="X-Device-Id"),
+    request: Request = None,
 ):
-    """Get a specific video by ID and increment view count"""
+    """Get a specific video by ID, and count the view."""
     db = get_database()
-    
-    if not ObjectId.is_valid(video_id):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid video ID"
-        )
-    
+
+    video_oid = _video_oid(video_id)
     video = await db.videos.find_one({
-        "_id": ObjectId(video_id),
+        "_id": video_oid,
         "is_active": True
     })
-    
-    if not video:
+
+    # A private post looks exactly like a missing one to everyone but its creator.
+    if not video or not _visible_to(video, current_user):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Video not found"
         )
-    
-    # Increment view count in buffer
-    await metrics_buffer.increment_view(video_id)
+
+    # Views are counted here as well as in POST /{video_id}/watch. Builds
+    # already in the stores count a view by opening the video and never call
+    # /watch, so counting there alone would stop their views dead.
+    # count_view_once allows one view per viewer per video every 6 hours, so
+    # a build that calls both still counts a single view.
+    viewer = viewer_id(current_user, x_device_id)
+    if await trending.count_view_once(db, viewer=viewer, video_id=video_id, ip=_client_ip(request)):
+        await metrics_buffer.increment_view(video_id)
+        await trending.record_watch(
+            db, video_id, logged_in=bool(current_user),
+            portion=portion if portion is not None else 0.0,
+            viewer=current_user, creator=video.get("creator_id"),
+        )
+        counts = await metrics_buffer.get_buffered_counts(video_id)
+        await notify_view_milestones(
+            db, video, video_id,
+            video.get("views_count", 0) + counts["views"], background_tasks,
+        )
 
     if current_user and portion is not None:
         try:
@@ -511,9 +604,6 @@ async def get_video(
     
     # Get buffered counts for immediate display
     buffered = await metrics_buffer.get_buffered_counts(video_id)
-
-    total_views = video.get("views_count", 0) + buffered["views"]
-    await notify_view_milestones(db, video, video_id, total_views, background_tasks)
 
     is_liked = False
     is_following = False
@@ -551,6 +641,8 @@ async def track_video_watch(
     body: TrackWatchBody,
     current_user: Optional[str] = Depends(get_optional_active_user),
     background_tasks: BackgroundTasks = None,
+    x_device_id: Optional[str] = Header(None, alias="X-Device-Id"),
+    request: Request = None,
 ):
     """
     Called once per video, when the feed scrolls off it — replaces the old
@@ -561,46 +653,55 @@ async def track_video_watch(
     the feed to later filter out. The feed-exclusion filtering itself is not
     implemented yet — this endpoint only records the data it will need.
     """
-    if not ObjectId.is_valid(video_id):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid video ID",
-        )
+    _video_oid(video_id)
 
     db = get_database()
 
     video = await db.videos.find_one(
         {"_id": ObjectId(video_id), "is_active": True},
-        {"description": 1, "urls.thumbnail": 1, "creator_id": 1, "views_count": 1},
+        {"description": 1, "urls.thumbnail": 1, "creator_id": 1, "views_count": 1, "privacy": 1},
     )
-    if not video:
+    if not video or not _visible_to(video, current_user):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Video not found",
         )
 
-    # Buffered view count — GET /{video_id} did this on every call; preserved
-    # here since the feed no longer calls that endpoint for tracking.
-    await metrics_buffer.increment_view(video_id)
+    viewer = viewer_id(current_user, x_device_id)
 
-    buffered = await metrics_buffer.get_buffered_counts(video_id)
-    total_views = video.get("views_count", 0) + buffered["views"]
-    await notify_view_milestones(db, video, video_id, total_views, background_tasks)
+    # The only place a view is counted (GET /{video_id} no longer does), and
+    # only once per viewer per video every 6 hours, so replaying /watch can't
+    # inflate views or push a video into trending.
+    counted = await trending.count_view_once(db, viewer=viewer, video_id=video_id, ip=_client_ip(request))
+    if counted:
+        await metrics_buffer.increment_view(video_id)
+        await trending.record_watch(db, video_id, logged_in=bool(current_user), portion=body.portion,
+                                    viewer=current_user, creator=video.get("creator_id"))
+        buffered = await metrics_buffer.get_buffered_counts(video_id)
+        total_views = video.get("views_count", 0) + buffered["views"]
+        await notify_view_milestones(db, video, video_id, total_views, background_tasks)
 
     watched = False
 
-    if current_user:
+    # Logged-out devices report too, under their own anon-<device> profile.
+    if current_user or anon_id(x_device_id):
         try:
             kwargs = {"auto_presented": body.auto_presented, "cascade_create": True}
             if body.recomm_id:
                 kwargs["recomm_id"] = body.recomm_id
             if body.time_spent is not None:
                 kwargs["time_spent"] = body.time_spent
-            req = SetViewPortion(current_user, video_id, body.portion, **kwargs)
+            req = SetViewPortion(viewer, video_id, body.portion, **kwargs)
             req.timeout = 5000
             await recombee_send(req)
         except Exception:
             pass
+    try:
+        await for_you.record_watch(db, viewer=viewer, video_id=video_id, portion=body.portion)
+    except Exception:
+        pass
+
+    if current_user:
 
         if body.portion >= WATCHED_PORTION_THRESHOLD:
             now = datetime.utcnow()
@@ -619,6 +720,54 @@ async def track_video_watch(
 
     return {"watched": watched}
 
+class FeedbackBody(BaseModel):
+    recomm_id: Optional[str] = None
+
+
+async def _visible_video_or_404(db, video_id: str, current_user: Optional[str]) -> dict:
+    video = await db.videos.find_one({"_id": _video_oid(video_id), "is_active": True},
+                                     {"creator_id": 1, "privacy": 1})
+    if not video or not _visible_to(video, current_user):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video not found")
+    return video
+
+
+@router.post("/{video_id}/share", status_code=status.HTTP_200_OK)
+async def share_video(
+    video_id: str,
+    body: Optional[FeedbackBody] = None,
+    current_user: str = Depends(get_current_active_user),
+):
+    """The app calls this when someone shares a post; a share is one of the
+    strongest signals that they liked it."""
+    db = get_database()
+    video = await _visible_video_or_404(db, video_id, current_user)
+    await db.videos.update_one({"_id": ObjectId(video_id)}, {"$inc": {"shares_count": 1}})
+    await trending.record_once(db, video_id, actor=current_user, creator=video.get("creator_id"),
+                               kind="share", shares=1)
+    await recommendations.report_share(current_user, video_id, (body or FeedbackBody()).recomm_id)
+    return {"shared": True}
+
+
+@router.post("/{video_id}/not-interested", status_code=status.HTTP_200_OK)
+async def not_interested(
+    video_id: str,
+    body: Optional[FeedbackBody] = None,
+    current_user: str = Depends(get_current_active_user),
+):
+    """"Not interested": tells Recombee, and the post never comes back in For You."""
+    db = get_database()
+    await _visible_video_or_404(db, video_id, current_user)
+    now = datetime.utcnow()
+    await db.watch_history.update_one(
+        {"user_id": ObjectId(current_user), "video_id": ObjectId(video_id)},
+        {"$set": {"watched_at": now, "not_interested": True}, "$setOnInsert": {"first_watched_at": now}},
+        upsert=True,
+    )
+    await recommendations.report_not_interested(current_user, video_id, (body or FeedbackBody()).recomm_id)
+    return {"not_interested": True}
+
+
 @router.put("/{video_id}", response_model=VideoResponse)
 async def update_video(
     video_id: str,
@@ -627,9 +776,10 @@ async def update_video(
 ):
     """Update a video (only creator can update)"""
     db = get_database()
-    
+
+    video_oid = _video_oid(video_id)
     # Verify ownership
-    video = await db.videos.find_one({"_id": ObjectId(video_id)})
+    video = await db.videos.find_one({"_id": video_oid})
     if not video:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -645,14 +795,34 @@ async def update_video(
     update_data = {
         k: v for k, v in video_update.dict(exclude_unset=True).items()
     }
+    if "privacy" in update_data and update_data["privacy"] is None:
+        del update_data["privacy"]
+    old_privacy = video.get("privacy")
     update_data["updated_at"] = datetime.utcnow()
-    
+    # Videos made before stream_uid existed get it on their next edit.
+    if not video.get("stream_uid") and video.get("media_type") != "photo":
+        uid = post_stream_uid(video.get("remoteUrl_CF"), video.get("remoteUrl"))
+        if uid:
+            update_data["stream_uid"] = uid
+
     await db.videos.update_one(
-        {"_id": ObjectId(video_id)},
+        {"_id": video_oid},
         {"$set": update_data}
     )
-    
-    video = await db.videos.find_one({"_id": ObjectId(video_id)})
+
+    new_privacy = update_data.get("privacy")
+    if new_privacy is not None:
+        new_privacy = getattr(new_privacy, "value", new_privacy)
+    if new_privacy is not None and new_privacy != old_privacy and video.get("is_active") is not False:
+        # The v2 feed filters on Recombee's copy of privacy; keep it in step.
+        try:
+            req = SetItemValues(video_id, {"privacy": new_privacy}, cascade_create=False)
+            req.timeout = 5000
+            await recombee_send(req)
+        except Exception:
+            logger.exception("Could not sync privacy of video %s to Recombee", video_id)
+
+    video = await db.videos.find_one({"_id": video_oid})
     video["_id"] = str(video["_id"])
     video["creator_id"] = str(video["creator_id"])
     
@@ -727,25 +897,30 @@ async def like_video(
 ):
     """Like a video (buffered)"""
     db = get_database()
-    
-    # Check if already liked
-    user = await db.users.find_one({"_id": ObjectId(current_user)})
-    if ObjectId(video_id) in user.get("liked_videos", []):
+    video_oid = _video_oid(video_id)
+
+    video = await _active_video_or_404(
+        db, video_oid,
+        {"description": 1, "urls.thumbnail": 1, "thumbnail": 1, "creator_id": 1, "privacy": 1},
+    )
+    if not _visible_to(video, current_user):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video not found")
+
+    # Conditional add: only the request that actually adds the like counts it,
+    # so repeated or concurrent likes can't inflate the count.
+    result = await db.users.update_one(
+        {"_id": ObjectId(current_user), "liked_videos": {"$ne": video_oid}},
+        {"$addToSet": {"liked_videos": video_oid}}
+    )
+    if result.modified_count != 1:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Video already liked"
         )
-    
-    # Add to user's liked videos
-    await db.users.update_one(
-        {"_id": ObjectId(current_user)},
-        {"$addToSet": {"liked_videos": ObjectId(video_id)}}
-    )
 
-    video = await db.videos.find_one(
-        {"_id": ObjectId(video_id)},
-        {"description": 1, "urls.thumbnail": 1, "thumbnail": 1, "creator_id": 1},
-    )
+    user = await db.users.find_one(
+        {"_id": ObjectId(current_user)}, {"display_name": 1, "username": 1}
+    ) or {}
 
     # A like means the user has seen the video, so record it in watch_history
     # the same as a >=25% watch -- the feed's exclude_watched filter then
@@ -754,36 +929,34 @@ async def like_video(
     # /watch endpoint from real playback, so a like never overwrites (or
     # invents) how much was actually watched. The row is kept on unlike;
     # they've still seen the video.
-    if video:
-        now = datetime.utcnow()
-        await db.watch_history.update_one(
-            {
-                "user_id": ObjectId(current_user),
-                "video_id": ObjectId(video_id),
-            },
-            {
-                "$set": {"watched_at": now, "liked_at": now},
-                "$setOnInsert": {"first_watched_at": now},
-            },
-            upsert=True,
-        )
+    now = datetime.utcnow()
+    await db.watch_history.update_one(
+        {
+            "user_id": ObjectId(current_user),
+            "video_id": video_oid,
+        },
+        {
+            "$set": {"watched_at": now, "liked_at": now},
+            "$setOnInsert": {"first_watched_at": now},
+        },
+        upsert=True,
+    )
 
     # Increment like count in buffer
     await metrics_buffer.increment_like(video_id)
-    
+    await trending.record_once(db, video_id, actor=current_user, creator=video.get("creator_id"),
+                               kind="like", likes=1)
+
     # Get current buffered count for response
     buffered = await metrics_buffer.get_buffered_counts(video_id)
 
+    creator_id = video.get("creator_id")
     if background_tasks is not None:
         display_name = user.get("display_name") or user.get("username") or "Someone"
-        description = (video or {}).get("description") or ""
-        description = description.strip()
+        description = (video.get("description") or "").strip()
         description_preview = description[:30] + ("..." if len(description) > 30 else "")
-        thumbnail_url = None
-        if video:
-            thumbnail_url = (video.get("urls") or {}).get("thumbnail")
+        thumbnail_url = (video.get("urls") or {}).get("thumbnail")
         recipient_tokens = []
-        creator_id = (video or {}).get("creator_id")
         if creator_id and str(creator_id) != str(current_user):
             recipient = await db.users.find_one(
                 {"_id": ObjectId(creator_id)},
@@ -800,14 +973,13 @@ async def like_video(
                 f"{display_name} liked your video",
                 thumbnail_url,
             )
-    
-    creator_id = (video or {}).get("creator_id")
+
     if creator_id and str(creator_id) != str(current_user):
         await db.notifications.insert_one({
             "recipient_id": ObjectId(creator_id),
             "type": "like",
             "user_id": ObjectId(current_user),
-            "post_id": ObjectId(video_id),
+            "post_id": video_oid,
             "date": datetime.utcnow(),
         })
 
@@ -830,31 +1002,33 @@ async def unlike_video(
 ):
     """Unlike a video (buffered)"""
     db = get_database()
-    
-    # Remove from user's liked videos
-    await db.users.update_one(
-        {"_id": ObjectId(current_user)},
-        {"$pull": {"liked_videos": ObjectId(video_id)}}
+    video_oid = _video_oid(video_id)
+    await _active_video_or_404(db, video_oid, {"_id": 1})
+
+    # Conditional pull: only a like that existed is taken off the count.
+    result = await db.users.update_one(
+        {"_id": ObjectId(current_user), "liked_videos": video_oid},
+        {"$pull": {"liked_videos": video_oid}}
     )
-    
-    # Decrement like count in buffer
-    await metrics_buffer.decrement_like(video_id)
+
+    if result.modified_count == 1:
+        await metrics_buffer.decrement_like(video_id)
+
+        await db.notifications.delete_one({
+            "type": "like",
+            "user_id": ObjectId(current_user),
+            "post_id": video_oid,
+        })
+
+        try:
+            req = DeleteRating(current_user, video_id)
+            req.timeout = 5000
+            await recombee_send(req)
+        except Exception:
+            pass
 
     # Get current buffered count for response
     buffered = await metrics_buffer.get_buffered_counts(video_id)
-
-    await db.notifications.delete_one({
-        "type": "like",
-        "user_id": ObjectId(current_user),
-        "post_id": ObjectId(video_id),
-    })
-
-    try:
-        req = DeleteRating(current_user, video_id)
-        req.timeout = 5000
-        await recombee_send(req)
-    except Exception:
-        pass
 
     return {
         "message": "Video unliked successfully",
@@ -870,34 +1044,41 @@ async def bookmark_video(
 ):
     """Bookmark a video"""
     db = get_database()
+    video_oid = _video_oid(video_id)
 
-    user = await db.users.find_one({"_id": ObjectId(current_user)})
-    video = await db.videos.find_one(
-        {"_id": ObjectId(video_id)},
-        {"description": 1, "urls.thumbnail": 1, "creator_id": 1},
+    video = await _active_video_or_404(
+        db, video_oid, {"description": 1, "urls.thumbnail": 1, "creator_id": 1, "privacy": 1},
     )
-    
-    # Add to user's bookmarked videos
-    await db.users.update_one(
-        {"_id": ObjectId(current_user)},
-        {"$addToSet": {"bookmarked_videos": ObjectId(video_id)}}
+    if not _visible_to(video, current_user):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video not found")
+
+    # Conditional add: a repeat bookmark is a no-op, not a second count.
+    result = await db.users.update_one(
+        {"_id": ObjectId(current_user), "bookmarked_videos": {"$ne": video_oid}},
+        {"$addToSet": {"bookmarked_videos": video_oid}}
     )
-    
+    if result.modified_count != 1:
+        return {"message": "Video bookmarked successfully"}
+
     # Increment bookmark count directly (not buffered for MVP)
     await db.videos.update_one(
-        {"_id": ObjectId(video_id)},
+        {"_id": video_oid},
         {"$inc": {"bookmarks_count": 1}}
     )
+    recommendations.mark_stats_dirty([video_id])
 
-    if background_tasks is not None and video:
+    if background_tasks is not None:
         creator_id = video.get("creator_id")
         if creator_id and str(creator_id) != str(current_user):
+            user = await db.users.find_one(
+                {"_id": ObjectId(current_user)}, {"display_name": 1, "username": 1}
+            ) or {}
             recipient = await db.users.find_one(
                 {"_id": ObjectId(creator_id)},
                 {"expo_push_tokens": 1},
             )
             recipient_tokens = (recipient or {}).get("expo_push_tokens") or []
-            display_name = (user or {}).get("display_name") or (user or {}).get("username") or "Someone"
+            display_name = user.get("display_name") or user.get("username") or "Someone"
             description = (video.get("description") or "").strip()
             description_preview = description[:30] + ("..." if len(description) > 30 else "")
             thumbnail_url = (video.get("urls") or {}).get("thumbnail")
@@ -910,7 +1091,7 @@ async def bookmark_video(
                     f"{display_name} saved your video",
                     thumbnail_url,
                 )
-    
+
     try:
         req = AddBookmark(current_user, video_id, cascade_create=True, recomm_id=recomm_id)
         req.timeout = 5000
@@ -927,24 +1108,27 @@ async def unbookmark_video(
 ):
     """Remove bookmark from a video"""
     db = get_database()
-    
-    # Remove from user's bookmarked videos
-    await db.users.update_one(
-        {"_id": ObjectId(current_user)},
-        {"$pull": {"bookmarked_videos": ObjectId(video_id)}}
+    video_oid = _video_oid(video_id)
+    await _active_video_or_404(db, video_oid, {"_id": 1})
+
+    # Conditional pull: only a bookmark that existed lowers the count.
+    result = await db.users.update_one(
+        {"_id": ObjectId(current_user), "bookmarked_videos": video_oid},
+        {"$pull": {"bookmarked_videos": video_oid}}
     )
-    
-    # Decrement bookmark count
-    await db.videos.update_one(
-        {"_id": ObjectId(video_id)},
-        {"$inc": {"bookmarks_count": -1}}
-    )
-    
-    try:
-        req = DeleteBookmark(current_user, video_id)
-        req.timeout = 5000
-        await recombee_send(req)
-    except Exception:
-        pass
+
+    if result.modified_count == 1:
+        await db.videos.update_one(
+            {"_id": video_oid, "bookmarks_count": {"$gt": 0}},
+            {"$inc": {"bookmarks_count": -1}}
+        )
+        recommendations.mark_stats_dirty([video_id])
+
+        try:
+            req = DeleteBookmark(current_user, video_id)
+            req.timeout = 5000
+            await recombee_send(req)
+        except Exception:
+            pass
 
     return {"message": "Bookmark removed successfully"}

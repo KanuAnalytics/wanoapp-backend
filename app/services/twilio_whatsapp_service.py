@@ -3,6 +3,7 @@ Twilio WhatsApp messaging service wrapper
 
 app/services/twilio_whatsapp_service.py
 """
+import asyncio
 import json
 import logging
 from typing import Any, Dict, Optional
@@ -46,8 +47,13 @@ class TwilioWhatsAppService:
         message_content_sid = content_sid or self.content_sid
         message_to = f"whatsapp:{to}"
 
+        if self.client is None:
+            raise TwilioWhatsAppServiceError("Twilio WhatsApp is not configured")
+
         try:
-            message = self.client.messages.create(
+            # The Twilio SDK is synchronous; run it off the event loop.
+            message = await asyncio.to_thread(
+                self.client.messages.create,
                 from_=self.from_number,
                 to=message_to,
                 content_sid=message_content_sid,

@@ -87,6 +87,12 @@ class FakeDB:
     def __init__(self, videos=(), users=()):
         self.videos = FakeCollection(list(videos))
         self.users = FakeCollection(list(users))
+        # Also checked for references before a stream or Spaces file is deleted.
+        self.drafts = FakeCollection([])
+        self.pending_videos = FakeCollection([])
+        self.songs = FakeCollection([])
+        self.tv_titles = FakeCollection([])
+        self.tv_genres = FakeCollection([])
 
 
 @pytest.fixture
