@@ -420,19 +420,20 @@ async def get_user_relationships(
         {"_id": 1, "display_name": 1, "username": 1, "profile_picture": 1}
     )
 
-    users = []
+    by_id = {}
     async for user in users_cursor:
-        users.append(
-            FollowerResponse(
-                _id=str(user["_id"]),
-                display_name=user.get("display_name", ""),
-                username=user["username"],
-                profile_picture=user.get("profile_picture"),
-                is_following=user["_id"] in current_following
-            )
+        by_id[user["_id"]] = FollowerResponse(
+            _id=str(user["_id"]),
+            display_name=user.get("display_name", ""),
+            username=user["username"],
+            profile_picture=user.get("profile_picture"),
+            is_following=user["_id"] in current_following
         )
 
-    return users
+    # Keep the caller's order. `$in` returns documents in index order, which
+    # would throw away the order the page was chosen in: who was followed
+    # first, or by name when searching.
+    return [by_id[uid] for uid in user_ids if uid in by_id]
 
 # Helper function to get video details
 async def get_video_details(db, video_ids: List[ObjectId]) -> List[VideoDetail]:
@@ -1973,34 +1974,68 @@ async def get_user_relationships_endpoint(
     relationship_type: RelationshipType,
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=100),
+    q: Optional[str] = Query(None, max_length=64,
+                             description="Filter by username or display name"),
     current_user: str = Depends(get_current_active_user),
 ):
-    """Get a page of user relationships (followers or following); at most 100 per request."""
+    """Get a page of user relationships (followers or following); at most 100 per request.
+
+    With `q`, only those whose username or display name contains it are
+    returned. Without it the page keeps the order people were followed in.
+    """
     db = get_database()
-    
+
     # Validate user_id format
     if not ObjectId.is_valid(user_id):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid user ID format"
         )
-    
-    user = await db.users.find_one({"_id": ObjectId(user_id)})
+
+    # Only the one array is read: a heavy account's other arrays (following,
+    # liked_videos) run into the thousands and would be loaded on every call.
+    user = await db.users.find_one(
+        {"_id": ObjectId(user_id)},
+        {relationship_type.value: 1},
+    )
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found"
         )
-    
+
     # Get the appropriate relationship list based on type
     relationship_ids = user.get(relationship_type.value, [])
-    
+
     if not relationship_ids:
         return []
-    
-    # Always paginate so a huge follower list can't be fetched in one call
-    relationship_ids = relationship_ids[skip:skip + limit]
-    
+
+    term = (q or "").strip()
+    if term:
+        # Let MongoDB do the filtering: matching in the caller would mean
+        # sending the whole list over just to throw most of it away.
+        # `_id: {$in: ...}` uses the primary key index, so this reads only
+        # this person's own followers, never the whole users collection.
+        # The term is escaped: a raw pattern from a caller can be built to
+        # burn CPU for a long time.
+        pattern = {"$regex": re.escape(term), "$options": "i"}
+        cursor = (
+            db.users.find(
+                {"_id": {"$in": relationship_ids}, "is_active": True,
+                 "$or": [{"username": pattern}, {"display_name": pattern}]},
+                {"_id": 1},
+            )
+            .sort("username", 1)
+            .skip(skip)
+            .limit(limit)
+        )
+        relationship_ids = [doc["_id"] async for doc in cursor]
+        if not relationship_ids:
+            return []
+    else:
+        # Always paginate so a huge follower list can't be fetched in one call
+        relationship_ids = relationship_ids[skip:skip + limit]
+
     # Get relationship details using the reusable function
     relationships = await get_user_relationships(
         db,

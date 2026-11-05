@@ -156,3 +156,96 @@ async def test_a_job_abandoned_for_days_is_eventually_failed(db):
 
     doc = await db.pending_videos.find_one({"_id": job.inserted_id})
     assert doc["status"] == stitch_jobs.STATUS_FAILED
+
+
+# --- Searching a followers list ----------------------------------------
+# The list is capped at 100 per request, so filtering in the app would only
+# ever see the first page.
+
+async def _with_followers(db, names):
+    owner, headers = await make_user(db)
+    ids = []
+    for username, display in names:
+        uid, _ = await make_user(db, username=username, display_name=display)
+        ids.append(ObjectId(uid))
+    await db.users.update_one({"_id": ObjectId(owner)}, {"$set": {"followers": ids}})
+    return owner, headers
+
+
+async def test_followers_can_be_searched_by_username(client, db):
+    owner, headers = await _with_followers(
+        db, [("amina", "Amina K"), ("bolade", "Bolade"), ("chidi", "Chidi")])
+
+    r = await client.get(f"/api/v1/users/{owner}/relationships",
+                         headers=headers,
+                         params={"relationship_type": "followers", "q": "bola"})
+    assert r.status_code == 200, r.text
+    assert [u["username"] for u in r.json()] == ["bolade"]
+
+
+async def test_followers_search_matches_the_display_name_too(client, db):
+    owner, headers = await _with_followers(
+        db, [("user1", "Amina Kone"), ("user2", "Bolade")])
+
+    r = await client.get(f"/api/v1/users/{owner}/relationships",
+                         headers=headers,
+                         params={"relationship_type": "followers", "q": "kone"})
+    assert [u["username"] for u in r.json()] == ["user1"]
+
+
+async def test_followers_search_ignores_capitals(client, db):
+    owner, headers = await _with_followers(db, [("zainab", "Zainab")])
+
+    r = await client.get(f"/api/v1/users/{owner}/relationships",
+                         headers=headers,
+                         params={"relationship_type": "followers", "q": "ZAIN"})
+    assert len(r.json()) == 1
+
+
+async def test_a_regex_in_the_search_term_is_not_run_as_one(client, db):
+    owner, headers = await _with_followers(db, [("amina", "Amina")])
+
+    r = await client.get(f"/api/v1/users/{owner}/relationships",
+                         headers=headers,
+                         params={"relationship_type": "followers", "q": ".*"})
+    assert r.status_code == 200, r.text
+    # Taken literally, ".*" matches nobody; run as a pattern it matches all.
+    assert r.json() == []
+
+
+async def test_searching_followers_reaches_past_the_first_page(client, db):
+    # 120 followers, so the match sits beyond any single page.
+    names = [(f"user{i:03d}", f"Person {i}") for i in range(120)]
+    names[117] = ("needle", "Needle")
+    owner, headers = await _with_followers(db, names)
+
+    r = await client.get(f"/api/v1/users/{owner}/relationships",
+                         headers=headers,
+                         params={"relationship_type": "followers", "q": "needle"})
+    assert [u["username"] for u in r.json()] == ["needle"]
+
+
+async def test_an_unsearched_page_keeps_follow_order(client, db):
+    names = [("first", "First"), ("second", "Second"), ("third", "Third")]
+    owner, headers = await _with_followers(db, names)
+
+    r = await client.get(f"/api/v1/users/{owner}/relationships",
+                         headers=headers,
+                         params={"relationship_type": "followers", "limit": 3})
+    assert [u["username"] for u in r.json()] == ["first", "second", "third"]
+
+
+async def test_search_results_are_paged(client, db):
+    names = [(f"match{i:02d}", f"Match {i}") for i in range(10)]
+    owner, headers = await _with_followers(db, names)
+
+    first = await client.get(f"/api/v1/users/{owner}/relationships",
+                             headers=headers,
+                             params={"relationship_type": "followers",
+                                     "q": "match", "limit": 4})
+    second = await client.get(f"/api/v1/users/{owner}/relationships",
+                              headers=headers,
+                              params={"relationship_type": "followers",
+                                      "q": "match", "limit": 4, "skip": 4})
+    assert len(first.json()) == 4 and len(second.json()) == 4
+    assert not {u["_id"] for u in first.json()} & {u["_id"] for u in second.json()}
