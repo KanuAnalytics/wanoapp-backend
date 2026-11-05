@@ -17,6 +17,7 @@ import pytz
 from bson import ObjectId
 from fastapi import HTTPException, status
 from recombee_api_client.api_requests import SetItemValues
+from app.services.recommendations import item_values
 
 from app.core.database import get_database
 from app.services.expo import send_push_message
@@ -152,21 +153,8 @@ async def _sync_recombee(video: dict, now: datetime) -> None:
     # The same item values create_video_post sends for an ordinary post; a
     # scheduled post was held back from Recombee until now.
     try:
-        urls = video.get("urls") or {}
-        values = {
-            "creator_id": str(video["creator_id"]),
-            "description": video.get("description") or "",
-            "video_type": video.get("video_type") or "",
-            "duration": float(video.get("duration") or 0.0),
-            "thumbnail": urls.get("thumbnail") or "",
-            "hashtags": video.get("hashtags") or [],
-            "is_active": True,
-            "supports_landscape": bool(video.get("supports_landscape", False)),
-            "privacy": video.get("privacy") or "public",
-            "created_at": now.isoformat(),
-            "is_ready_to_stream": bool(video.get("isReadyToStream", False)),
-            "media_type": video.get("media_type", "video"),
-        }
+        # It is live now, whatever the held-back document said.
+        values = item_values({**video, "published_at": now, "is_active": True})
         req = SetItemValues(str(video["_id"]), values, cascade_create=True)
         req.timeout = 10000
         await recombee_send(req)

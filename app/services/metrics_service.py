@@ -18,6 +18,15 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _mark_recombee_dirty(video_ids):
+    """Queue changed counts for the Recombee stats sync (never breaks a flush)."""
+    try:
+        from app.services.recommendations import mark_stats_dirty
+        mark_stats_dirty(video_ids)
+    except Exception:
+        pass
+
+
 class MetricsBuffer:
     """
     In-memory buffer for metrics that periodically flushes to database
@@ -219,11 +228,13 @@ class MetricsBuffer:
             else:
                 await db.videos.bulk_write([UpdateOne(f, u) for f, u in operations], ordered=True)
                 logger.info(f"Flushed {len(operations)} video metrics updates")
+            _mark_recombee_dirty(op_video_ids)
         except BulkWriteError as e:
             # Ordered bulk write: everything before the first failed op was applied.
             errors = (e.details or {}).get("writeErrors") or []
             first_failed = min((err.get("index", 0) for err in errors), default=0)
             failed_ids = op_video_ids[first_failed:]
+            _mark_recombee_dirty(op_video_ids[:first_failed])
             logger.error(f"Error in bulk flush ({len(failed_ids)} updates kept in buffer): {e}")
             await self._restore({vid: pending[vid] for vid in failed_ids})
         except Exception as e:

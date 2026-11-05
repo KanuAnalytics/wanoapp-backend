@@ -16,6 +16,7 @@ from datetime import datetime
 from bson import ObjectId
 from app.core.database import get_database
 from app.services.metrics_service import metrics_buffer
+from app.services import trending
 
 # Define the return types for subscriptions
 @strawberry.type
@@ -121,24 +122,18 @@ class Subscription:
         db = get_database()
         
         while True:
-            # Build query
-            query = {"is_active": True, "privacy": "public"}
-            if country:
-                query["country"] = country
-            
-            # Get top 10 trending videos by views in last 24 hours
-            cursor = db.videos.find(query).sort([
-                ("views_count", -1),
-                ("likes_count", -1)
-            ]).limit(10)
-            
+            # Momentum-ranked over the last 48 hours (app/services/trending.py);
+            # `country` comes first, then the rest of Wano.
+            top = await trending.top(db, country=country, limit=10)
+            full = {d["_id"]: d async for d in db.videos.find({"_id": {"$in": [t["_id"] for t in top]}})}
             videos = []
-            async for video in cursor:
-                video_id = str(video["_id"])
-                buffered = await metrics_buffer.get_buffered_counts(video_id)
-                
+            for t in top:
+                video = full.get(t["_id"])
+                if not video:
+                    continue
+                buffered = await metrics_buffer.get_buffered_counts(str(video["_id"]))
                 videos.append(video_from_doc(video, buffered))
-            
+
             yield videos
             
             await asyncio.sleep(60)  # Update every minute

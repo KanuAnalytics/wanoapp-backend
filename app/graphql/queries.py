@@ -8,6 +8,7 @@ import strawberry
 from typing import List, Optional
 from app.core.database import get_database
 from app.services.metrics_service import metrics_buffer
+from app.services import trending
 from app.graphql.types import (
     UserType, VideoType, CommentType, MusicType,
     FeedItemType, VideoConnection, PageInfo,
@@ -159,28 +160,26 @@ class Query:
             raise Exception("User not found")
         loc = user.get("localization") if isinstance(user.get("localization"), dict) else {}
         user_country = loc.get("country") or "NG"
-        user_languages = loc.get("languages") or ["en"]
-
-        query = {
-            "is_active": True,
-            "privacy": "public",
-            "$or": [
-                {"country": user_country},
-                {"language": {"$in": user_languages}}
-            ]
-        }
 
         limit = _clamp(limit, 1, MAX_PAGE)
         offset = max(offset, 0)
-        cursor = db.videos.find(query).sort("created_at", -1).skip(offset).limit(limit)
+        # Really trending now (app/services/trending.py), the user's country first.
+        top = await trending.top(db, country=user_country, limit=offset + limit)
+        page = top[offset:offset + limit]
+        full = {d["_id"]: d async for d in db.videos.find({"_id": {"$in": [t["_id"] for t in page]}})}
+        best = max((t.get("trending_score") or 0 for t in top), default=0) or 1
 
         feed_items = []
         position = offset
-        async for video in cursor:
+        for t in page:
+            video = full.get(t["_id"])
+            if not video:
+                continue
+            local = (video.get("country") or "").upper() == (user_country or "").upper()
             feed_items.append(FeedItemType(
                 video=await _video_with_buffer(video),
-                score=0.8,  # Placeholder score
-                reason="Trending in your country",
+                score=round((t.get("trending_score") or 0) / best, 4),
+                reason="Trending in your country" if local else "Trending on Wano",
                 is_ad=False,
                 position=position
             ))

@@ -30,6 +30,8 @@ from app.services.expo import send_push_message
 
 logger = logging.getLogger(__name__)
 
+from app.services import recommendations
+
 router = APIRouter()
 
 # Fields only the profile owner (or an admin) may see.
@@ -1065,6 +1067,7 @@ async def update_user_tags(
     
     user = await db.users.find_one({"_id": ObjectId(current_user)})
     user["_id"] = str(user["_id"])
+    await recommendations.set_user_profile(user)
     return UserResponse(**user)
 
 @router.post("/me/tags/add", response_model=UserResponse)
@@ -1089,6 +1092,7 @@ async def add_user_tags(
     
     user = await db.users.find_one({"_id": ObjectId(current_user)})
     user["_id"] = str(user["_id"])
+    await recommendations.set_user_profile(user)
     return UserResponse(**user)
 
 @router.delete("/me/tags", response_model=UserResponse)
@@ -1113,6 +1117,7 @@ async def remove_user_tags(
     
     user = await db.users.find_one({"_id": ObjectId(current_user)})
     user["_id"] = str(user["_id"])
+    await recommendations.set_user_profile(user)
     return UserResponse(**user)
 
 @router.put("/me", response_model=UserResponse)

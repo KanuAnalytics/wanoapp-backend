@@ -49,6 +49,14 @@ class Settings(BaseSettings):
     # Share links (/v/{id}), link previews and app deep links.
     # SHARE_BASE_URL is the public origin the share pages are served from.
     SHARE_BASE_URL: str = "https://wanoafrica.com"
+
+    # For You feed A/B test: percent of viewers who get the mixed feed
+    # (personal + fresh + trending + following); the rest get Recombee only.
+    FOR_YOU_MIX_ROLLOUT: int = 50
+
+    # How many proxies/load balancers sit in front of the API and append to
+    # X-Forwarded-For. The client's real IP is that many entries from the right.
+    TRUSTED_PROXY_HOPS: int = 1
     APP_SCHEME: str = "wano"                  # custom scheme, e.g. wano://v/{id}
     IOS_APP_IDS: str = ""                     # comma-separated "TEAMID.bundle.id"
     IOS_APP_STORE_ID: str = ""                # numeric App Store id (Smart App Banner)

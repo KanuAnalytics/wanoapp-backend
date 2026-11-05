@@ -68,6 +68,19 @@ async def create_indexes():
         # watching" query and per-user history listing.
         (d.watch_history, [("user_id", 1), ("video_id", 1)], {"unique": True}),
         (d.watch_history, [("user_id", 1), ("watched_at", -1)], {}),
+        # For You feed: what each viewer was shown (kept 30 days for the A/B report)
+        (d.feed_impressions, [("viewer", 1), ("at", -1)], {}),
+        (d.feed_impressions, [("viewer", 1), ("video_id", 1), ("at", -1)], {}),
+        (d.feed_impressions, [("at", 1)], {"expireAfterSeconds": 30 * 24 * 3600}),
+        # Trending: hourly engagement (kept 3 days) and once-per-6h view counting
+        (d.video_stats_hourly, [("hour", 1)], {"expireAfterSeconds": 3 * 24 * 3600}),
+        (d.video_stats_hourly, [("video_id", 1), ("hour", -1)], {}),
+        (d.view_dedupe, [("at", 1)], {"expireAfterSeconds": 6 * 3600}),
+        (d.engagement_once, [("at", 1)], {"expireAfterSeconds": 3 * 24 * 3600}),
+        # For You sources: fresh / trending / following / stream webhook lookups
+        (d.videos, [("is_active", 1), ("privacy", 1), ("created_at", -1)], {}),
+        (d.videos, [("creator_id", 1), ("created_at", -1)], {}),
+        (d.videos, [("stream_uid", 1)], {"partialFilterExpression": {"stream_uid": {"$type": "string"}}}),
 
         # Wano TV: the catalogue is listed by popularity; slug is the seed
         # script's upsert key. History is one doc per (user, title).
