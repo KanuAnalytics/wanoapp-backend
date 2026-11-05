@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, 
 from app.core.database import get_database
 from app.api.deps import get_current_user, get_optional_active_user, oauth2_scheme_optional
 from app.services.metrics_service import metrics_buffer
-from app.services import for_you, trending
+from app.services import for_you, new_feed, trending
 from app.services.recommendations import viewer_id
 from pydantic import BaseModel
 from bson import ObjectId
@@ -52,6 +52,21 @@ class FeedVideo(BaseModel):
     sound: Optional[FeedSound] = None
 
 
+def _count(value) -> int:
+    """A counter from a document that may hold junk (None, strings, negatives)."""
+    try:
+        n = int(value or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return max(n, 0)
+
+
+def _text(value) -> Optional[str]:
+    if value is None:
+        return None
+    return value if isinstance(value, str) else str(value)
+
+
 def _feed_video(video: dict, **fields) -> FeedVideo:
     """
     Build a FeedVideo from a projected (or raw) video document. Older documents
@@ -65,17 +80,17 @@ def _feed_video(video: dict, **fields) -> FeedVideo:
     images = video.get("images")
     return FeedVideo(
         creator_id=str(video.get("creator_id")),
-        title=video.get("title"),
-        description=video.get("description"),
-        thumbnail=thumbnail,
-        views_count=video.get("views_count") or 0,
-        likes_count=video.get("likes_count") or 0,
-        comments_count=video.get("comments_count") or 0,
-        remoteUrl=video.get("remoteUrl"),
-        remoteUrl_CF=video.get("remoteUrl_CF"),
-        media_type=video.get("media_type") or "video",
+        title=_text(video.get("title")),
+        description=_text(video.get("description")),
+        thumbnail=thumbnail if isinstance(thumbnail, str) else None,
+        views_count=_count(video.get("views_count")),
+        likes_count=_count(video.get("likes_count")),
+        comments_count=_count(video.get("comments_count")),
+        remoteUrl=video.get("remoteUrl") if isinstance(video.get("remoteUrl"), str) else None,
+        remoteUrl_CF=video.get("remoteUrl_CF") if isinstance(video.get("remoteUrl_CF"), str) else None,
+        media_type=video.get("media_type") if isinstance(video.get("media_type"), str) else "video",
         images=[i for i in images if isinstance(i, str)] if isinstance(images, list) else [],
-        user=video.get("user") or {},
+        user=video.get("user") if isinstance(video.get("user"), dict) else {},
         supports_landscape=bool(video.get("supports_landscape")),
         created_at=video.get("created_at"),
         sound=sound if isinstance(sound, dict) and sound.get("title") else None,
@@ -87,8 +102,9 @@ def _feed_video(video: dict, **fields) -> FeedVideo:
 async def get_feed(
     response: Response,
     current_user: Optional[str] = Depends(get_optional_active_user),
-    skip: int = Query(0, ge=0),
+    skip: int = Query(0, ge=0, le=100_000),
     limit: int = Query(20, ge=1, le=50),
+    cursor: Optional[str] = Query(None, max_length=512),
     user_id: Optional[str] = None,
     video_id: Optional[str] = None,
     saved: bool = False,
@@ -96,8 +112,15 @@ async def get_feed(
     sorted_by: Optional[str] = None,
     exclude_watched: bool = False,
 ):
-    """Get personalized video feed, videos from a specific user, or saved videos"""
+    """Get personalized video feed, videos from a specific user, or saved videos.
+
+    The New tab: send cursor=start, then the X-Next-Cursor header from each
+    response. Without a cursor it pages by skip, as older app builds do."""
     db = get_database()
+    if cursor is not None and (saved or (sorted_by or "created_at") != "created_at"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="cursor works only with the newest-first feed")
+    next_cursor = None
 
     if user_id is not None and not ObjectId.is_valid(user_id):
         raise HTTPException(
@@ -209,14 +232,7 @@ async def get_feed(
         # For all other cases, use videos collection with dynamic match conditions
         match_conditions = {
             "is_active": True,
-            "$and": [
-                        {
-            "$or": [
-                {"isReadyToStream": True},
-                {"isReadyToStream": {"$exists": False}}
-                ]
-            }
-            ]
+            "$and": [new_feed.ready_filter()],
         }
 
         if user_id:
@@ -274,27 +290,7 @@ async def get_feed(
         # keeps skip stable across pages at the cost of pages sometimes
         # coming back shorter than `limit` (or empty) when several of the
         # raw candidates happen to already be watched.
-        pipeline = [
-            {"$match": match_conditions},
-            {"$sort": sort_stage},
-            {"$skip": skip},
-            {"$limit": limit},
-            {
-                "$lookup": {
-                    "from": "users",
-                    "localField": "creator_id",
-                    "foreignField": "_id",
-                    "as": "creator",
-                }
-            },
-            {
-                "$unwind": {
-                    "path": "$creator",
-                    "preserveNullAndEmptyArrays": True,
-                }
-            },
-            {
-                "$project": {
+        project = {
                     "_id": {"$toString": "$_id"},
                     "creator_id": {"$toString": "$creator_id"},
                     "title": 1,
@@ -317,30 +313,51 @@ async def get_feed(
                         "profile_picture": "$creator.profile_picture",
                         "is_active": "$creator.is_active"
                     },
-                }
-            },
-        ]
+        }
 
-        docs = await db.videos.aggregate(pipeline).to_list(length=limit)
+        if cursor is not None:
+            docs, next_cursor = await new_feed.cursor_page(
+                db, match_conditions, limit=limit, cursor=cursor, viewer=None if user_id else current_user,
+                exclude_watched=apply_watch_filter, cap_creators=not user_id, project=project,
+            )
+            has_more = next_cursor is not None
+            apply_watch_filter = False   # already applied while paging
+        else:
+            skip_match = match_conditions if user_id else await new_feed.skip_exclusions(
+                db, match_conditions, current_user)
+            pipeline = [
+                {"$match": skip_match},
+                {"$sort": sort_stage},
+                {"$skip": skip},
+                {"$limit": limit},
+                {"$lookup": {"from": "users", "localField": "creator_id",
+                             "foreignField": "_id", "as": "creator"}},
+                {"$unwind": {"path": "$creator", "preserveNullAndEmptyArrays": True}},
+                {"$project": project},
+            ]
+            docs = await db.videos.aggregate(pipeline).to_list(length=limit)
         # Captured before watch-filtering below can shrink docs: has_more
         # reflects whether the raw skip/limit window was actually full, not
         # how many of those survived filtering. Those are different
         # questions once filtering happens post-fetch -- a full raw window
         # with 3 watched videos filtered out still means more content exists
         # at the next skip, even though this page comes back short.
-        has_more = len(docs) == limit
+            has_more = len(docs) == limit
 
-        if apply_watch_filter and docs:
             # Bounded to this batch's own ids -- never the user's full watch
             # history -- so this stays cheap no matter how much they've
-            # watched in total.
-            candidate_ids = [ObjectId(d["_id"]) for d in docs]
-            watched_cursor = db.watch_history.find(
-                {"user_id": ObjectId(current_user), "video_id": {"$in": candidate_ids}},
-                {"video_id": 1},
-            )
-            watched_ids = {str(w["video_id"]) async for w in watched_cursor}
-            docs = [d for d in docs if d["_id"] not in watched_ids]
+            # watched in total. "Not interested" always applies; watched
+            # posts only when the client opted in.
+            if current_user and docs and not user_id:
+                candidate_ids = [ObjectId(d["_id"]) for d in docs]
+                q = {"user_id": ObjectId(current_user), "video_id": {"$in": candidate_ids}}
+                if not apply_watch_filter:
+                    q["not_interested"] = True
+                hidden_ids = {str(w["video_id"]) async for w in db.watch_history.find(q, {"video_id": 1})}
+                docs = [d for d in docs if d["_id"] not in hidden_ids]
+            # Posts of accounts that were deactivated before their posts were.
+            if not user_id:
+                docs = [d for d in docs if (d.get("user") or {}).get("is_active") is not False]
 
     videos = []
     for doc in docs:
@@ -365,7 +382,7 @@ async def get_feed(
             )
         )
 
-    if video_id and skip == 0:
+    if video_id and skip == 0 and cursor in (None, new_feed.START):
         featured_pipeline = [
             {
                 "$match": {
@@ -452,6 +469,8 @@ async def get_feed(
     # as a genuinely empty response, so the client's existing empty-page
     # check is already a reliable signal there.
     response.headers["X-Has-More"] = "true" if has_more else "false"
+    if next_cursor:
+        response.headers["X-Next-Cursor"] = next_cursor
 
     return videos
 
