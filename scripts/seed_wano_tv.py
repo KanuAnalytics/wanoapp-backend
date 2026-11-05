@@ -2,6 +2,8 @@
 Loads the Wano TV placeholder catalogue (scripts/wano_tv_seed.json) into
 MongoDB. Safe to re-run: titles are upserted by slug and genres by name, so
 edits to the JSON overwrite what's there without duplicating anything.
+A title whose entry has "is_active": false is stored but stays hidden from
+the app; flip it to true and re-run to publish it.
 
 Run from the repo root:
     python -m scripts.seed_wano_tv
@@ -39,7 +41,7 @@ async def seed():
             await db.tv_titles.update_one(
                 {"slug": title["slug"]},
                 {
-                    "$set": {**title, "is_active": True, "updated_at": now},
+                    "$set": {"is_active": True, **title, "updated_at": now},
                     "$setOnInsert": {"created_at": now},
                 },
                 upsert=True,

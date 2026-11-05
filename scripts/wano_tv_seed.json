@@ -133,6 +133,41 @@
       "popularity": 100,
       "captions": [],
       "makers": []
+    },
+    {
+      "slug": "yaounde-police-criminelle",
+      "is_active": false,
+      "title": "Yaoundé Police Criminelle",
+      "type": "series",
+      "genres": [
+        "Action",
+        "Drama",
+        "Series"
+      ],
+      "year": 2026,
+      "release_date": "2026-11-05",
+      "duration_minutes": 41,
+      "age_rating": "16+",
+      "description": "Lieutenant Samuel Ayissi and Yaoundé's criminal brigade chase justice through the city's underground networks.",
+      "synopsis": "Set in the heart of Cameroon's capital, \"Yaoundé Police Criminelle\" follows the high-stakes investigations of Lieutenant Samuel Ayissi and his team. Navigating complex criminal cases, underground networks, and harsh realities on the ground, the criminal brigade fights relentlessly to bring justice to the streets of Yaoundé.",
+      "trailer": {
+        "duration_seconds": 70,
+        "thumbnail": "https://wano-africadev.lon1.cdn.digitaloceanspaces.com/wanoafrica-dospaces-key/wano-tv/yaounde-police-criminelle/YPC_Thumbnail_16x9_1920x1080.jpg",
+        "video_url": "https://wano-africadev.lon1.cdn.digitaloceanspaces.com/wanoafrica-dospaces-key/wano-tv/yaounde-police-criminelle/trailer/master.m3u8"
+      },
+      "credits": {
+        "director": "Charly Mvondus (Mvondo Charles Ivan)",
+        "cast": [],
+        "production": "Mvondus Entertainment Studios",
+        "distributor": "Wano TV"
+      },
+      "poster": "https://wano-africadev.lon1.cdn.digitaloceanspaces.com/wanoafrica-dospaces-key/wano-tv/yaounde-police-criminelle/YPC_Poster_9x16_1080x1920.jpg",
+      "backdrop": "https://wano-africadev.lon1.cdn.digitaloceanspaces.com/wanoafrica-dospaces-key/wano-tv/yaounde-police-criminelle/YPC_Poster_9x16_1080x1920.jpg",
+      "video_url": "https://wano-africadev.lon1.cdn.digitaloceanspaces.com/wanoafrica-dospaces-key/wano-tv/yaounde-police-criminelle/master.m3u8",
+      "featured": true,
+      "popularity": 100,
+      "captions": [],
+      "makers": []
     }
   ],
   "genres": [
