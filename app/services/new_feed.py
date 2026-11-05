@@ -108,6 +108,46 @@ async def _inactive_creators(db, creator_ids) -> set:
     return {u["_id"] async for u in db.users.find({"_id": {"$in": ids}, "is_active": False}, {"_id": 1})}
 
 
+# Deactivated accounts, cached briefly: they change rarely and skip paging
+# needs them on every request.
+_INACTIVE_TTL = timedelta(seconds=60)
+_inactive_cache: Tuple[Optional[datetime], List[ObjectId]] = (None, [])
+
+
+async def all_inactive_creators(db) -> List[ObjectId]:
+    global _inactive_cache
+    at, ids = _inactive_cache
+    now = datetime.now(timezone.utc)
+    if at is None or now - at > _INACTIVE_TTL:
+        ids = [u["_id"] async for u in db.users.find({"is_active": False}, {"_id": 1})]
+        _inactive_cache = (now, ids)
+    return ids
+
+
+async def skip_exclusions(db, match: dict, viewer: Optional[str]) -> dict:
+    """match with deactivated creators and the viewer's "not interested" posts
+    left out in the query itself. Skip paging can't backfill a page, and the
+    store builds take a page shorter than `limit` as the end of the feed, so
+    hiding these after $limit cut the New tab short."""
+    match = dict(match)
+    inactive = await all_inactive_creators(db)
+    if inactive:
+        current = match.get("creator_id")
+        if isinstance(current, dict) and "$nin" in current:
+            match["creator_id"] = {"$nin": list(set(current["$nin"]) | set(inactive))}
+        elif current is None:
+            match["creator_id"] = {"$nin": inactive}
+    if viewer and ObjectId.is_valid(viewer):
+        not_interested = [
+            w["video_id"] async for w in db.watch_history.find(
+                {"user_id": ObjectId(viewer), "not_interested": True}, {"video_id": 1}
+            ).limit(5000)
+        ]
+        if not_interested:
+            match["_id"] = {"$nin": not_interested}
+    return match
+
+
 async def cursor_page(db, match: dict, *, limit: int, cursor: str, viewer: Optional[str],
                       exclude_watched: bool, cap_creators: bool, project: dict):
     """One page of the New tab. Returns (projected docs, next cursor or None).

@@ -323,8 +323,10 @@ async def get_feed(
             has_more = next_cursor is not None
             apply_watch_filter = False   # already applied while paging
         else:
+            skip_match = match_conditions if user_id else await new_feed.skip_exclusions(
+                db, match_conditions, current_user)
             pipeline = [
-                {"$match": match_conditions},
+                {"$match": skip_match},
                 {"$sort": sort_stage},
                 {"$skip": skip},
                 {"$limit": limit},
