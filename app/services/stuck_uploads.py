@@ -113,7 +113,8 @@ async def _fail(db, video: dict, reason: str, detail: Optional[str]) -> bool:
         from app.services.expo import send_push_message
         for token in (creator or {}).get("expo_push_tokens") or []:
             try:
-                await send_push_message(token, FAIL_MESSAGE, {"screen": "profile_v2"}, None, None)
+                # send_push_message is a blocking HTTP call.
+                await asyncio.to_thread(send_push_message, token, FAIL_MESSAGE, {"screen": "profile_v2"}, None, None)
             except Exception:
                 logger.warning("Push for failed upload %s did not send", video["_id"])
     except Exception:

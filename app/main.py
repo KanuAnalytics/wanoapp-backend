@@ -99,8 +99,11 @@ async def lifespan(app: FastAPI):
     await recommendations.stats_sync.start()  # Pushes changed view/like counts to Recombee
     from app.services.stuck_uploads import rescue_loop
     await rescue_loop.start()  # Asks Cloudflare about uploads whose "ready" message was missed
+    from app.services.growth_notifications import growth_loop
+    growth_loop.start()  # Followers told about new posts; creator tips (app/services/growth_notifications.py)
     yield
     # Shutdown
+    await growth_loop.stop()
     await rescue_loop.stop()
     await recommendations.stats_sync.stop()
     await scheduled_publisher.stop()

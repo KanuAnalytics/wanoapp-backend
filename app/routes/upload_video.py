@@ -395,9 +395,13 @@ def _later(background_tasks, fn, *args):
     else:
         async def _run():
             try:
-                res = fn(*args)
-                if asyncio.iscoroutine(res):
-                    await res
+                if asyncio.iscoroutinefunction(fn):
+                    await fn(*args)
+                else:
+                    # Blocking helpers (send_push_message uses requests) run off the event loop.
+                    res = await asyncio.to_thread(fn, *args)
+                    if asyncio.iscoroutine(res):
+                        await res
             except Exception:
                 logger.exception("Background task %s failed", getattr(fn, "__name__", fn))
         asyncio.ensure_future(_run())

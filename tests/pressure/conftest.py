@@ -43,10 +43,27 @@ def calls():
     return {}
 
 
+REAL_MONGO = os.environ.get("WANO_REAL_MONGO")   # e.g. mongodb://127.0.0.1:27018: run on a real server
+
+
 @pytest_asyncio.fixture
 async def db(monkeypatch, calls):
-    mdb = AsyncMongoMockClient()["wano_pressure"]
-    monkeypatch.setattr(database_mod.db, "db", mdb)
+    client = None
+    if REAL_MONGO:
+        # A fresh database per test on a real MongoDB, with the app's real indexes
+        # (unique, TTL, partial), so behaviour the in-memory mock fakes is tested for real.
+        from motor.motor_asyncio import AsyncIOMotorClient
+        client = AsyncIOMotorClient(REAL_MONGO, tz_aware=False)
+        mdb = client[f"wano_pt_{ObjectId()}"]
+        monkeypatch.setattr(database_mod.db, "db", mdb)
+        monkeypatch.setattr(database_mod.db, "client", client, raising=False)
+        await database_mod.create_indexes()
+        await database_mod.create_comment_indexes(mdb)
+        from app.main import ensure_indexes
+        await ensure_indexes(mdb)
+    else:
+        mdb = AsyncMongoMockClient()["wano_pressure"]
+        monkeypatch.setattr(database_mod.db, "db", mdb)
 
     # Outside services -> recorders.
     import app.services.upload_DO as upload_DO
@@ -72,10 +89,20 @@ async def db(monkeypatch, calls):
         if hasattr(mod, "recombee_send"):
             monkeypatch.setattr(mod, "recombee_send", _noop_async)
 
+    # Push senders are blocking functions in production (requests); the stand-in
+    # is too, so code that awaits them breaks here the way it would live.
     import app.services.expo as expo
+    pushes = []
+
+    def _push_recorder(name):
+        def record(*a, **k):
+            pushes.append((name, a, k))
+            return None
+        return record
     for name in dir(expo):
         if name.startswith("send") and callable(getattr(expo, name)):
-            monkeypatch.setattr(expo, name, _noop_async)
+            monkeypatch.setattr(expo, name, _push_recorder(name))
+    calls["pushes"] = pushes
 
     from app.services import trending
     trending.clear_cache()
@@ -86,7 +113,10 @@ async def db(monkeypatch, calls):
     metrics_buffer.views_buffer.clear()
     metrics_buffer.likes_buffer.clear()
     metrics_buffer.comments_buffer.clear()
-    return mdb
+    yield mdb
+    if client is not None:
+        await client.drop_database(mdb.name)
+        client.close()
 
 
 @pytest_asyncio.fixture
@@ -99,7 +129,7 @@ async def client(db):
 
 async def make_user(db, *, user_type="standard", **extra):
     doc = {
-        "username": extra.pop("username", f"u{ObjectId()}"[:20]),
+        "username": extra.pop("username", f"u{ObjectId()}"),
         "email": extra.pop("email", f"{ObjectId()}@example.com"),
         "phone_number": extra.pop("phone_number", None),
         "display_name": "Person",

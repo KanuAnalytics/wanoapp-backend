@@ -496,3 +496,78 @@ Server-only. Attack tests first (test_tv_open.py: 2 of 5 failed; the 3 passing a
 - History (GET /tv/history, POST /tv/history/{id}) still needs login.
 - No token and no authenticated=false: 401, as before.
 App: if Wano TV is hidden for logged-out users, it can now be shown (send authenticated=false).
+
+---
+
+## Growth notifications + weekly/monthly posting recap (branch growth-notifications, on top of tv-open)
+
+Server-only (push notifications the app already receives). Attack tests first:
+test_growth_notifications.py (23, all failed: nothing existed) and test_posting_recaps.py
+(16, all failed). Everything runs in app/services/growth_notifications.py, started in app/main.py.
+
+Found and fixed on the way: the stuck-upload rescue awaited the blocking Expo sender, which
+blocked the server while sending and then logged a false "did not send". The test stand-in for
+push is now blocking like the real one, so this can't hide again (test UR7).
+
+### Followers: "Amina just posted" (every 2 min)
+- One alert to followers when a post goes live (public, playable, not held for review),
+  including scheduled posts when they publish and rescued uploads.
+- Per creator: one follower alert per 24 h (their first post of the day).
+- Per follower: max 5 a day, none in quiet hours (22:00-08:00 in their country's time),
+  none if either side blocked the other, none if they turned new_posts off.
+- Each post is claimed first: no doubles across runs or servers. Failed Expo batches are logged,
+  not retried in a loop. Posts from before the server started aren't announced (no deploy blast).
+- Sent in Expo batches of 100. data: {"video_id", "type": "new_post"} (same as view milestones).
+
+### Creators: tips (max 1 a day, none in quiet hours, off with creator_tips)
+- When a post finishes its first-viewer test: "Your new video's first 30 viewers watched 78% on
+  average. It's being shown to more people 🚀" (or a tip if they skipped). Once per post.
+- Streak reminder, 19:00-22:00 local, creators with a 2+ day streak who haven't posted today:
+  "🔥 Your 4-day streak ends tonight. Post something to keep it going." Once a day.
+
+### Creators: weekly / monthly recap (every 30 min, creator's own time zone)
+- Monday 09:00-12:00: "Last week you posted 5 videos, 2 more than the week before, and got
+  1,240 views 🎉". A quiet week after an active one: "You didn't post last week. Your followers
+  are waiting — share something today 🎬". Nobody who hasn't posted in 2 weeks is nagged.
+- 1st of the month 10:00-13:00: "In October you posted 18 videos and got 12.4k views 🎉".
+  When the 1st is a Monday, only the monthly one.
+- Counts live public and unlisted posts (not private, deleted, scheduled or processing).
+  Weeks run Monday-Sunday. Once per creator per week / month; off with creator_tips.
+- GET /api/v1/creators/me/stats now also returns
+  "posting": {"this_week", "last_week", "this_month", "last_month"}.
+
+### Switches
+GET / PUT /api/v1/notifications/preferences  {"new_posts": bool, "creator_tips": bool}
+(logged in; default on; only these two fields are stored). The app can add two toggles any time.
+
+Push only: nothing goes into the in-app notifications list, so older app builds are unaffected.
+Time zones are by country (standard time, no daylight saving); unknown countries use UTC.
+Streak days are UTC days (Kampala's day flips at 03:00), as in creators.py.
+
+### Check on staging
+1. Two test accounts, B follows A. A posts: B gets "A just posted" within ~2 min; A posts again:
+   B gets nothing more today.
+2. PUT /api/v1/notifications/preferences {"new_posts": false} as B; A's next-day post: nothing.
+3. GET /api/v1/creators/me/stats as A: "posting" counts match.
+4. Recaps: wait for Monday morning, or run posting_recaps(db) from a shell with the clock set.
+
+---
+
+## Pre-push review and round 3 (on growth-notifications)
+
+- Whole attack suite now also runs on a real MongoDB 8.3 (set WANO_REAL_MONGO=mongodb://host:port),
+  each test on a fresh database with the app's real indexes (unique, TTL, partial).
+  476/476 pass on both the in-memory mock and real MongoDB; 39/39 original tests pass.
+- Checked with explain() on real MongoDB: New tab, first viewers, follower alerts, creator stats,
+  streaks and recap scans all use indexes (no collection scans).
+- Fixed: after a stuck-upload rescue, the "uploaded" push ran the blocking Expo sender on the
+  server's event loop (froze the server while sending). Now runs in a thread (test UR8).
+- Fixed: the posting recap scanned every recent creator every 30 min even on days no country is
+  in its Monday / 1st window. Now it does nothing on those runs (test R6).
+- Fixed: trending's and Wano TV's locks were bound to the first event loop that used them.
+- Test harness: generated usernames were cut to 20 chars and could collide on a real unique index.
+- New cross-feature attacks (test_cross_round3.py): a held post or a banned creator disappears
+  from New, the bubble, For You, first viewers, trending, share page, sitemap and follower alerts
+  at once; one report pauses only first viewers; turning creator tips off silences every creator
+  notification; a late Cloudflare webhook after a failed rescue restores the post without
+  announcing a day-old post as new.

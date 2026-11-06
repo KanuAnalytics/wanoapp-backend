@@ -82,3 +82,27 @@ def send_push_batch(tokens: List[str], message: str, title: Optional[str] = None
             logger.error("Expo push errors: %s", response_data.get("errors"))
     except requests.RequestException as exc:
         logger.exception("Expo push batch request failed: %s", exc)
+
+
+def send_push_batch_data(messages: List[dict]) -> None:
+    """Send up to 100 prepared Expo messages ({"to", "title", "body", "data", ...})
+    in one request. Blocking: call it through asyncio.to_thread. Raises on HTTP
+    failure so the caller can log it."""
+    if not messages:
+        return
+    response = requests.post(
+        EXPO_PUSH_ENDPOINT,
+        json=messages[:100],
+        headers={
+            "accept": "application/json",
+            "accept-encoding": "gzip, deflate",
+            "content-type": "application/json",
+        },
+        timeout=15,
+    )
+    response.raise_for_status()
+    tickets = (response.json() or {}).get("data")
+    if isinstance(tickets, list):
+        errors = [t for t in tickets if isinstance(t, dict) and t.get("status") == "error"]
+        if errors:
+            logger.error("Expo push batch errors: %s", errors[:10])

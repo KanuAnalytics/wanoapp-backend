@@ -82,6 +82,9 @@ async def create_indexes():
         # Creator growth (app/services/creators.py).
         (d.creator_daily, [("creator_id", 1), ("day", -1)], {}),
         (d.creator_daily, [("day", 1)], {"expireAfterSeconds": 120 * 24 * 3600}),
+        # Growth notifications: per-user daily send counts, kept 3 days.
+        (d.notif_daily, [("at", 1)], {"expireAfterSeconds": 3 * 24 * 3600}),
+        (d.videos, [("created_at", 1), ("followers_notified_at", 1)], {}),
         (d.videos, [("creator_id", 1), ("is_active", 1), ("privacy", 1), ("created_at", -1)], {}),
         # For You sources: fresh / trending / following / stream webhook lookups
         (d.videos, [("is_active", 1), ("privacy", 1), ("created_at", -1)], {}),
