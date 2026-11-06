@@ -303,6 +303,9 @@ class Mutation(VideoEditorMutation, CommentMutations):
         if input.description is not None:
             update_data["description"] = input.description
         if input.privacy is not None:
+            from app.services import moderation
+            if moderation.is_held(video):
+                raise Exception("This post is under review; its privacy can't change until the review is done")
             update_data["privacy"] = input.privacy.value
         if input.hashtags is not None:
             update_data["hashtags"] = input.hashtags

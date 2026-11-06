@@ -49,6 +49,9 @@ STREAK_MAX_DAYS = 120
 MILESTONES = (3, 7, 14, 30, 60, 100, 365)
 CANDIDATE_LIMIT = 3000
 STREAK_CACHE_SECONDS = 120
+NEW_ACCOUNT_HOURS = 24      # creators younger than this get a smaller test
+NEW_ACCOUNT_TEST = 10
+NEW_ACCOUNT_BOOST_CAP = 100
 
 _streak_cache: Dict[ObjectId, tuple] = {}
 
@@ -85,11 +88,15 @@ def _showable() -> dict:
             "status": {"$nin": ["scheduled", "publishing", "cancelled"]}}
 
 
-def test_audience(streak: int) -> int:
+def test_audience(streak: int, new_account: bool = False) -> int:
+    if new_account:
+        return NEW_ACCOUNT_TEST
     return STREAK_TEST_AUDIENCE if streak >= STREAK_MIN else TEST_AUDIENCE
 
 
-def boost_cap(streak: int) -> int:
+def boost_cap(streak: int, new_account: bool = False) -> int:
+    if new_account:
+        return NEW_ACCOUNT_BOOST_CAP
     return STREAK_BOOST_CAP if streak >= STREAK_MIN else BOOST_CAP
 
 
@@ -214,17 +221,17 @@ def next_milestone(current: int) -> Optional[int]:
 
 # ---------------------------------------------------------------- first viewers
 
-def _stage(reach: dict, streak: int):
+def _stage(reach: dict, streak: int, new_account: bool = False):
     imp = _num(reach.get("impressions"))
     seen = _num(reach.get("fy_views"))
     psum = _num(reach.get("fy_portion_sum"))
     fin = _num(reach.get("fy_finished"))
-    cap = test_audience(streak)
+    cap = test_audience(streak, new_account)
     if seen < cap:
         # Served over and over with nobody scrolling to it: let it go.
         return ("test", 0.0) if imp < IMPRESSION_CEILING * cap else (None, 0.0)
     good = psum / seen >= GOOD_AVG or fin / seen >= GOOD_FINISH
-    if good and seen < boost_cap(streak):
+    if good and seen < boost_cap(streak, new_account):
         quality = (psum / seen) * 0.5 + (fin / seen) * 0.5
         return "boost", quality * (1 + 0.1 * min(streak, 7))
     return None, 0.0
@@ -240,6 +247,8 @@ async def first_viewers(db, excluded_oids: List[ObjectId], own: Optional[ObjectI
         q["_id"] = {"$nin": excluded_oids}
     if own is not None:
         q["creator_id"] = {"$ne": own}
+    from app.services.moderation import not_flagged
+    q.update(not_flagged())     # one trusted report pauses first viewers
     docs = await db.videos.find(q, {"creator_id": 1, "created_at": 1}).sort(
         [("created_at", -1), ("_id", -1)]).limit(CANDIDATE_LIMIT).to_list(length=CANDIDATE_LIMIT)
 
@@ -260,11 +269,19 @@ async def first_viewers(db, excluded_oids: List[ObjectId], own: Optional[ObjectI
 
     reach = {r["_id"]: r async for r in db.video_reach.find({"_id": {"$in": [d["_id"] for d in kept]}})}
     streak = await streaks(db, [d.get("creator_id") for d in kept])
+    young = set()
+    cutoff = now - timedelta(hours=NEW_ACCOUNT_HOURS)
+    async for u in db.users.find({"_id": {"$in": list({d.get("creator_id") for d in kept})}}, {"created_at": 1}):
+        created = u.get("created_at")
+        if isinstance(created, datetime):
+            created = created if created.tzinfo else created.replace(tzinfo=timezone.utc)
+            if created > cutoff:
+                young.add(u["_id"])
 
     testing, boosted = [], []
     for d in kept:
         s = (streak.get(d.get("creator_id")) or {}).get("current", 0)
-        stage, score = _stage(reach.get(d["_id"], {}), s)
+        stage, score = _stage(reach.get(d["_id"], {}), s, d.get("creator_id") in young)
         if stage is None:
             continue
         d = {**d, "stage": stage}

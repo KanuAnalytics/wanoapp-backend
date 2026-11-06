@@ -11,7 +11,10 @@ from pymongo.errors import DuplicateKeyError
 from datetime import datetime
 from app.models.report import VideoReport, ReportCreate, ReportResponse
 from app.core.database import get_database
-from app.api.deps import get_current_active_user
+from app.api.deps import get_current_active_user, require_admin
+from app.services import moderation
+from pydantic import BaseModel, Field
+from typing import Literal
 from app.services.email_service import email_service
 import logging
 
@@ -150,6 +153,11 @@ async def report_video(
         {"_id": ObjectId(video_id)},
         {"$inc": {"report_count": 1}}
     )
+    # Trusted reports pause first viewers; enough of them hold it for review.
+    try:
+        await moderation.on_report(db, video, current_user, report_id)
+    except Exception:
+        logger.exception("Safety check failed for report %s", report_id)
     
     # Prepare response
     report_doc["_id"] = report_id
@@ -328,6 +336,10 @@ async def withdraw_report(
             {"_id": report["video_id"], "report_count": {"$gt": 0}},
             {"$inc": {"report_count": -1}}
         )
+        try:
+            await moderation.on_withdraw(db, report)
+        except Exception:
+            logger.exception("Safety check failed for withdrawn report %s", report_id)
 
 @router.get("/reports/{report_id}", response_model=ReportResponse)
 async def get_report_details(
@@ -373,3 +385,80 @@ async def get_report_details(
     report["reporter_id"] = str(report["reporter_id"])
     
     return ReportResponse(**report)
+
+
+# ------------------------------------------------------------------ admin review
+
+class ModerationItem(BaseModel):
+    id: str
+    creator_id: Optional[str] = None
+    title: Optional[str] = None
+    thumbnail: Optional[str] = None
+    state: Optional[str] = None
+    flags: int = 0
+    reports: int = 0
+    categories: dict = {}
+    created_at: Optional[datetime] = None
+    held_at: Optional[datetime] = None
+
+
+class Decision(BaseModel):
+    action: Literal["restore", "remove"]
+    note: Optional[str] = Field(None, max_length=500)
+
+
+@router.get("/admin/queue", response_model=List[ModerationItem])
+async def moderation_queue(
+    limit: int = Query(50, ge=1, le=200),
+    admin_id: str = Depends(require_admin),
+):
+    """Posts waiting for review: held ones first, then the most flagged."""
+    db = get_database()
+    q = {"is_active": True, "$or": [{"moderation.state": moderation.HELD}, {"moderation.flags": {"$gt": 0}}]}
+    docs = await db.videos.find(q, {"title": 1, "urls.thumbnail": 1, "creator_id": 1, "created_at": 1,
+                                    "moderation": 1}).limit(1000).to_list(1000)
+
+    def key(d):
+        m = d.get("moderation") or {}
+        return (0 if m.get("state") == moderation.HELD else 1, -(m.get("flags") or 0))
+    docs.sort(key=key)
+    docs = docs[:limit]
+    counts = {}
+    async for r in db.reports.find({"video_id": {"$in": [d["_id"] for d in docs]}, "status": "pending",
+                                    "is_active": True}, {"video_id": 1, "category": 1}):
+        c = counts.setdefault(r["video_id"], {"n": 0, "cats": {}})
+        c["n"] += 1
+        cat = str(r.get("category"))
+        c["cats"][cat] = c["cats"].get(cat, 0) + 1
+    out = []
+    for d in docs:
+        m = d.get("moderation") or {}
+        urls = d.get("urls") if isinstance(d.get("urls"), dict) else {}
+        c = counts.get(d["_id"], {"n": 0, "cats": {}})
+        out.append(ModerationItem(
+            id=str(d["_id"]), creator_id=str(d.get("creator_id")) if d.get("creator_id") else None,
+            title=d.get("title") if isinstance(d.get("title"), str) else None,
+            thumbnail=urls.get("thumbnail") if isinstance(urls.get("thumbnail"), str) else None,
+            state=m.get("state"), flags=int(m.get("flags") or 0), reports=c["n"], categories=c["cats"],
+            created_at=d.get("created_at") if isinstance(d.get("created_at"), datetime) else None,
+            held_at=m.get("held_at") if isinstance(m.get("held_at"), datetime) else None,
+        ))
+    return out
+
+
+@router.post("/admin/videos/{video_id}/decision")
+async def moderation_decision(
+    video_id: str,
+    body: Decision,
+    admin_id: str = Depends(require_admin),
+):
+    """restore: back to its old privacy, flags reset. remove: delete the post."""
+    if not ObjectId.is_valid(video_id):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid video ID format")
+    db = get_database()
+    video = await db.videos.find_one({"_id": ObjectId(video_id), "is_active": True})
+    if not video:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video not found")
+    after = await moderation.decide(db, video, body.action, admin_id, body.note)
+    return {"id": video_id, "state": (after.get("moderation") or {}).get("state"),
+            "privacy": after.get("privacy"), "is_active": after.get("is_active")}
