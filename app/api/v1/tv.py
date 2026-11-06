@@ -13,7 +13,7 @@ from typing import List, Optional
 from bson import ObjectId
 from pydantic import ValidationError
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from app.api.deps import get_current_active_user
+from app.api.deps import get_current_active_user, get_optional_active_user
 from app.core.database import get_database
 from app.models.tv import TvGenreResponse, TvTitleResponse, TvWatchResponse
 from app.services import tv_stream
@@ -78,13 +78,13 @@ def _title_object_id(title_id: str) -> ObjectId:
 
 
 @router.get("/titles", response_model=List[TvTitleResponse])
-async def get_titles(current_user: str = Depends(get_current_active_user)):
-    """Every active title, most popular first."""
+async def get_titles(current_user: Optional[str] = Depends(get_optional_active_user)):
+    """Every active title, most popular first. Logged out: send authenticated=false."""
     db = get_database()
     docs = await db.tv_titles.find({"is_active": True}).sort(
         [("popularity", -1), ("_id", 1)]
     ).to_list(length=None)
-    titles = (_title_response(doc, current_user) for doc in docs)
+    titles = (_title_response(doc, current_user or "anon") for doc in docs)
     return [t for t in titles if t is not None]
 
 
@@ -107,7 +107,7 @@ async def stream_playlist(token: str, path: str):
 
 
 @router.get("/genres", response_model=List[TvGenreResponse])
-async def get_genres(current_user: str = Depends(get_current_active_user)):
+async def get_genres(current_user: Optional[str] = Depends(get_optional_active_user)):
     """Every genre in display order, including ones with no titles yet."""
     db = get_database()
     docs = await db.tv_genres.find({"is_active": True}).sort("order", 1).to_list(
