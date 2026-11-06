@@ -703,3 +703,29 @@ Tests: tests/pressure/test_search.py (18 attacks, two rounds).
 Tests: tests/pressure/test_leaderboard.py (17 attacks, two rounds). Whole suite: 557 pass on real MongoDB.
 (test_A10 timing check is slow on the mock database on this machine; it passes on real MongoDB and fails the same
 way without these changes.)
+
+## wano-points — creators earn points, spend them on reach; cash payouts later (off)
+
+**Earning.** Each UTC day, an hour after it ends: a creator who posted at least one qualifying post that day earns
+1 point per counted view + 1 per finished view, that day, on all their qualifying posts (max 2,000/day). No post that
+day = nothing. Qualifying = public, live, ready, not held, in a category (comedy, music, food_culture, learn_news,
+film, sports), not marked not-original, not reported as a copy (intellectual property / spam) by 2+ people.
+Views are the existing once-per-viewer views; the creator's own never count.
+
+**The month.** Points stay pending. At month end they lock in (spendable) with 20+ posting days, otherwise expire.
+
+**Spending.** `POST /points/boost {video_id, points}` (min 100): 1 point = 1 extra For You viewer over 3 days, own
+public posts only; unused viewers are refunded when it ends (or if the post is held). Can't overdraw, even with
+parallel requests.
+
+**Payouts.** Off (`POINTS_PAYOUT_ENABLED=false`, `POINTS_PAYOUT_MIN=50000`). When on: `POST /points/payouts` reserves the
+whole balance; admins see `GET /points/admin/payouts` and approve (after paying outside Wano) or reject (points
+return). Points have no money value, can't be bought or sent to others.
+
+**Other endpoints:** `GET /points/me`, `GET /points/categories`, `PUT /points/videos/{id}/category` (creator),
+`POST /points/admin/videos/{id}/not-original` (removes that post's points, even locked ones; balance can go negative).
+
+**App side:** category picker on upload (then PUT the category), a Points screen (balance, pending, "12/20 posting days"),
+a Boost button on own posts. Settling runs in the growth loop every 15 minutes; no one-time steps.
+
+Tests: tests/pressure/test_points.py (27 attacks, two rounds). Whole suite: 584 pass on real MongoDB.

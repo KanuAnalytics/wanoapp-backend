@@ -129,6 +129,14 @@ async def record_view(db, video: dict, *, viewer: Optional[str], portion: float)
         )
         if isinstance(creator, ObjectId):
             await _daily(db, creator, views=1, finished=finished, portion_sum=float(portion))
+            # Per post per day, for Wano points (points.py).
+            day = _day(_now())
+            await db.post_daily.update_one(
+                {"_id": f"{video['_id']}:{day.date().isoformat()}"},
+                {"$inc": {"views": 1, "finished": finished},
+                 "$setOnInsert": {"video_id": video["_id"], "creator_id": creator, "day": day}},
+                upsert=True,
+            )
     except Exception:
         logger.warning("Could not record reach for view of %s", video.get("_id"))
 
@@ -300,7 +308,7 @@ async def first_viewers(db, excluded_oids: List[ObjectId], own: Optional[ObjectI
         per[key] = per.get(key, 0) + 1
         kept.append(d)
     if not kept:
-        return []
+        return await _paid(db, excluded_oids, own, [])
 
     reach = {r["_id"]: r async for r in db.video_reach.find({"_id": {"$in": [d["_id"] for d in kept]}})}
     # A week of history is all the ranking uses (For You calls this on every page).
@@ -328,7 +336,18 @@ async def first_viewers(db, excluded_oids: List[ObjectId], own: Optional[ObjectI
             boosted.append((score, d))
     testing.sort(key=lambda t: (t[0], t[1]))
     boosted.sort(key=lambda t: -t[0])
-    return [t[2] for t in testing] + [b[1] for b in boosted]
+    return [t[2] for t in testing] + await _paid(db, excluded_oids, own, kept) + [b[1] for b in boosted]
+
+
+async def _paid(db, excluded_oids, own, kept) -> List[dict]:
+    """Posts their creators boosted with Wano points (points.py)."""
+    from app.services import points
+    try:
+        seen = {d["_id"] for d in kept}
+        return [d for d in await points.boosted_candidates(db, excluded_oids, own) if d["_id"] not in seen][:20]
+    except Exception:
+        logger.exception("Could not load points boosts")
+        return []
 
 
 def stage_label(reach: dict, streak: int, created_at) -> str:

@@ -120,6 +120,16 @@ async def create_indexes():
         (d.user_badges, [("user_id", 1), ("at", -1)], {}),
         (d.user_badges, [("at", 1)], {"name": "user_badges_unnotified",
                                        "partialFilterExpression": {"notified": False}}),
+        # Wano points (points.py).
+        (d.post_daily, [("day", 1), ("creator_id", 1)], {}),
+        (d.post_daily, [("day", -1)], {"name": "post_daily_ttl", "expireAfterSeconds": 60 * 24 * 3600}),
+        (d.points_ledger, [("user_id", 1), ("at", -1)], {}),
+        (d.points_ledger, [("video_id", 1)], {}),
+        (d.points_ledger, [("month", 1), ("kind", 1), ("state", 1)], {}),
+        (d.points_days, [("user_id", 1), ("month", 1)], {}),
+        (d.points_payouts, [("state", 1), ("at", 1)], {}),
+        (d.videos, [("points_boost.until", 1)], {"sparse": True}),
+        (d.videos, [("category", 1), ("created_at", -1)], {"sparse": True}),
         # Wano TV popularity (tv_popularity): daily plays per title, and
         # short-lived once-per-day / per-network counters.
         (d.tv_title_daily, [("day", 1)], {"expireAfterSeconds": 60 * 24 * 3600}),
