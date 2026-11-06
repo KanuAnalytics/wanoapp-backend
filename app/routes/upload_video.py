@@ -10,6 +10,7 @@ from datetime import datetime
 import hashlib
 import hmac
 import json
+from app.services import thumbnails
 import re
 from fastapi import BackgroundTasks, Depends, File, UploadFile, HTTPException, APIRouter, Query, Request, status
 from fastapi.responses import JSONResponse
@@ -386,42 +387,27 @@ def _verify_cf_webhook_signature(raw_body: bytes, signature_header: str) -> bool
     return hmac.compare_digest(expected, signature)
 
 
-@router.post("/cf-webhook")
-async def cloudflare_stream_webhook(request: Request, background_tasks: BackgroundTasks):
-    """
-    Cloudflare Stream calls this when a video's processing state changes.
-    Once a video first becomes ready to stream, notify its creator.
-    """
-    raw_body = await request.body()
-    signature_header = request.headers.get("webhook-signature", "")
+def _later(background_tasks, fn, *args):
+    """Run after the response when there is one (webhook), otherwise now in the
+    background (stuck-upload rescue)."""
+    if background_tasks is not None:
+        background_tasks.add_task(fn, *args)
+    else:
+        async def _run():
+            try:
+                res = fn(*args)
+                if asyncio.iscoroutine(res):
+                    await res
+            except Exception:
+                logger.exception("Background task %s failed", getattr(fn, "__name__", fn))
+        asyncio.ensure_future(_run())
 
-    if not _verify_cf_webhook_signature(raw_body, signature_header):
-        raise HTTPException(status_code=401, detail="Invalid webhook signature")
 
-    try:
-        payload = json.loads(raw_body)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid JSON")
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="Invalid payload")
-    uid = payload.get("uid")
-    if uid is not None and (not isinstance(uid, str) or not _STREAM_UID_RE.match(uid)):
-        return {"ok": True}
-    ready = payload.get("readyToStream", False)
-
-    if uid:
-        clip_status = payload.get("status") or {}
-        if ready:
-            await handle_stream_video_ready(uid)
-        elif clip_status.get("state") == "error":
-            await handle_stream_video_failed(
-                uid,
-                clip_status.get("errorReasonText") or clip_status.get("errorReasonCode") or "unknown error",
-            )
-
-    if not uid or not ready:
-        return {"ok": True}
-
+async def mark_stream_ready(uid: str, background_tasks=None):
+    """A Stream video finished processing: mark its post ready (once), give it
+    a real thumbnail, tell Recombee and the creator. Returns the post, or None
+    if no post was waiting on this video. Used by the webhook and the
+    stuck-upload rescue."""
     db = get_database()
     # isReadyToStream: {"$ne": True} makes this idempotent - Cloudflare may retry
     # the same webhook, and we only want to notify the creator once.
@@ -430,7 +416,8 @@ async def cloudflare_stream_webhook(request: Request, background_tasks: Backgrou
     video = await db.videos.find_one_and_update(
         {"stream_uid": uid, "isReadyToStream": {"$ne": True}},
         {"$set": {"isReadyToStream": True}},
-        projection={"creator_id": 1, "urls.thumbnail": 1, "status": 1},
+        projection={"creator_id": 1, "urls.thumbnail": 1, "status": 1, "remoteUrl_CF": 1, "remoteUrl": 1,
+                    "media_type": 1, "images": 1},
     )
     if not video:
         legacy_query = stream_uid_exact_query(uid)
@@ -438,15 +425,23 @@ async def cloudflare_stream_webhook(request: Request, background_tasks: Backgrou
         video = await db.videos.find_one_and_update(
             {**legacy_query, "isReadyToStream": {"$ne": True}},
             {"$set": {"isReadyToStream": True}},
-            projection={"creator_id": 1, "urls.thumbnail": 1, "status": 1},
+            projection={"creator_id": 1, "urls.thumbnail": 1, "status": 1, "remoteUrl_CF": 1, "remoteUrl": 1,
+                    "media_type": 1, "images": 1},
         )
     if not video:
-        return {"ok": True}
+        return None
+
+    # Posts saved with the grey placeholder get Cloudflare's own frame.
+    urls = video.get("urls") if isinstance(video.get("urls"), dict) else {}
+    fixed = thumbnails.best_thumbnail(video)
+    if fixed and fixed != urls.get("thumbnail"):
+        await db.videos.update_one({"_id": video["_id"]}, {"$set": {"urls.thumbnail": fixed}})
+        video["urls"] = {**urls, "thumbnail": fixed}
 
     # A scheduled post is announced, synced and notified when it is published,
     # not when its video finishes processing.
     if video.get("status") in ("scheduled", "publishing"):
-        return {"ok": True}
+        return video
 
     try:
         req = SetItemValues(str(video["_id"]), {"is_ready_to_stream": True}, cascade_create=True)
@@ -506,7 +501,7 @@ async def cloudflare_stream_webhook(request: Request, background_tasks: Backgrou
                 "..." if len(FIRST_VIDEO_WELCOME_COMMENT) > 30 else ""
             )
             for token in tokens:
-                background_tasks.add_task(
+                _later(background_tasks, 
                     send_push_message,
                     token,
                     comment_preview,
@@ -516,7 +511,7 @@ async def cloudflare_stream_webhook(request: Request, background_tasks: Backgrou
                 )
 
     for token in tokens:
-        background_tasks.add_task(
+        _later(background_tasks, 
             send_push_message,
             token,
             "Your video has been successfully uploaded!",
@@ -531,5 +526,44 @@ async def cloudflare_stream_webhook(request: Request, background_tasks: Backgrou
         "post_id": video["_id"],
         "date": datetime.utcnow(),
     })
+    return video
 
+
+@router.post("/cf-webhook")
+async def cloudflare_stream_webhook(request: Request, background_tasks: BackgroundTasks):
+    """
+    Cloudflare Stream calls this when a video's processing state changes.
+    Once a video first becomes ready to stream, notify its creator.
+    """
+    raw_body = await request.body()
+    signature_header = request.headers.get("webhook-signature", "")
+
+    if not _verify_cf_webhook_signature(raw_body, signature_header):
+        raise HTTPException(status_code=401, detail="Invalid webhook signature")
+
+    try:
+        payload = json.loads(raw_body)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Invalid payload")
+    uid = payload.get("uid")
+    if uid is not None and (not isinstance(uid, str) or not _STREAM_UID_RE.match(uid)):
+        return {"ok": True}
+    ready = payload.get("readyToStream", False)
+
+    if uid:
+        clip_status = payload.get("status") or {}
+        if ready:
+            await handle_stream_video_ready(uid)
+        elif clip_status.get("state") == "error":
+            await handle_stream_video_failed(
+                uid,
+                clip_status.get("errorReasonText") or clip_status.get("errorReasonCode") or "unknown error",
+            )
+
+    if not uid or not ready:
+        return {"ok": True}
+
+    await mark_stream_ready(uid, background_tasks)
     return {"ok": True}
