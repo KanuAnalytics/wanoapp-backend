@@ -29,12 +29,14 @@ def post_stream_uid(remote_url_cf: Optional[str], remote_url: Optional[str] = No
 
 def stream_uid_exact_query(stream_uid: str) -> dict:
     """Videos whose stored stream_uid is this UID, or (older docs without
-    stream_uid) whose playback URL has it as its first path segment."""
+    stream_uid) whose playback URL has it as its first path segment.
+    The URL fallback only looks at docs with no stream_uid ({"stream_uid": None}
+    matches missing or null and uses the stream_uid_1_creator_id_1 index), so
+    once backfill_stream_uids has run it reads a handful of docs, not all of them."""
     anchored = {"$regex": f"^https?://[^/]+/{re.escape(stream_uid)}(/|$)"}
     return {"$or": [
         {"stream_uid": stream_uid},
-        {"remoteUrl_CF": anchored},
-        {"remoteUrl": anchored},
+        {"stream_uid": None, "$or": [{"remoteUrl_CF": anchored}, {"remoteUrl": anchored}]},
     ]}
 
 
@@ -44,9 +46,32 @@ def stream_uid_reference_query(stream_uid: str) -> dict:
     loose = {"$regex": re.escape(stream_uid)}
     return {"$or": [
         {"stream_uid": stream_uid},
-        {"remoteUrl_CF": loose},
-        {"remoteUrl": loose},
+        {"stream_uid": None, "$or": [{"remoteUrl_CF": loose}, {"remoteUrl": loose}]},
     ]}
+
+
+async def backfill_stream_uids(db, apply: bool = False, limit: int = 500_000) -> dict:
+    """Store stream_uid on older posts that only have it inside their URL, so
+    Stream lookups (webhook, post creation, deletion) stay on the index.
+    Dry run unless apply. Photo posts and URLs that aren't Stream are left alone."""
+    from pymongo import UpdateOne
+    would, fixed, batch = 0, 0, []
+    cursor = db.videos.find({"stream_uid": None, "media_type": {"$ne": "photo"}},
+                            {"remoteUrl_CF": 1, "remoteUrl": 1}).limit(limit)
+    async for d in cursor:
+        uid = post_stream_uid(d.get("remoteUrl_CF") if isinstance(d.get("remoteUrl_CF"), str) else None,
+                              d.get("remoteUrl") if isinstance(d.get("remoteUrl"), str) else None)
+        if not uid:
+            continue
+        would += 1
+        if apply:
+            batch.append(UpdateOne({"_id": d["_id"], "stream_uid": None}, {"$set": {"stream_uid": uid}}))
+            if len(batch) >= 500:
+                fixed += (await db.videos.bulk_write(batch, ordered=False)).modified_count
+                batch = []
+    if apply and batch:
+        fixed += (await db.videos.bulk_write(batch, ordered=False)).modified_count
+    return {"would_fix": 0 if apply else would, "fixed": fixed, "applied": apply}
 
 
 async def create_video_post(

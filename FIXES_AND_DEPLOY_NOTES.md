@@ -571,3 +571,36 @@ Streak days are UTC days (Kampala's day flips at 03:00), as in creators.py.
   at once; one report pauses only first viewers; turning creator tips off silences every creator
   notification; a late Cloudflare webhook after a failed rescue restores the post without
   announcing a day-old post as new.
+
+---
+
+## Atlas Performance Advisor fixes (branch db-advisor, on top of growth-notifications)
+
+Checked the live cluster in Atlas (WanoApp, M10, MongoDB 8.0.37, AWS Paris, ~10k videos,
+~9k users). Advisor: 6 index suggestions, 5 redundant indexes. Attack tests first
+(test_db_advisor.py, 10; 5 failed on real MongoDB before the fix).
+
+Slow queries and what changed:
+- Posting a video checks no other creator uses the same Cloudflare video; the "video ready"
+  webhook and deletes look videos up by Cloudflare id. All fell back to matching every
+  video's URL (whole collection, ~146 ms). Now the URL fallback only looks at posts with no
+  stored stream_uid, on a new index (stream_uid, creator_id). After the backfill below, these
+  read a handful of documents instead of all of them (measured on real MongoDB: <= 100 of 3000).
+- Registering a phone's push token searched every user (~247 ms). New index users.expo_push_tokens.
+- Stuck-upload scan: covered by (isReadyToStream, created_at) (already on stuck-uploads).
+
+Redundant indexes (each a prefix of a compound index that stays): the app no longer creates
+videos.created_at_-1, videos.creator_id_1, videos.is_active_1_privacy_1, comments.user_id_1,
+comments.video_id_1.
+
+After deploying, once:
+1. POST /api/v1/recombee/backfill-stream-uids            (admin; dry run shows how many)
+   POST /api/v1/recombee/backfill-stream-uids?apply=true
+2. python -m scripts.drop_redundant_indexes              (dry run)
+   python -m scripts.drop_redundant_indexes --apply      (only drops an index if its cover exists)
+3. Atlas > Performance Advisor a day later: the suggestions above should be gone.
+
+Also seen in Atlas (not code):
+- Billing: "We were unable to charge your credit card ... account suspended on 12/01/26."
+- The Goodtown API (goodtown-api) connects to the same WanoApp cluster.
+- No maintenance window and no security/operations contacts set.

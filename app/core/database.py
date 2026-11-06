@@ -53,12 +53,9 @@ async def create_indexes():
     d = db.db
     specs = [
         # Video indexes
-        (d.videos, [("created_at", -1)], {}),
         # Matches the v1 feed's sort, which pairs created_at with an _id tiebreaker;
         # the created_at-only index above can't supply that order on its own.
         (d.videos, [("created_at", -1), ("_id", -1)], {}),
-        (d.videos, [("creator_id", 1)], {}),
-        (d.videos, [("is_active", 1), ("privacy", 1)], {}),
         # Scheduled posts: the publisher's due-time scan, and each creator's own list.
         (d.videos, [("status", 1), ("scheduled_at", 1)], {}),
         (d.videos, [("creator_id", 1), ("status", 1), ("scheduled_at", 1)], {}),
@@ -90,6 +87,11 @@ async def create_indexes():
         (d.videos, [("is_active", 1), ("privacy", 1), ("created_at", -1)], {}),
         (d.videos, [("creator_id", 1), ("created_at", -1)], {}),
         (d.videos, [("stream_uid", 1)], {"partialFilterExpression": {"stream_uid": {"$type": "string"}}}),
+        # Not partial: also indexes posts with no stream_uid (as null), so the URL
+        # fallback in stream_uid_exact_query / reference_query doesn't scan everything.
+        (d.videos, [("stream_uid", 1), ("creator_id", 1)], {}),
+        # Re-registering a phone's push token (users.add_push_token) finds its old owner.
+        (d.users, [("expo_push_tokens", 1)], {}),
 
         # Wano TV: the catalogue is listed by popularity; slug is the seed
         # script's upsert key. History is one doc per (user, title).
@@ -117,8 +119,6 @@ async def create_indexes():
         }),
 
         # Comment indexes
-        (d.comments, [("video_id", 1)], {}),
-        (d.comments, [("user_id", 1)], {}),
 
         # Notification indexes
         (d.notifications, [("recipient_id", 1), ("date", -1)], {}),
@@ -137,9 +137,8 @@ async def create_indexes():
 async def create_comment_indexes(db):
     """Create indexes for comments collection"""
     
-    # Existing indexes
-    await db.comments.create_index("video_id")
-    await db.comments.create_index("user_id")
+    # video_id and user_id alone are covered by the compound indexes below
+    # (Atlas flagged the single-field ones as redundant).
     await db.comments.create_index("parent_id")
     
     # New index for display name

@@ -66,6 +66,14 @@ async def fix_thumbnails(apply: bool = False, current_user: str = Depends(requir
     return await thumbnails.backfill(get_database(), apply=apply)
 
 
+@router.post("/backfill-stream-uids")
+async def backfill_stream_uids(apply: bool = False, current_user: str = Depends(require_admin)):
+    """Store the Cloudflare id on older posts so Stream lookups stay on an index.
+    Dry run unless apply=true; safe to run again."""
+    from app.services.video_posts import backfill_stream_uids as run
+    return await run(get_database(), apply=apply)
+
+
 @router.post("/rescue-uploads")
 async def rescue_uploads(current_user: str = Depends(require_admin)):
     """Run the stuck-upload rescue now (it also runs every 5 minutes)."""
