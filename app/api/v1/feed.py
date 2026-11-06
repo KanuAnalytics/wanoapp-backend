@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, 
 from app.core.database import get_database
 from app.api.deps import get_current_user, get_optional_active_user, oauth2_scheme_optional
 from app.services.metrics_service import metrics_buffer
-from app.services import for_you, new_feed, trending
+from app.services import for_you, new_feed, thumbnails, trending
 from app.services.recommendations import viewer_id
 from pydantic import BaseModel
 from bson import ObjectId
@@ -86,7 +86,7 @@ def _feed_video(video: dict, **fields) -> FeedVideo:
         creator_id=str(video.get("creator_id")),
         title=_text(video.get("title")),
         description=_text(video.get("description")),
-        thumbnail=thumbnail if isinstance(thumbnail, str) else None,
+        thumbnail=thumbnails.best_thumbnail(video, thumbnail if isinstance(thumbnail, str) else None),
         views_count=_count(video.get("views_count")),
         likes_count=_count(video.get("likes_count")),
         comments_count=_count(video.get("comments_count")),

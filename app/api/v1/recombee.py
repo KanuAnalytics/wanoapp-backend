@@ -58,6 +58,14 @@ async def ingest_videos(current_user: str = Depends(require_admin)):
     return {"total_ingested": sent}
 
 
+@router.post("/fix-thumbnails")
+async def fix_thumbnails(apply: bool = False, current_user: str = Depends(require_admin)):
+    """Give posts still showing the grey placeholder Cloudflare's own frame.
+    Dry run unless apply=true; safe to run again."""
+    from app.services import thumbnails
+    return await thumbnails.backfill(get_database(), apply=apply)
+
+
 @router.post("/sync-items")
 async def sync_items(current_user: str = Depends(require_admin)):
     """Re-send every video's properties (readiness, privacy, counts) to Recombee.

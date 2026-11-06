@@ -119,6 +119,14 @@ def _num(value, cast=int, default=0):
         return cast(default)
 
 
+def _thumbnail(video: dict) -> str:
+    from app.services.thumbnails import best_thumbnail
+    try:
+        return best_thumbnail(video) or ""
+    except Exception:
+        return ""
+
+
 def item_values(video: dict) -> dict:
     """The one definition of a video's Recombee properties."""
     media_type = video.get("media_type") or ("photo" if video.get("images") and not video.get("remoteUrl_CF") else "video")
@@ -128,7 +136,7 @@ def item_values(video: dict) -> dict:
         "description": (video.get("description") or "")[:2000],
         "video_type": video.get("video_type") or "",
         "duration": _num(duration, float, 0.0),
-        "thumbnail": (video.get("urls") or {}).get("thumbnail") or "",
+        "thumbnail": _thumbnail(video),
         "hashtags": [h for h in (video.get("hashtags") or []) if isinstance(h, str)][:50],
         "is_active": bool(video.get("is_active", True)),
         "supports_landscape": bool(video.get("supports_landscape", False)),

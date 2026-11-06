@@ -382,3 +382,22 @@ Admin review (user_type admin):
 Check on staging: report a test post from 3 accounts older than 3 days -> it disappears from
 For You/New/trending/share link; the creator sees "under_review"; restore it from the queue.
 New accounts can't be used: make them older in the DB for the test, or use real ones.
+
+---
+
+## Real thumbnails (branch real-thumbnails, on top of safety-check)
+
+Server-only. Checked live first: of the 500 newest posts, 6 (1.2%) show the grey placeholder;
+the rest have real thumbnails (stored in the wano-africadev bucket, which is the live one —
+left as is). Attack tests first (test_thumbnails.py: 8 of 16 failed against the old code;
+the 8 passing were guards), then round 2 (webhook replays, scheduled posts, scale).
+
+- Feeds (New, For You, trending, profile, saved), creator stats and Recombee show Cloudflare's own
+  frame when a post has no thumbnail or the placeholder. Real thumbnails and photo posts unchanged.
+- Only Cloudflare's hosts (videodelivery.net, customer-*.cloudflarestream.com) with a 32-hex id.
+- When a video becomes ready, the frame is stored on the post (never over a real thumbnail).
+  The webhook's ready steps are now upload_video.mark_stream_ready(uid) (same behaviour).
+- One-off backfill (admin): POST /api/v1/recombee/fix-thumbnails  (dry run; ?apply=true to store).
+
+Check on staging: POST /api/v1/recombee/fix-thumbnails -> "would_fix" should be small;
+run with ?apply=true; the placeholder posts in New show a video frame.

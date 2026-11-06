@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 from app.api.deps import get_current_active_user
 from app.core.database import get_database
-from app.services import creators
+from app.services import creators, thumbnails
 from app.services.creators import _num
 
 router = APIRouter()
@@ -97,6 +97,7 @@ async def my_stats(
 
     s = (await creators.streaks(db, [me]))[me]
     recent = await db.videos.find(posts_q, {"title": 1, "urls.thumbnail": 1, "created_at": 1, "moderation": 1,
+                                            "remoteUrl_CF": 1, "remoteUrl": 1, "media_type": 1, "images": 1,
                                             "likes_count": 1, "comments_count": 1, "shares_count": 1}
                                   ).sort([("created_at", -1), ("_id", -1)]).limit(MAX_POSTS).to_list(MAX_POSTS)
     reach = {r["_id"]: r async for r in db.video_reach.find({"_id": {"$in": [v["_id"] for v in recent]}})}
@@ -108,7 +109,7 @@ async def my_stats(
         posts.append(PostStats(
             id=str(v["_id"]),
             title=v.get("title") if isinstance(v.get("title"), str) else None,
-            thumbnail=urls.get("thumbnail") if isinstance(urls.get("thumbnail"), str) else None,
+            thumbnail=thumbnails.best_thumbnail(v),
             created_at=v.get("created_at") if isinstance(v.get("created_at"), datetime) else None,
             views=int(views),
             avg_watch_pct=_pct(_num(r.get("portion_sum")), views),
