@@ -22,7 +22,7 @@ from bson.json_util import dumps
 from app.models.user import UserType
 from recombee_api_client.api_requests import SetViewPortion, AddRating, DeleteRating, AddBookmark, DeleteBookmark, SetItemValues, Batch, DeleteItem
 from app.services.recombee_service import recombee_send
-from app.services import creators, for_you, recommendations, trending
+from app.services import creators, for_you, moderation, recommendations, trending
 from app.services.recommendations import anon_id, viewer_id
 from app.services.video_deletion import soft_delete_video
 from app.services.stitch_jobs import MAX_CLIPS, StitchValidationError, create_stitch_job
@@ -798,6 +798,11 @@ async def update_video(
     }
     if "privacy" in update_data and update_data["privacy"] is None:
         del update_data["privacy"]
+    if "privacy" in update_data and moderation.is_held(video):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This post is under review; its privacy can't change until the review is done",
+        )
     old_privacy = video.get("privacy")
     update_data["updated_at"] = datetime.utcnow()
     # Videos made before stream_uid existed get it on their next edit.

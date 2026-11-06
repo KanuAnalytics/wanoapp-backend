@@ -96,7 +96,7 @@ async def my_stats(
     post_count = await db.videos.count_documents(posts_q)
 
     s = (await creators.streaks(db, [me]))[me]
-    recent = await db.videos.find(posts_q, {"title": 1, "urls.thumbnail": 1, "created_at": 1,
+    recent = await db.videos.find(posts_q, {"title": 1, "urls.thumbnail": 1, "created_at": 1, "moderation": 1,
                                             "likes_count": 1, "comments_count": 1, "shares_count": 1}
                                   ).sort([("created_at", -1), ("_id", -1)]).limit(MAX_POSTS).to_list(MAX_POSTS)
     reach = {r["_id"]: r async for r in db.video_reach.find({"_id": {"$in": [v["_id"] for v in recent]}})}
@@ -116,7 +116,8 @@ async def my_stats(
             likes=int(_num(v.get("likes_count"))),
             comments=int(_num(v.get("comments_count"))),
             shares=int(_num(v.get("shares_count"))),
-            reach_stage=creators.stage_label(r, s["current"], v.get("created_at")),
+            reach_stage=("under_review" if (v.get("moderation") or {}).get("state") == "held"
+                         else creators.stage_label(r, s["current"], v.get("created_at"))),
         ))
 
     return CreatorStats(

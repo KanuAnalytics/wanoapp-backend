@@ -214,10 +214,11 @@ async def test_K4_streak_creator_gets_a_bigger_test_and_ranks_higher(client, db,
     from app.services import creators
     _, ids = await _catalog(db, n=30, creators=6)
     rb.pool = ids
-    steady, _ = await make_user(db)
+    old = datetime.now(timezone.utc) - timedelta(days=90)     # established accounts
+    steady, _ = await make_user(db, created_at=old)
     await _post_days(db, steady, [1, 2, 3, 4])
     s_vid = await make_video(db, steady, created_at=ago(hours=2), isReadyToStream=True)
-    casual, _ = await make_user(db)
+    casual, _ = await make_user(db, created_at=old)
     c_vid = await make_video(db, casual, created_at=ago(hours=2), isReadyToStream=True)
     same = {"impressions": 50, "fy_views": 35, "fy_portion_sum": 21.0, "fy_finished": 15}
     await db.video_reach.insert_many([{"_id": ObjectId(s_vid), **same}, {"_id": ObjectId(c_vid), **same}])

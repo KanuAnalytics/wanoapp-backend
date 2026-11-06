@@ -370,3 +370,30 @@ never count. Totals start counting from deploy (no backfill).
 2. Watch one fully from 2-3 accounts, then GET /api/v1/creators/me/stats as the poster:
    views/finished/avg_watch_pct move; reach_stage "testing".
 3. GET /api/v1/metrics/for-you?days=1 (admin): watch rate of "fresh" vs "personal".
+
+---
+
+## Safety check for new posts (branch safety-check, on top of creators-growth)
+
+Server-only. Attack tests first (tests/pressure/test_moderation.py: 13 of 19 failed), built,
+then round 2 (test_moderation_round2.py, 10 tests: side doors, report rings, stale Recombee).
+
+- A report counts only from a trusted account: 3+ days old, active, not the creator, and under
+  20 counted reports in 24 h. Others are still saved and emailed but can't move a post.
+- 1 counted report: the post leaves the first-viewer pool at once (stays in New, profile, Recombee).
+- 3 counted reports: held for review. privacy -> "private" (old value kept in
+  moderation.prev_privacy), so every public surface drops it; Recombee gets privacy=private.
+  The creator still sees it: New pinned status "under_review", stats reach_stage "under_review".
+  The creator can't change its privacy while held (REST 409, GraphQL error). Withdrawn reports
+  never release a hold.
+- Creators under 24 h old: first-viewer test of 10 and cap 100 (instead of 30 / 300).
+
+Admin review (user_type admin):
+- GET  /api/v1/reports/admin/queue            held first, then most flagged; pending report counts by category.
+- POST /api/v1/reports/admin/videos/{id}/decision  {"action": "restore" | "remove", "note": "..."}
+  restore: old privacy back, flags reset, pending reports "dismissed". remove: post deleted,
+  pending reports "resolved". The same reporters can't re-report after a review.
+
+Check on staging: report a test post from 3 accounts older than 3 days -> it disappears from
+For You/New/trending/share link; the creator sees "under_review"; restore it from the queue.
+New accounts can't be used: make them older in the DB for the test, or use real ones.

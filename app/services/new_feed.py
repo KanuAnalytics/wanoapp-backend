@@ -374,13 +374,15 @@ async def own_pinned(db, viewer: str, project: dict) -> List[dict]:
     """The viewer's own public posts from the last day, newest first, with a
     live/processing status, so a creator can see their post landed."""
     since = datetime.utcnow() - timedelta(hours=OWN_PIN_HOURS)
-    q = {"creator_id": ObjectId(viewer), "is_active": True, "privacy": "public",
+    q = {"creator_id": ObjectId(viewer), "is_active": True,
+         "$or": [{"privacy": "public"}, {"moderation.state": "held"}],
          "created_at": {"$gte": since}, "status": {"$ne": "scheduled"}}
     raw = await db.videos.find(q).sort([("created_at", -1), ("_id", -1)]).limit(OWN_PIN_MAX).to_list(length=OWN_PIN_MAX)
     if not raw:
         return []
     from app.services.recommendations import is_ready_to_stream
-    status_of = {d["_id"]: ("live" if is_ready_to_stream(d) else "processing") for d in raw}
+    status_of = {d["_id"]: ("under_review" if (d.get("moderation") or {}).get("state") == "held"
+                            else "live" if is_ready_to_stream(d) else "processing") for d in raw}
     order = {d["_id"]: i for i, d in enumerate(raw)}
     pipeline = [
         {"$match": {"_id": {"$in": list(order)}}},
