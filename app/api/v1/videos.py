@@ -22,7 +22,7 @@ from bson.json_util import dumps
 from app.models.user import UserType
 from recombee_api_client.api_requests import SetViewPortion, AddRating, DeleteRating, AddBookmark, DeleteBookmark, SetItemValues, Batch, DeleteItem
 from app.services.recombee_service import recombee_send
-from app.services import for_you, recommendations, trending
+from app.services import creators, for_you, recommendations, trending
 from app.services.recommendations import anon_id, viewer_id
 from app.services.video_deletion import soft_delete_video
 from app.services.stitch_jobs import MAX_CLIPS, StitchValidationError, create_stitch_job
@@ -677,6 +677,7 @@ async def track_video_watch(
         await metrics_buffer.increment_view(video_id)
         await trending.record_watch(db, video_id, logged_in=bool(current_user), portion=body.portion,
                                     viewer=current_user, creator=video.get("creator_id"))
+        await creators.record_view(db, video, viewer=current_user, portion=body.portion)
         buffered = await metrics_buffer.get_buffered_counts(video_id)
         total_views = video.get("views_count", 0) + buffered["views"]
         await notify_view_milestones(db, video, video_id, total_views, background_tasks)

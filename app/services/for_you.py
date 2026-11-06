@@ -142,13 +142,10 @@ async def _docs_for(db, ids: List[str], excluded: set) -> List[dict]:
 
 
 async def _fresh(db, excluded_oids, own) -> List[dict]:
-    q = {**showable_filter(), "created_at": {"$gte": _now() - timedelta(hours=FRESH_MAX_AGE_HOURS)},
-         "views_count": {"$lt": FRESH_MAX_VIEWS}, "_id": {"$nin": excluded_oids}}
-    if own:
-        q["creator_id"] = {"$ne": own}
-    docs = await db.videos.find(q, {"creator_id": 1, "created_at": 1}).sort("created_at", -1).limit(200).to_list(200)
-    random.shuffle(docs)   # every new post gets a turn, not just the newest
-    return docs[:40]
+    """New posts getting their first viewers (app/services/creators.py): the
+    least-seen first, then the ones people watched, streak creators higher."""
+    from app.services import creators
+    return (await creators.first_viewers(db, excluded_oids, own))[:60]
 
 
 async def _trending(db, excluded_oids, own, country=None) -> List[dict]:
@@ -166,12 +163,17 @@ async def _following(db, following: List[ObjectId], excluded_oids) -> List[dict]
 
 
 async def _popular_backup(db, excluded_oids, own) -> List[dict]:
-    """Stands in for Recombee when it is unreachable."""
+    """Stands in for Recombee when it is unreachable. Never the viewer's own posts."""
     q = {**showable_filter(), "created_at": {"$gte": _now() - timedelta(days=60)}, "_id": {"$nin": excluded_oids}}
+    if own is not None:
+        q["creator_id"] = {"$ne": own}
     docs = await db.videos.find(q, {"creator_id": 1, "created_at": 1, "likes_count": 1}
                                 ).sort("likes_count", -1).limit(150).to_list(150)
     if len(docs) < 20:
-        docs += await db.videos.find({**showable_filter(), "_id": {"$nin": excluded_oids + [d["_id"] for d in docs]}},
+        more_q = {**showable_filter(), "_id": {"$nin": excluded_oids + [d["_id"] for d in docs]}}
+        if own is not None:
+            more_q["creator_id"] = {"$ne": own}
+        docs += await db.videos.find(more_q,
                                      {"creator_id": 1, "created_at": 1}).sort("created_at", -1).limit(100).to_list(100)
     random.shuffle(docs)
     return docs
@@ -244,7 +246,7 @@ async def build_page(db, *, viewer: str, current_user: Optional[str], scenario: 
     ids, page.recomm_id = await _personal(viewer, scenario, want, next_recomm_id, user.get("tags") or [])
     personal = await _docs_for(db, ids, excluded)
     if not ids:
-        personal = await _popular_backup(db, excluded_oids, None)
+        personal = await _popular_backup(db, excluded_oids, own)
 
     queues = {"personal": personal}
     if page.variant == "mix":
@@ -283,7 +285,7 @@ async def build_page(db, *, viewer: str, current_user: Optional[str], scenario: 
         # within the feed rules (e.g. Recombee keeps suggesting one creator).
         nonlocal backup_loaded
         backup_loaded = True
-        docs = await _popular_backup(db, [ObjectId(x) for x in used if ObjectId.is_valid(x)], None)
+        docs = await _popular_backup(db, [ObjectId(x) for x in used if ObjectId.is_valid(x)], own)
         known_ok = {u["_id"] async for u in db.users.find(
             {"_id": {"$in": list({d.get("creator_id") for d in docs})}, "is_active": {"$ne": False}}, {"_id": 1})}
         queues["popular"] = [d for d in docs if d.get("creator_id") in known_ok]
@@ -333,6 +335,8 @@ async def record_impressions(db, *, viewer: str, current_user: Optional[str], va
         await db.feed_impressions.insert_many(docs, ordered=False)
     except Exception:
         logger.warning("Could not record %d feed impressions", len(docs))
+    from app.services import creators
+    await creators.record_impressions(db, [it["id"] for it in items])
 
 
 async def record_watch(db, *, viewer: str, video_id: str, portion: float) -> None:
@@ -345,10 +349,19 @@ async def record_watch(db, *, viewer: str, video_id: str, portion: float) -> Non
         sort=[("at", -1)],
     )
     if imp:
-        await db.feed_impressions.update_one(
-            {"_id": imp["_id"]},
-            {"$max": {"portion": float(portion)}, "$set": {"watched_at": _now()}},
+        res = await db.feed_impressions.update_one(
+            {"_id": imp["_id"], "portion": {"$exists": False}},
+            {"$set": {"portion": float(portion), "watched_at": _now()}},
         )
+        if getattr(res, "modified_count", 0):
+            # First report for this impression: a For You viewer reached the post.
+            from app.services import creators
+            await creators.record_fy_watch(db, video_id, portion)
+        else:
+            await db.feed_impressions.update_one(
+                {"_id": imp["_id"]},
+                {"$max": {"portion": float(portion)}, "$set": {"watched_at": _now()}},
+            )
 
 
 async def report(db, days: int) -> dict:

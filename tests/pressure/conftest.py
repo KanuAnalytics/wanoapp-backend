@@ -79,6 +79,8 @@ async def db(monkeypatch, calls):
 
     from app.services import trending
     trending.clear_cache()
+    from app.services import creators
+    creators.clear_cache()
     trending.reset_limits()
     from app.services.metrics_service import metrics_buffer
     metrics_buffer.views_buffer.clear()

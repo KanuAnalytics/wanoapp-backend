@@ -77,6 +77,10 @@ async def create_indexes():
         (d.video_stats_hourly, [("video_id", 1), ("hour", -1)], {}),
         (d.view_dedupe, [("at", 1)], {"expireAfterSeconds": 6 * 3600}),
         (d.engagement_once, [("at", 1)], {"expireAfterSeconds": 3 * 24 * 3600}),
+        # Creator growth (app/services/creators.py).
+        (d.creator_daily, [("creator_id", 1), ("day", -1)], {}),
+        (d.creator_daily, [("day", 1)], {"expireAfterSeconds": 120 * 24 * 3600}),
+        (d.videos, [("creator_id", 1), ("is_active", 1), ("privacy", 1), ("created_at", -1)], {}),
         # For You sources: fresh / trending / following / stream webhook lookups
         (d.videos, [("is_active", 1), ("privacy", 1), ("created_at", -1)], {}),
         (d.videos, [("creator_id", 1), ("created_at", -1)], {}),

@@ -191,6 +191,8 @@ async def record_once(db, video_id: str, *, actor: Optional[str], creator, kind:
     if getattr(res, "upserted_id", None) is None:
         return   # this person already counted for this video
     await record(db, video_id, **counts)
+    from app.services import creators
+    await creators.record_engagement(db, creator, kind)
 
 
 async def record_watch(db, video_id: str, *, logged_in: bool, portion: float,
