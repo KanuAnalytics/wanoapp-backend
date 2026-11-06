@@ -50,6 +50,10 @@ class FeedVideo(BaseModel):
     created_at: Optional[datetime] = None
     # The song on the post, if one was picked. Older posts have none.
     sound: Optional[FeedSound] = None
+    # New tab with include_own=true: the viewer's own recent posts, pinned on
+    # top with "processing" or "live".
+    pinned: bool = False
+    status: Optional[str] = None
 
 
 def _count(value) -> int:
@@ -111,6 +115,7 @@ async def get_feed(
     exclude_following: bool = False,
     sorted_by: Optional[str] = None,
     exclude_watched: bool = False,
+    include_own: bool = False,
 ):
     """Get personalized video feed, videos from a specific user, or saved videos.
 
@@ -121,6 +126,7 @@ async def get_feed(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                             detail="cursor works only with the newest-first feed")
     next_cursor = None
+    pinned_docs = []
 
     if user_id is not None and not ObjectId.is_valid(user_id):
         raise HTTPException(
@@ -315,10 +321,23 @@ async def get_feed(
                     },
         }
 
+        first_page = cursor == new_feed.START or (cursor is None and skip == 0)
+        featured_slot = 1 if video_id and first_page else 0
+        if include_own and current_user and not user_id and first_page and sort_field == "created_at":
+            pinned_docs = await new_feed.own_pinned(db, current_user, project)
+            if cursor is not None:
+                # Always leave at least one slot for the feed itself.
+                pinned_docs = pinned_docs[:max(0, limit - 1 - featured_slot)]
+        # With a cursor, pinned and shared posts take slots from the page rather
+        # than pushing posts off its end (those would be skipped by the cursor).
+        reserve = len(pinned_docs) + featured_slot
+
         if cursor is not None:
             docs, next_cursor = await new_feed.cursor_page(
-                db, match_conditions, limit=limit, cursor=cursor, viewer=None if user_id else current_user,
+                db, match_conditions, limit=max(1, limit - reserve), cursor=cursor,
+                viewer=None if user_id else current_user,
                 exclude_watched=apply_watch_filter, cap_creators=not user_id, project=project,
+                exclude=[ObjectId(video_id)] if video_id and first_page else None,
             )
             has_more = next_cursor is not None
             apply_watch_filter = False   # already applied while paging
@@ -379,6 +398,23 @@ async def get_feed(
                 is_following=is_following,
             )
         )
+
+    if pinned_docs:
+        pinned_ids = {str(d["_id"]) for d in pinned_docs}
+        videos = [v for v in videos if v.id not in pinned_ids]
+        pins = []
+        for d in pinned_docs:
+            pid = str(d["_id"])
+            buffered = await metrics_buffer.get_buffered_counts(pid)
+            pins.append(_feed_video(
+                d, id=pid, is_ad=False, buffered_views=buffered["views"], buffered_likes=buffered["likes"],
+                has_liked=pid in liked_video_ids, is_bookmarked=pid in bookmarked_video_ids,
+                is_following=False, pinned=True, status=d.get("_pin_status"),
+            ))
+        videos = pins + videos
+    # Skip paging can't give slots back, so there the pins sit on top of a full page.
+    page_cap = limit if cursor is not None else limit + len(pinned_docs)
+    videos = videos[:page_cap]
 
     if video_id and skip == 0 and cursor in (None, new_feed.START):
         featured_pipeline = [
@@ -457,8 +493,8 @@ async def get_feed(
                         is_following=str(featured["creator_id"]) in following_ids,
                     ),
                 )
-                if len(videos) > limit:
-                    videos = videos[:limit]
+                if len(videos) > page_cap:
+                    videos = videos[:page_cap]
 
     # Signals whether the raw skip/limit window was full, independent of the
     # returned list's length -- see the has_more comment above. v2 has no
@@ -471,6 +507,48 @@ async def get_feed(
         response.headers["X-Next-Cursor"] = next_cursor
 
     return videos
+
+
+class NewCountCreator(BaseModel):
+    id: str
+    username: Optional[str] = None
+    display_name: Optional[str] = None
+    profile_picture: Optional[str] = None
+
+
+class NewCount(BaseModel):
+    count: int
+    more: bool
+    creators: List[NewCountCreator]
+    newest_at: Optional[str] = None
+    last_post_at: Optional[str] = None
+    poll_after_seconds: int
+
+
+@router.get("/new-count", response_model=NewCount)
+async def new_count(
+    response: Response,
+    since: str = Query(..., min_length=24, max_length=24,
+                       description="id of the newest video the app is showing on New"),
+    current_user: Optional[str] = Depends(get_optional_active_user),
+):
+    """For the "▲ 5 new videos" bubble on New: how many posts New would show above
+    `since`, up to three of their creators, and when the last post was made (for
+    "You're all caught up · last post 3h ago"). Poll every poll_after_seconds."""
+    if not ObjectId.is_valid(since):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid since")
+    db = get_database()
+    match = {"is_active": True, "privacy": "public", "$and": [new_feed.ready_filter()]}
+    if current_user:
+        user_doc = await db.users.find_one({"_id": ObjectId(current_user)},
+                                           {"blocked_users": 1, "blocked_by": 1}) or {}
+        exclude = {ObjectId(current_user)}
+        for key in ("blocked_users", "blocked_by"):
+            exclude.update(x for x in (user_doc.get(key) or []) if isinstance(x, ObjectId))
+        match["creator_id"] = {"$nin": list(exclude)}
+    result = await new_feed.new_count(db, match, ObjectId(since), current_user)
+    response.headers["Cache-Control"] = "private, max-age=15"
+    return result
 
 
 @router.get("/v2", response_model=List[FeedVideo])
