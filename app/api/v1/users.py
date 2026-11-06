@@ -2049,3 +2049,12 @@ async def get_user_relationships_endpoint(
     )
     
     return relationships
+
+
+@router.get("/{user_id}/badges")
+async def user_badges(user_id: str):
+    """Badges a creator has earned (weekly Top 10, posting streaks), newest first. Public."""
+    from app.services import leaderboard
+    if not ObjectId.is_valid(user_id):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid user ID")
+    return await leaderboard.badges_of(get_database(), ObjectId(user_id))

@@ -75,6 +75,7 @@ class CreatorStats(BaseModel):
     totals: Totals
     streak: Streak
     posts: List[PostStats]
+    badges: List[dict] = []
 
 
 def _pct(part: float, whole: float) -> Optional[float]:
@@ -161,4 +162,5 @@ async def my_stats(
                       boost_active=s["current"] >= creators.STREAK_MIN,
                       next_milestone=creators.next_milestone(s["current"])),
         posts=posts,
+        badges=await __import__("app.services.leaderboard", fromlist=["x"]).badges_of(db, me, 20),
     )

@@ -25,6 +25,7 @@ from app.api.v1.recombee import router as recombee_router
 from app.api.v1.notifications import router as notifications_router
 from app.api.v1.tv import router as tv_router
 from app.api.v1.creators import router as creators_router
+from app.api.v1.leaderboard import router as leaderboard_router
 
 
 
@@ -46,3 +47,4 @@ api_router.include_router(recombee_router, prefix="/recombee", tags=["recombee"]
 api_router.include_router(notifications_router, prefix="/notifications", tags=["notifications"])
 api_router.include_router(tv_router, prefix="/tv", tags=["wano-tv"])
 api_router.include_router(creators_router, prefix="/creators", tags=["creators"])
+api_router.include_router(leaderboard_router, prefix="/leaderboard", tags=["leaderboard"])

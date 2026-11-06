@@ -116,6 +116,10 @@ async def create_indexes():
         (d.tv_genres, [("name", 1)], {"unique": True}),
         (d.tv_watch_history, [("user_id", 1), ("title_id", 1)], {"unique": True}),
         (d.tv_watch_history, [("user_id", 1), ("watched_at", -1)], {}),
+        # Badges (leaderboard.py): a creator's list, and ones still to announce.
+        (d.user_badges, [("user_id", 1), ("at", -1)], {}),
+        (d.user_badges, [("at", 1)], {"name": "user_badges_unnotified",
+                                       "partialFilterExpression": {"notified": False}}),
         # Wano TV popularity (tv_popularity): daily plays per title, and
         # short-lived once-per-day / per-network counters.
         (d.tv_title_daily, [("day", 1)], {"expireAfterSeconds": 60 * 24 * 3600}),

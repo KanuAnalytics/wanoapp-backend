@@ -685,3 +685,21 @@ Tests: tests/pressure/test_tv_series.py (24 attacks, two rounds). Full suite: 51
   If Atlas Search errors, search falls back to word match by itself and retries Atlas after 10 minutes.
 
 Tests: tests/pressure/test_search.py (18 attacks, two rounds).
+
+## leaderboards — weekly creator leaderboard and badges
+
+- `GET /api/v1/leaderboard/weekly?week=current|last&country=gh&limit=50` (logged out: `authenticated=false`):
+  `{week_start, entries: [{rank, user{id, username, display_name, profile_picture}, score, views, likes, comments,
+  shares, posts}], me}`. Week = Monday to Monday UTC. On the board: posted at least one public post that week and
+  earned something. Score = views + 2×finished + 3×likes + 5×comments + 8×shares (deduplicated; own views never count).
+- Badges (`user_badges`): `weekly_top10` (top 10 worldwide, awarded Monday 01:00 UTC for the week before, with rank)
+  and `streak_7` / `streak_30`. `GET /api/v1/users/{id}/badges` (public), and `badges` in `/creators/me/stats`.
+- Winners get one push in their daytime (creator tips on), retried until it goes out (3 days), never twice even with
+  several servers. Separate daily budget from recaps, so both arrive.
+- Runs in the existing growth loop every 30 minutes. No one-time steps.
+
+**App side:** a Leaderboard screen (this week / last week, my country), badges on profiles.
+
+Tests: tests/pressure/test_leaderboard.py (17 attacks, two rounds). Whole suite: 557 pass on real MongoDB.
+(test_A10 timing check is slow on the mock database on this machine; it passes on real MongoDB and fails the same
+way without these changes.)
