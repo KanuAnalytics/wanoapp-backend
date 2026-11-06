@@ -196,6 +196,21 @@ def title_folder(key: Optional[str]) -> Optional[str]:
     return "/".join(parts[:2]) + "/" if len(parts) >= 3 else None
 
 
+def own_folder(doc: Optional[dict]) -> Optional[str]:
+    """The title's own Spaces folder: from its film, or (a series has no single
+    film) its trailer or poster. Episodes and captions must sit inside it."""
+    doc = doc or {}
+    if doc.get("video_url"):
+        # A film: only its own file decides (moved off Spaces = no signed links).
+        return title_folder(spaces_key(doc.get("video_url")))
+    trailer = doc.get("trailer") if isinstance(doc.get("trailer"), dict) else {}
+    for url in (doc.get("video_url"), trailer.get("video_url"), doc.get("poster")):
+        folder = title_folder(spaces_key(url))
+        if folder:
+            return folder
+    return None
+
+
 def _resolve(uri: str, here: str, folder: str) -> Optional[str]:
     uri = uri.strip()
     if not uri:
@@ -256,8 +271,9 @@ async def serve(db, token: str, path: str) -> str:
     title_id = verify(token)
     if len(path) > 200 or not _SAFE_PATH.match(path):
         raise NotFound(path)
-    title = await db.tv_titles.find_one({"_id": ObjectId(title_id), "is_active": True}, {"video_url": 1})
-    folder = title_folder(spaces_key((title or {}).get("video_url")))
+    title = await db.tv_titles.find_one({"_id": ObjectId(title_id), "is_active": True},
+                                        {"video_url": 1, "trailer": 1, "poster": 1})
+    folder = own_folder(title)
     if not folder:
         raise NotFound(title_id)
     key = folder + path

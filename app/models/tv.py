@@ -28,11 +28,44 @@ class TvCaption(BaseModel):
     url: str
 
 
+class TvProfile(BaseModel):
+    """The Wano account behind a credit (public fields only)."""
+    id: str
+    username: str
+    display_name: Optional[str] = None
+    profile_picture: Optional[str] = None
+
+
+class TvCreditPerson(BaseModel):
+    name: str
+    role: str
+    profile: Optional[TvProfile] = None
+
+
 class TvCredits(BaseModel):
     director: str
     cast: List[str] = Field(default_factory=list)
     production: str
     distributor: str
+    people: List[TvCreditPerson] = Field(default_factory=list)
+
+
+class TvEpisode(BaseModel):
+    id: str = Field(..., pattern=r"^s\d{1,3}e\d{1,4}$")
+    season: int = Field(..., ge=0)
+    number: int = Field(..., ge=0)
+    title: str
+    synopsis: str = ""
+    duration_minutes: int = Field(..., ge=0)
+    thumbnail: Optional[str] = None
+    video_url: str
+    captions: List[TvCaption] = Field(default_factory=list)
+
+
+class TvSeason(BaseModel):
+    number: int = Field(..., ge=0)
+    title: Optional[str] = None
+    episodes: List[TvEpisode]
 
 
 class TvMaker(BaseModel):
@@ -69,6 +102,13 @@ class TvTitleResponse(BaseModel):
     featured: bool = False
     popularity: int = 0
     captions: List[TvCaption] = Field(default_factory=list)
+    # Series: seasons in order, each with its episodes in order. video_url is
+    # then the first episode. Empty for movies.
+    seasons: List[TvSeason] = Field(default_factory=list)
+    episode_count: int = 0
+    # History only: the episode the viewer last started.
+    last_episode: Optional[str] = None
+    # Wano users credited on the title ("Meet the Makers").
     makers: List[TvMaker] = Field(default_factory=list)
 
 
@@ -80,3 +120,4 @@ class TvGenreResponse(BaseModel):
 class TvWatchResponse(BaseModel):
     title_id: str
     watched_at: datetime
+    episode: Optional[str] = None

@@ -116,6 +116,12 @@ async def create_indexes():
         (d.tv_genres, [("name", 1)], {"unique": True}),
         (d.tv_watch_history, [("user_id", 1), ("title_id", 1)], {"unique": True}),
         (d.tv_watch_history, [("user_id", 1), ("watched_at", -1)], {}),
+        # Wano TV popularity (tv_popularity): daily plays per title, and
+        # short-lived once-per-day / per-network counters.
+        (d.tv_title_daily, [("day", 1)], {"expireAfterSeconds": 60 * 24 * 3600}),
+        (d.tv_title_daily, [("title_id", 1), ("day", -1)], {}),
+        (d.tv_play_once, [("at", 1)], {"expireAfterSeconds": 2 * 24 * 3600}),
+        (d.tv_play_ip, [("at", 1)], {"expireAfterSeconds": 2 * 24 * 3600}),
 
         # User indexes
         (d.users, [("username", 1)], {"unique": True}),

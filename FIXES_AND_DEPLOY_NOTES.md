@@ -640,3 +640,35 @@ Not code, worth acting on:
   this once the app update ships.
 - Remaining regex searches (video descriptions, comment authors, email search) still scan; Atlas
   Search is the long-term fix.
+
+## tv-series — Wano TV docuseries, credits linked to profiles, popularity from real plays
+
+**Docuseries.** A title with `"type": "series"` can carry seasons and episodes in the seed file:
+
+```json
+"seasons": [{"number": 1, "title": "Season 1", "episodes": [
+  {"id": "s1e1", "season": 1, "number": 1, "title": "...", "synopsis": "...", "duration_minutes": 22,
+   "thumbnail": ".../wano-tv/<folder>/s1e1.jpg", "video_url": ".../wano-tv/<folder>/s1e1/master.m3u8",
+   "captions": []}]}]
+```
+
+The catalogue returns `seasons` (sorted), `episode_count`, and `video_url` = first episode. Episode files must sit in the
+title's own Spaces folder (taken from its trailer or poster) and get the same signed links as films; anything pointing
+elsewhere, broken, or duplicated is skipped. A series with nothing playable is hidden. A series still shipped as one
+film (no seasons) shows as before. `POST /tv/history/{id}?episode=s1e2` remembers the episode; History returns
+`last_episode` (null if that episode was removed).
+
+**Credits → Wano profiles.** `credits.people: [{"name", "role", "username" | "user_id"}]` (max 200 shown). Each gets
+`profile: {id, username, display_name, profile_picture}` or null (no account, banned, typo). One users query for the
+whole catalogue. Old `director/cast/production/distributor` fields unchanged.
+
+**Popularity from plays.** New `POST /tv/titles/{id}/play` (logged in, or logged out with `X-Device-Id`): call when
+playback starts. `POST /tv/history/{id}` also counts. One play per viewer per title per day; logged-out plays capped
+at 30 per network per title per day. Score = plays over the last 14 days, halving every 7 days, plus the editorial
+`popularity` number. The catalogue is sorted by it and `popularity` in the response is that score (5-minute cache).
+New collections `tv_title_daily`, `tv_play_once`, `tv_play_ip` (indexes + TTLs created at startup).
+
+**App side (Nasir / Dennis):** call `/play` when a title or episode starts; show seasons/episodes for series and
+send `?episode=` on history; make credit names with a `profile` tappable to that profile.
+
+Tests: tests/pressure/test_tv_series.py (24 attacks, two rounds). Full suite: 514 pass on real MongoDB.
