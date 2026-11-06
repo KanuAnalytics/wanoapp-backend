@@ -401,3 +401,36 @@ the 8 passing were guards), then round 2 (webhook replays, scheduled posts, scal
 
 Check on staging: POST /api/v1/recombee/fix-thumbnails -> "would_fix" should be small;
 run with ?apply=true; the placeholder posts in New show a video frame.
+
+---
+
+## Stuck-upload rescue (branch stuck-uploads, on top of real-thumbnails)
+
+Server-only. Attack tests first (test_stuck_uploads.py: 14 of 14 failed — nothing existed),
+built, then round 2 (test_stuck_uploads_round2.py, 11: real Cloudflare responses, crash
+mid-check, rescue racing the webhook, broken push tokens).
+
+Why: a post only appears when Cloudflare's "video ready" webhook arrives. If that message is
+missed, the post stays "processing" forever and the creator sees a failed upload.
+
+What it does (app/services/stuck_uploads.py, runs every 5 min, started in app/main.py):
+- Posts processing for 10+ min (up to 7 days old), with a Cloudflare video id: ask Cloudflare.
+- Ready there: marked ready exactly like the webhook (now upload_video.mark_stream_ready):
+  thumbnail, Recombee, creator notified once.
+- Failed there, missing there, or still processing after 24 h: marked failed
+  (videos.upload_check.state = "failed"), creator gets "Your video couldn't be processed.
+  Please try uploading it again." once (notification type "video_failed"). Post stays hidden;
+  a late webhook still brings it back. The creator's pinned post on New shows status "failed".
+- Still processing: checked again after 5, 15, 30, then 60 min.
+- Max 100 checks per run; each post is claimed first, so several servers don't double-check.
+- Cloudflare API down or credentials missing: nothing is failed, it retries later.
+- Never touches photo posts, deleted posts, or posts without a Cloudflare id.
+
+Admin: POST /api/v1/recombee/rescue-uploads runs it now and returns
+{"checked", "ready", "failed", "still_processing", "errors"}.
+
+Needs CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_STREAM_API_TOKEN set (already used for uploads).
+App: optional — show "Upload failed, try again" for notification type "video_failed".
+
+Check on staging: run POST /api/v1/recombee/rescue-uploads after deploy. The first run tells
+you how many posts were stuck; "ready" ones appear in feeds right away.

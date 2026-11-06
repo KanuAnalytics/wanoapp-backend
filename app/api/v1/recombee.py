@@ -66,6 +66,13 @@ async def fix_thumbnails(apply: bool = False, current_user: str = Depends(requir
     return await thumbnails.backfill(get_database(), apply=apply)
 
 
+@router.post("/rescue-uploads")
+async def rescue_uploads(current_user: str = Depends(require_admin)):
+    """Run the stuck-upload rescue now (it also runs every 5 minutes)."""
+    from app.services import stuck_uploads
+    return await stuck_uploads.rescue_once(get_database())
+
+
 @router.post("/sync-items")
 async def sync_items(current_user: str = Depends(require_admin)):
     """Re-send every video's properties (readiness, privacy, counts) to Recombee.
