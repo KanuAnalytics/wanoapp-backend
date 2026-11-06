@@ -431,6 +431,10 @@ async def mark_stream_ready(uid: str, background_tasks=None):
     if not video:
         return None
 
+    # Rescued after the stuck-upload check gave up on it (or while it was checking).
+    await db.videos.update_one({"_id": video["_id"], "upload_check": {"$exists": True}},
+                               {"$set": {"upload_check.state": "rescued"}})
+
     # Posts saved with the grey placeholder get Cloudflare's own frame.
     urls = video.get("urls") if isinstance(video.get("urls"), dict) else {}
     fixed = thumbnails.best_thumbnail(video)

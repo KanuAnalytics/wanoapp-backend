@@ -97,8 +97,11 @@ async def lifespan(app: FastAPI):
     await metrics_buffer.start()  # Start the metrics buffer
     await scheduled_publisher.start()  # Publishes scheduled posts when they come due
     await recommendations.stats_sync.start()  # Pushes changed view/like counts to Recombee
+    from app.services.stuck_uploads import rescue_loop
+    await rescue_loop.start()  # Asks Cloudflare about uploads whose "ready" message was missed
     yield
     # Shutdown
+    await rescue_loop.stop()
     await recommendations.stats_sync.stop()
     await scheduled_publisher.stop()
     await metrics_buffer.stop()   # Stop the metrics buffer

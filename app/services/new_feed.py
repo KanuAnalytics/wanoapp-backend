@@ -381,8 +381,15 @@ async def own_pinned(db, viewer: str, project: dict) -> List[dict]:
     if not raw:
         return []
     from app.services.recommendations import is_ready_to_stream
-    status_of = {d["_id"]: ("under_review" if (d.get("moderation") or {}).get("state") == "held"
-                            else "live" if is_ready_to_stream(d) else "processing") for d in raw}
+    def _status(d):
+        if (d.get("moderation") or {}).get("state") == "held":
+            return "under_review"
+        if is_ready_to_stream(d):
+            return "live"
+        if (d.get("upload_check") or {}).get("state") == "failed":
+            return "failed"
+        return "processing"
+    status_of = {d["_id"]: _status(d) for d in raw}
     order = {d["_id"]: i for i, d in enumerate(raw)}
     pipeline = [
         {"$match": {"_id": {"$in": list(order)}}},
