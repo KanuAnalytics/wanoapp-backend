@@ -133,6 +133,7 @@ async def create_indexes():
         (d.points_ledger, [("month", 1), ("kind", 1), ("state", 1)], {}),
         (d.points_days, [("user_id", 1), ("month", 1)], {}),
         (d.points_payouts, [("state", 1), ("at", 1)], {}),
+        (d.creator_earnings, [("user_id", 1), ("month", -1)], {}),
         (d.videos, [("points_boost.until", 1)], {"sparse": True}),
         (d.videos, [("category", 1), ("created_at", -1)], {"sparse": True}),
         # Wano TV popularity (tv_popularity): daily plays per title, and

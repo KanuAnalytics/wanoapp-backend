@@ -18,10 +18,15 @@ otherwise they expire.
 Spending. Locked points buy extra For You viewers for the creator's own post
 (VIEWERS_PER_POINT each, over BOOST_DAYS); what isn't used comes back.
 
-Payouts. Off (POINTS_PAYOUT_ENABLED). When on, a creator with at least
-POINTS_PAYOUT_MIN points can request a payout of their whole balance; an admin
-approves (pays outside Wano) or rejects (points return). Points have no fixed
-money value, can't be bought and can't be sent to other users.
+Cash. Each month has a creator pool: max(POINTS_POOL_FLOOR_USD, POINTS_POOL_PERCENT
+% of the revenue an admin enters). When the month has closed, the pool is split
+between creators in proportion to the points they locked in that month (spending
+points on boosts doesn't reduce the share). Automatic on DISTRIBUTE_DAY of the
+next month, or earlier by an admin. Shares add to a cash balance (cents) that
+keeps building; at POINTS_CASH_MIN_USD a creator can request a payout of all of
+it, which an admin approves (after paying outside Wano) or rejects (cash returns).
+Wano never pays more than the pool, however many creators there are. Points
+themselves have no money value, can't be bought and can't be sent to others.
 
 Collections: points_wallet (spendable balance, the only thing spending
 checks), points_ledger (history; earned rows carry their state), points_days
@@ -78,12 +83,17 @@ def _num(v) -> int:
     return max(0, int(v))
 
 
-def payouts_enabled() -> bool:
-    return bool(getattr(settings, "POINTS_PAYOUT_ENABLED", False))
+def pool_defaults() -> dict:
+    return {"floor_usd": float(getattr(settings, "POINTS_POOL_FLOOR_USD", 200)),
+            "percent": float(getattr(settings, "POINTS_POOL_PERCENT", 20)),
+            "revenue_usd": 0.0}
 
 
-def payout_minimum() -> int:
-    return int(getattr(settings, "POINTS_PAYOUT_MIN", 50_000) or 50_000)
+def cash_minimum_cents() -> int:
+    return int(round(float(getattr(settings, "POINTS_CASH_MIN_USD", 5)) * 100))
+
+
+DISTRIBUTE_DAY = 5
 
 
 def month_of(day: datetime) -> str:
@@ -258,6 +268,7 @@ async def settle(db) -> dict:
     if now >= first + MONTH_DELAY:
         out["months"] += await close_month(db, month_of(prev))
     out["boosts"] = await end_boosts(db)
+    out["pools"] = await auto_distribute(db)
     return out
 
 
@@ -301,21 +312,139 @@ async def boost(db, user: ObjectId, video_id: ObjectId, amount: int) -> dict:
     return {"video_id": str(video_id), "points": amount, "extra_viewers": viewers}
 
 
+# ---------------------------------------------------------------- the cash pool
+
+def _pool_cents(cfg: dict) -> int:
+    return int(round(max(cfg["floor_usd"], cfg["revenue_usd"] * cfg["percent"] / 100.0) * 100))
+
+
+async def _pool_cfg(db, month: str) -> dict:
+    doc = await db.points_pool.find_one({"_id": month}) or {}
+    cfg = pool_defaults()
+    for k in cfg:
+        if isinstance(doc.get(k), (int, float)) and not isinstance(doc.get(k), bool):
+            cfg[k] = float(doc[k])
+    return {**cfg, "state": doc.get("state", "open")}
+
+
+async def set_pool(db, month: str, **changes) -> dict:
+    cur = await db.points_pool.find_one({"_id": month})
+    if cur and cur.get("state") != "open":
+        raise PointsError(409, "This month's pool was already shared out")
+    sets = {k: float(v) for k, v in changes.items() if v is not None}
+    try:
+        await db.points_pool.update_one({"_id": month, "state": {"$in": ["open", None]}},
+                                        {"$set": sets, "$setOnInsert": {"state": "open"}}, upsert=True)
+    except DuplicateKeyError:
+        raise PointsError(409, "This month's pool was already shared out")
+    return await pool_preview(db, month)
+
+
+async def _month_shares(db, month: str) -> Dict[ObjectId, int]:
+    """Points each active creator locked in that month, minus any since marked
+    not original (revoked)."""
+    out = {}
+    async for r in db.points_ledger.aggregate([
+        {"$match": {"kind": "earned", "state": "locked", "month": month}},
+        {"$group": {"_id": "$user_id", "points": {"$sum": "$amount"}}},
+    ]):
+        if _num(r.get("points")) > 0:
+            out[r["_id"]] = _num(r["points"])
+    if out:
+        active = {u["_id"] async for u in db.users.find({"_id": {"$in": list(out)}, "is_active": True}, {"_id": 1})}
+        out = {u: p for u, p in out.items() if u in active}
+    return out
+
+
+def _split(cents: int, shares: Dict[ObjectId, int]) -> Dict[ObjectId, int]:
+    total = sum(shares.values())
+    if not total or cents <= 0:
+        return {}
+    base = {u: cents * p // total for u, p in shares.items()}
+    left = cents - sum(base.values())
+    for u in sorted(shares, key=lambda u: (-((cents * shares[u]) % total), str(u)))[:left]:
+        base[u] += 1
+    return base
+
+
+async def pool_preview(db, month: str) -> dict:
+    cfg = await _pool_cfg(db, month)
+    shares = await _month_shares(db, month)
+    total = sum(shares.values())
+    cents = _pool_cents(cfg)
+    split = _split(cents, shares)
+    top = sorted(split.items(), key=lambda t: -t[1])[:20]
+    return {"month": month, "state": cfg["state"], "floor_usd": cfg["floor_usd"], "percent": cfg["percent"],
+            "revenue_usd": cfg["revenue_usd"], "pool_usd": cents / 100, "total_points": total,
+            "usd_per_1000_points": round(cents / total * 10, 4) if total else None, "creators": len(shares),
+            "top": [{"user_id": str(u), "points": shares[u], "usd": c / 100} for u, c in top]}
+
+
+def _month_closed_tag(month: str) -> str:
+    return "month:" + month
+
+
+async def distribute(db, month: str) -> dict:
+    if not await db.points_runs.find_one({"_id": _month_closed_tag(month)}):
+        raise PointsError(400, "That month isn't over yet")
+    cfg = await _pool_cfg(db, month)
+    cents = _pool_cents(cfg)
+    try:
+        claimed = await db.points_pool.find_one_and_update(
+            {"_id": month, "state": {"$ne": "distributed"}},
+            {"$set": {"state": "distributed", "pool_cents": cents, **{k: cfg[k] for k in pool_defaults()},
+                      "distributed_at": _naive(_utcnow())}}, upsert=True)
+    except DuplicateKeyError:          # already distributed (the upsert found no open doc)
+        raise PointsError(409, "Already shared out")
+    if claimed is not None and claimed.get("state") == "distributed":
+        raise PointsError(409, "Already shared out")
+    shares = await _month_shares(db, month)
+    split = _split(cents, shares)
+    now = _utcnow()
+    paid = 0
+    for u, c in split.items():
+        if c <= 0:
+            continue
+        try:
+            await db.creator_earnings.insert_one({"_id": f"share:{u}:{month}", "user_id": u, "month": month,
+                                                  "points": shares[u], "cents": c, "at": _naive(now)})
+        except DuplicateKeyError:
+            continue
+        await db.earnings_wallet.update_one({"_id": u}, {"$inc": {"cents": c}}, upsert=True)
+        paid += c
+    total = sum(shares.values())
+    await db.points_pool.update_one({"_id": month}, {"$set": {"total_points": total, "paid_cents": paid,
+                                                              "creators": len(split)}})
+    return {"month": month, "pool_usd": cents / 100, "total_points": total, "creators": len(split),
+            "paid_usd": paid / 100}
+
+
+async def auto_distribute(db) -> int:
+    now = _naive(_utcnow())
+    if now.day < DISTRIBUTE_DAY:
+        return 0
+    prev = (datetime(now.year, now.month, 1) - timedelta(days=1)).strftime("%Y-%m")
+    doc = await db.points_pool.find_one({"_id": prev}, {"state": 1})
+    if (doc or {}).get("state") == "distributed" or not await db.points_runs.find_one({"_id": _month_closed_tag(prev)}):
+        return 0
+    try:
+        await distribute(db, prev)
+        return 1
+    except PointsError:
+        return 0
+
+
 async def request_payout(db, user: ObjectId) -> dict:
-    if not payouts_enabled():
-        raise PointsError(403, "Payouts aren't available yet")
-    w = await db.points_wallet.find_one({"_id": user}) or {}
-    bal = _num(w.get("balance"))
-    if bal < payout_minimum():
-        raise PointsError(400, f"You need {payout_minimum()} points to request a payout")
-    if not await db.points_wallet.find_one_and_update({"_id": user, "balance": bal}, {"$inc": {"balance": -bal}}):
+    w = await db.earnings_wallet.find_one({"_id": user}) or {}
+    cents = w.get("cents") if isinstance(w.get("cents"), int) else 0
+    if cents < cash_minimum_cents():
+        raise PointsError(400, f"You need ${cash_minimum_cents() / 100:g} to request a payout")
+    if not await db.earnings_wallet.find_one_and_update({"_id": user, "cents": cents}, {"$inc": {"cents": -cents}}):
         raise PointsError(409, "Your balance changed, try again")
     pid = ObjectId()
-    now = _utcnow()
-    await db.points_payouts.insert_one({"_id": pid, "user_id": user, "points": bal, "state": "requested",
-                                        "at": _naive(now)})
-    await _ledger(db, f"payout:{pid}", user, "payout", -bal, now, payout_id=pid)
-    return {"id": str(pid), "points": bal, "state": "requested"}
+    await db.points_payouts.insert_one({"_id": pid, "user_id": user, "cents": cents, "state": "requested",
+                                        "at": _naive(_utcnow())})
+    return {"id": str(pid), "usd": cents / 100, "state": "requested"}
 
 
 async def decide_payout(db, pid: ObjectId, approve: bool, admin: str) -> dict:
@@ -326,10 +455,8 @@ async def decide_payout(db, pid: ObjectId, approve: bool, admin: str) -> dict:
     if not p:
         raise PointsError(409, "This payout was already decided")
     if not approve:
-        await _ledger(db, f"payout-returned:{pid}", p["user_id"], "payout_returned", p["points"], _utcnow(),
-                      payout_id=pid)
-        await _wallet(db, p["user_id"], p["points"])
-    return {"id": str(pid), "state": p["state"], "points": p["points"]}
+        await db.earnings_wallet.update_one({"_id": p["user_id"]}, {"$inc": {"cents": p["cents"]}}, upsert=True)
+    return {"id": str(pid), "state": p["state"], "usd": p["cents"] / 100}
 
 
 async def not_original(db, video_id: ObjectId, admin: str) -> dict:
@@ -366,12 +493,31 @@ async def summary(db, user: ObjectId) -> dict:
         "balance": balance, "pending": pending, "month": month, "posting_days": days,
         "days_needed": QUALIFY_DAYS,
         "boost": {"min_points": MIN_BOOST, "viewers_per_point": VIEWERS_PER_POINT, "days": BOOST_DAYS},
-        "payout": {"enabled": payouts_enabled(), "minimum": payout_minimum(),
-                   "can_request": payouts_enabled() and balance >= payout_minimum()},
+        "earnings": await _earnings(db, user),
         "history": [{"kind": h.get("kind"), "state": h.get("state"), "amount": h.get("amount"),
                      "month": h.get("month"), "video_id": str(h["video_id"]) if h.get("video_id") else None,
                      "at": h.get("at")} for h in hist],
     }
+
+
+async def _earnings(db, user: ObjectId) -> dict:
+    w = await db.earnings_wallet.find_one({"_id": user}) or {}
+    cents = w.get("cents") if isinstance(w.get("cents"), int) else 0
+    last = await db.creator_earnings.find_one({"user_id": user}, sort=[("month", -1)])
+    return {"cash_usd": cents / 100, "payout_minimum_usd": cash_minimum_cents() / 100,
+            "can_request_payout": cents >= cash_minimum_cents(),
+            "last_share": {"month": last["month"], "points": last["points"], "usd": last["cents"] / 100} if last else None}
+
+
+async def public_pool(db) -> dict:
+    now = _naive(_utcnow())
+    month = month_of(now)
+    cfg = await _pool_cfg(db, month)
+    last = await db.points_pool.find_one({"state": "distributed"}, sort=[("_id", -1)])
+    return {"this_month": {"month": month, "pool_usd": _pool_cents(cfg) / 100},
+            "last_month": {"month": last["_id"], "pool_usd": last.get("pool_cents", 0) / 100,
+                           "usd_per_1000_points": round(last.get("pool_cents", 0) / last["total_points"] * 10, 4)
+                           if last.get("total_points") else None} if last else None}
 
 
 async def boosted_candidates(db, excluded: List[ObjectId], own: Optional[ObjectId]) -> List[dict]:

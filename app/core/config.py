@@ -20,9 +20,10 @@ class Settings(BaseSettings):
     # Atlas Search for video/comment search (create the indexes first:
     # python -m scripts.create_search_indexes --apply). Off: word match.
     ATLAS_SEARCH: bool = False
-    # Wano points cash payouts (points.py): off until Wano has a creator fund.
-    POINTS_PAYOUT_ENABLED: bool = False
-    POINTS_PAYOUT_MIN: int = 50000
+    # Wano points monthly cash pool (points.py): max(floor, percent of revenue).
+    POINTS_POOL_FLOOR_USD: float = 200
+    POINTS_POOL_PERCENT: float = 20
+    POINTS_CASH_MIN_USD: float = 5
 
     # Database
     MONGODB_URI: str

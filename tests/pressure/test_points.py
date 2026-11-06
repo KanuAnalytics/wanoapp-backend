@@ -262,39 +262,6 @@ async def test_B5_a_post_held_during_a_boost_stops_and_refunds(client, db, clock
 
 # ---------------------------------------------------------------- payouts
 
-async def test_P1_payouts_are_off_until_wano_turns_them_on(client, db, clock, monkeypatch):
-    from app.services import points
-    c, h = await _rich(db, 10 ** 6)
-    r = await client.post("/api/v1/points/payouts", headers=h)
-    assert r.status_code == 403
-    monkeypatch.setattr(points, "payouts_enabled", lambda: True)
-    low, lh = await _rich(db, points.payout_minimum() - 1)
-    assert (await client.post("/api/v1/points/payouts", headers=lh)).status_code == 400
-    r = await client.post("/api/v1/points/payouts", headers=h)
-    assert r.status_code == 200 and r.json()["points"] == 10 ** 6
-    assert await _balance(db, c) == 0
-    assert (await client.post("/api/v1/points/payouts", headers=h)).status_code == 400   # nothing left
-
-
-async def test_P2_admin_approves_or_rejects(client, db, clock, monkeypatch):
-    from app.services import points
-    monkeypatch.setattr(points, "payouts_enabled", lambda: True)
-    a, ah = await make_user(db, user_type="admin")
-    c, h = await _rich(db, points.payout_minimum())
-    d, dh = await _rich(db, points.payout_minimum())
-    pid = (await client.post("/api/v1/points/payouts", headers=h)).json()["id"]
-    qid = (await client.post("/api/v1/points/payouts", headers=dh)).json()["id"]
-    assert (await client.post(f"/api/v1/points/admin/payouts/{pid}/approve", headers=h)).status_code == 403
-    lst = (await client.get("/api/v1/points/admin/payouts", headers=ah)).json()
-    assert {x["id"] for x in lst} == {pid, qid}
-    assert (await client.post(f"/api/v1/points/admin/payouts/{pid}/approve", headers=ah)).status_code == 200
-    assert (await client.post(f"/api/v1/points/admin/payouts/{pid}/reject", headers=ah)).status_code == 409
-    assert (await client.post(f"/api/v1/points/admin/payouts/{qid}/reject", headers=ah)).status_code == 200
-    assert await _balance(db, c) == 0 and await _balance(db, d) == points.payout_minimum()
-
-
-# ---------------------------------------------------------------- originality, categories, API
-
 async def test_O1_admin_marks_a_post_not_original_and_its_points_go(client, db, clock):
     from app.services import points
     a, ah = await make_user(db, user_type="admin")
@@ -348,8 +315,8 @@ async def test_A1_my_points_page(client, db, clock):
     r = await client.get("/api/v1/points/me", headers=h)
     assert r.status_code == 200
     body = r.json()
-    assert {"balance", "pending", "posting_days", "days_needed", "month", "boost", "payout", "history"} <= set(body)
-    assert body["days_needed"] == points.QUALIFY_DAYS and body["payout"]["enabled"] is False
+    assert {"balance", "pending", "posting_days", "days_needed", "month", "boost", "earnings", "history"} <= set(body)
+    assert body["days_needed"] == points.QUALIFY_DAYS and body["earnings"]["cash_usd"] == 0
     assert (await client.get("/api/v1/points/me")).status_code == 401
     assert v
 
@@ -372,15 +339,6 @@ async def test_R1_revoking_twice_at_once_takes_points_once(client, db, clock):
     v = (await db.videos.find_one({"creator_id": ObjectId(c)}))["_id"]
     await asyncio.gather(*[client.post(f"/api/v1/points/admin/videos/{v}/not-original", headers=ah) for _ in range(5)])
     assert await _balance(db, c) == 190
-
-
-async def test_R2_two_payout_requests_at_once_reserve_once(client, db, clock, monkeypatch):
-    from app.services import points
-    monkeypatch.setattr(points, "payouts_enabled", lambda: True)
-    c, h = await _rich(db, points.payout_minimum() * 2)
-    rs = await asyncio.gather(*[client.post("/api/v1/points/payouts", headers=h) for _ in range(5)])
-    assert sum(r.status_code == 200 for r in rs) == 1
-    assert await db.points_payouts.count_documents({}) == 1 and await _balance(db, c) == 0
 
 
 async def test_R3_boosted_post_not_shown_to_its_creator_or_twice(client, db, clock):

@@ -2,10 +2,10 @@
 Wano points (see app/services/points.py).
 """
 
-from typing import Literal
+from typing import Literal, Optional
 
 from bson import ObjectId
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from pydantic import BaseModel, Field
 
 from app.api.deps import get_current_active_user, get_optional_active_user, require_admin
@@ -80,10 +80,42 @@ async def payouts_to_review(limit: int = Query(100, ge=1, le=500), admin: str = 
     rows = await db.points_payouts.find({"state": "requested"}).sort("at", 1).limit(limit).to_list(limit)
     users = {u["_id"]: u async for u in db.users.find({"_id": {"$in": [r["user_id"] for r in rows]}},
                                                       {"username": 1, "display_name": 1, "phone_number": 1})}
-    return [{"id": str(r["_id"]), "points": r["points"], "requested_at": r["at"],
+    return [{"id": str(r["_id"]), "usd": r.get("cents", 0) / 100, "requested_at": r["at"],
              "user": {"id": str(r["user_id"]), "username": users.get(r["user_id"], {}).get("username"),
                       "display_name": users.get(r["user_id"], {}).get("display_name"),
                       "phone_number": users.get(r["user_id"], {}).get("phone_number")}} for r in rows]
+
+
+class PoolIn(BaseModel):
+    revenue_usd: Optional[float] = Field(None, ge=0, le=10_000_000)
+    percent: Optional[float] = Field(None, ge=0, le=100)
+    floor_usd: Optional[float] = Field(None, ge=0, le=1_000_000)
+
+
+Month = Path(..., pattern=r"^20\d\d-(0[1-9]|1[0-2])$")
+
+
+@router.get("/pool")
+async def pool(current_user=Depends(get_optional_active_user)):
+    """This month's creator pool and what last month's paid per 1,000 points."""
+    return await points.public_pool(get_database())
+
+
+@router.put("/admin/pool/{month}")
+async def set_pool(body: PoolIn, month: str = Month, admin: str = Depends(require_admin)):
+    """Enter the month's revenue (and optionally change the % or the floor)."""
+    return await _run(points.set_pool(get_database(), month, **body.model_dump()))
+
+
+@router.get("/admin/pool/{month}")
+async def preview_pool(month: str = Month, admin: str = Depends(require_admin)):
+    return await points.pool_preview(get_database(), month)
+
+
+@router.post("/admin/pool/{month}/distribute")
+async def distribute_pool(month: str = Month, admin: str = Depends(require_admin)):
+    """Share the pool out now (otherwise it happens on the 5th)."""
+    return await _run(points.distribute(get_database(), month))
 
 
 @router.post("/admin/payouts/{payout_id}/{decision}")

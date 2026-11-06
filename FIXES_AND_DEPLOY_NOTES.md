@@ -753,3 +753,18 @@ from the last 7 days by creators in the same city (taken from the Recombee share
 the music picker; a city field in settings or onboarding.
 
 Tests: tests/pressure/test_engagement.py (19 attacks, two rounds). Whole suite: 603 pass on real MongoDB.
+
+## points-pool — monthly creator cash pool (replaces points-to-cash payouts)
+
+- Each month's pool = max($200 floor, 20% of the revenue an admin enters). Settings `POINTS_POOL_FLOOR_USD=200`,
+  `POINTS_POOL_PERCENT=20`, `POINTS_CASH_MIN_USD=5`; per month in admin: `PUT /points/admin/pool/2026-11
+  {"revenue_usd": 1500}` (optional `percent`, `floor_usd`), preview with `GET /points/admin/pool/2026-11`.
+- When the month closes, the pool is split by the points each active creator locked in that month (posts marked
+  not original are taken out; spending points on boosts doesn't lower the share). Automatically on the 5th, or earlier
+  with `POST /points/admin/pool/{month}/distribute`. Cents always add up to the pool exactly; Wano never pays more.
+- Shares build up in each creator's cash balance. At $5 they can `POST /points/payouts` (whole balance); admins approve
+  after paying by mobile money, or reject (cash returns). `GET /points/pool` (public): this month's pool and what
+  last month paid per 1,000 points. `/points/me` shows `earnings` (cash, last share, can request payout).
+- `POINTS_PAYOUT_ENABLED` / `POINTS_PAYOUT_MIN` are gone.
+
+Tests: tests/pressure/test_points_pool.py (13 attacks, two rounds). Whole suite: 613 pass on real MongoDB.
