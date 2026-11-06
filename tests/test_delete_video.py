@@ -26,16 +26,28 @@ def _field(doc, field):
     return doc.get(field)
 
 
+def _cond(doc, field, want):
+    if field == "$or":
+        return any(_matches_all(doc, c) for c in want)
+    value = _field(doc, field)
+    if isinstance(want, dict) and "$regex" in want:
+        import re
+        return isinstance(value, str) and re.search(want["$regex"], value) is not None
+    if want is None:
+        return value is None          # Mongo: missing or null
+    return value == want or (isinstance(value, list) and want in value)
+
+
+def _matches_all(doc, cond):
+    return all(_cond(doc, f, w) for f, w in cond.items())
+
+
 def _matches_reference(doc, query):
-    """Evaluate the {"$or": [...], "_id": {"$ne": x}} reference queries."""
+    """Evaluate the {"$or": [...], "_id": {"$ne": x}} reference queries
+    (fields, null, $regex and nested $or, as the stream lookups use)."""
     if "_id" in query and doc["_id"] == query["_id"]["$ne"]:
         return False
-    for cond in query["$or"]:
-        (field, url), = cond.items()
-        value = _field(doc, field)
-        if value == url or (isinstance(value, list) and url in value):
-            return True
-    return False
+    return any(_matches_all(doc, cond) for cond in query["$or"])
 
 
 class FakeCollection:
