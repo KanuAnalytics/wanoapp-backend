@@ -92,6 +92,22 @@ async def create_indexes():
         (d.videos, [("stream_uid", 1), ("creator_id", 1)], {}),
         # Re-registering a phone's push token (users.add_push_token) finds its old owner.
         (d.users, [("expo_push_tokens", 1)], {}),
+        # Lookups by email / phone (login, sign-up checks, forgot password). The unique
+        # indexes below are partial, which MongoDB can't use for a plain {"email": x}
+        # query, so without these every lookup read the users collection one by one.
+        (d.users, [("email", 1)], {"name": "users_email_lookup"}),
+        (d.users, [("phone_number", 1)], {"name": "users_phone_lookup"}),
+        # User search: case-insensitive prefix ranges (users.search_users_endpoint).
+        (d.users, [("username", 1)], {"name": "users_username_ci", "collation": {"locale": "en", "strength": 2}}),
+        (d.users, [("display_name", 1)], {"name": "users_display_name_ci", "collation": {"locale": "en", "strength": 2}}),
+        # Sign-up codes, looked up by email / phone on every send and check.
+        (d.registration_otps, [("email", 1)], {}),
+        (d.registration_whatsapp_otps, [("phone_number", 1)], {}),
+        # For You's shared popular pool (for_you._popular_pool): walk by likes.
+        (d.videos, [("likes_count", -1)], {}),
+        # "Not interested" (For You, New) without reading the whole watch history.
+        (d.watch_history, [("user_id", 1)], {"name": "watch_history_not_interested",
+                                              "partialFilterExpression": {"not_interested": True}}),
 
         # Wano TV: the catalogue is listed by popularity; slug is the seed
         # script's upsert key. History is one doc per (user, title).

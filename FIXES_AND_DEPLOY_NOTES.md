@@ -604,3 +604,39 @@ Also seen in Atlas (not code):
 - Billing: "We were unable to charge your credit card ... account suspended on 12/01/26."
 - The Goodtown API (goodtown-api) connects to the same WanoApp cluster.
 - No maintenance window and no security/operations contacts set.
+
+---
+
+## Database performance (branch db-performance, on top of db-advisor)
+
+From Atlas Query Insights (live, 24 h) and scripts/perf_profile.py: the main endpoints profiled
+with MongoDB's own profiler on production-sized data (9k users, 10k videos, follows, likes,
+watch history, comments, notifications). Attack tests: test_db_performance.py (12; real-MongoDB
+checks marked, they skip on the in-memory mock).
+
+    WANO_REAL_MONGO=mongodb://127.0.0.1:27017 python -m scripts.perf_profile
+
+Before -> after (docs read per request, real MongoDB):
+- Login: 642 -> 1 (wrong username/email: 9000 -> 0). The unique email/phone indexes are partial,
+  which MongoDB can't use for a plain {"email": x}; added plain lookup indexes. Also helps sign-up
+  checks, forgot password and every other email/phone lookup.
+- User search: 9002 -> 502, 23 -> 5 ms. Case-insensitive prefix via collation indexes instead of a
+  /^term/i regex that checked every user; bounded at 500 candidates for 1-letter searches.
+- For You: 25,448 -> 1,261 docs, 47 -> 37 round trips, 248 -> 30 ms. Streaks for ranking look back
+  8 days (all the ranking uses) instead of 120; the popular backup is one shared pool rebuilt every
+  5 min (walks a new likes_count index) instead of an unindexed sort on every request; its posts
+  are re-checked by id so a post made private since never slips through.
+- "Not interested": partial index (watch_history by user where not_interested), no longer reads the
+  user's whole history (Atlas: ~195,000 docs read per doc returned).
+- Sign-up codes: registration_otps.email and registration_whatsapp_otps.phone_number indexes.
+
+Live cluster (Atlas Real Time): CPU 8%, memory 0.8 / 2 GB, a few IOPS. M10 is plenty for now.
+Not code, worth acting on:
+- A wano_app_dev database lives on the production cluster (and goodtown-api uses it too).
+  Dev and other apps share production's CPU, memory and backups.
+- Every query is a network round trip to Atlas in Paris: run the API in the same region (Paris or
+  nearby) or move the cluster next to the API.
+- Old app builds page New by skip (deep pages read thousands of posts); the cursor paging fixes
+  this once the app update ships.
+- Remaining regex searches (video descriptions, comment authors, email search) still scan; Atlas
+  Search is the long-term fix.

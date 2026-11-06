@@ -162,20 +162,45 @@ async def _following(db, following: List[ObjectId], excluded_oids) -> List[dict]
     return await db.videos.find(q, {"creator_id": 1, "created_at": 1}).sort("created_at", -1).limit(40).to_list(40)
 
 
+POPULAR_POOL_SECONDS = 300
+POPULAR_POOL_SIZE = 400
+_popular_cache: dict = {}
+
+
+def clear_cache():
+    _popular_cache.clear()
+
+
+async def _popular_pool(db) -> List[dict]:
+    """Most-liked posts of the last 60 days plus the newest, shared by every
+    request for POPULAR_POOL_SECONDS (sorting by likes has no index, so doing it
+    per request read two months of posts each time Recombee came up short)."""
+    q = {**showable_filter(), "created_at": {"$gte": _now() - timedelta(days=60)}}
+    docs = await db.videos.find(q, {"creator_id": 1, "created_at": 1}
+                                ).sort("likes_count", -1).limit(POPULAR_POOL_SIZE).to_list(POPULAR_POOL_SIZE)
+    seen = {d["_id"] for d in docs}
+    newest = await db.videos.find(showable_filter(), {"creator_id": 1, "created_at": 1}
+                                  ).sort("created_at", -1).limit(150).to_list(150)
+    return docs + [d for d in newest if d["_id"] not in seen]
+
+
 async def _popular_backup(db, excluded_oids, own) -> List[dict]:
     """Stands in for Recombee when it is unreachable. Never the viewer's own posts."""
-    q = {**showable_filter(), "created_at": {"$gte": _now() - timedelta(days=60)}, "_id": {"$nin": excluded_oids}}
-    if own is not None:
-        q["creator_id"] = {"$ne": own}
-    docs = await db.videos.find(q, {"creator_id": 1, "created_at": 1, "likes_count": 1}
-                                ).sort("likes_count", -1).limit(150).to_list(150)
-    if len(docs) < 20:
-        more_q = {**showable_filter(), "_id": {"$nin": excluded_oids + [d["_id"] for d in docs]}}
-        if own is not None:
-            more_q["creator_id"] = {"$ne": own}
-        docs += await db.videos.find(more_q,
-                                     {"creator_id": 1, "created_at": 1}).sort("created_at", -1).limit(100).to_list(100)
+    import time as _time
+    hit = _popular_cache.get("pool")
+    if not hit or _time.monotonic() - hit[0] > POPULAR_POOL_SECONDS:
+        hit = (_time.monotonic(), await _popular_pool(db))
+        _popular_cache["pool"] = hit
+    excluded = set(excluded_oids)
+    docs = [d for d in hit[1] if d["_id"] not in excluded and (own is None or d.get("creator_id") != own)]
     random.shuffle(docs)
+    docs = docs[:200]
+    # The pool can be a few minutes old: re-check these few by id (cheap) so a post
+    # made private or deleted since never slips through.
+    if docs:
+        ok = {d["_id"] async for d in db.videos.find({"_id": {"$in": [d["_id"] for d in docs]}, **showable_filter()},
+                                                     {"_id": 1})}
+        docs = [d for d in docs if d["_id"] in ok]
     return docs
 
 
