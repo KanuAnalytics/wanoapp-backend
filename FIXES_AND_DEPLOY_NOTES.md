@@ -485,3 +485,14 @@ Trade-off to watch: film segments now come from the Spaces origin (London) with 
 not the CDN edge (Spaces CDN doesn't serve private files). If start-up or buffering in Africa is
 noticeably worse, the long-term fix is moving films to Cloudflare Stream with signed URLs
 (shorts already use Stream).
+
+---
+
+## Wano TV for logged-out viewers (branch tv-open, on top of tv-protect)
+
+Server-only. Attack tests first (test_tv_open.py: 2 of 5 failed; the 3 passing are guards).
+- GET /api/v1/tv/titles and /api/v1/tv/genres work logged out with authenticated=false (same
+  rule as the feeds). Film links are still the expiring signed ones.
+- History (GET /tv/history, POST /tv/history/{id}) still needs login.
+- No token and no authenticated=false: 401, as before.
+App: if Wano TV is hidden for logged-out users, it can now be shown (send authenticated=false).
