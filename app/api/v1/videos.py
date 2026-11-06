@@ -122,6 +122,9 @@ class VideoPost(BaseModel):
     # only remembered so the app can show the time the way it was picked.
     scheduled_at: Optional[datetime] = None
     timezone: Optional[str] = None
+    # A reply or duet to another post (app/services/replies.py).
+    reply_to: Optional[str] = None
+    reply_type: Literal["reply", "duet"] = "reply"
 
 class StitchClip(BaseModel):
     url: str
@@ -270,8 +273,15 @@ async def post_video(
             input.scheduled_at, input.timezone, require_lead_time=False
         )
 
+        reply_to = None
+        if input.reply_to:
+            from app.services import replies
+            reply_to = await replies.target(get_database(), current_user, input.reply_to, input.reply_type)
+
         video_id = await create_video_post(
             current_user,
+            reply_to=reply_to,
+            remix_enabled=input.remix_enabled is not False,
             media_type=input.media_type,
             images=input.images,
             remote_url=input.remoteUrl,
@@ -293,6 +303,10 @@ async def post_video(
             scheduled_at=scheduled_at,
             scheduled_timezone=scheduled_timezone,
         )
+
+        if reply_to:
+            from app.services import replies
+            await replies.after_create(get_database(), reply_to, video_id, current_user, bool(scheduled_at))
 
         message = "Photo posted successfully" if is_photo_post else "Video posted successfully"
         if scheduled_at:
@@ -451,6 +465,18 @@ async def get_videos(
         videos.append(response)
     
     return videos
+
+@router.get("/{video_id}/replies")
+async def video_replies(
+    video_id: str,
+    cursor: Optional[str] = Query(None, max_length=200),
+    limit: int = Query(20, ge=1, le=50),
+    current_user: Optional[str] = Depends(get_optional_active_user),
+):
+    """Replies and duets to a post, newest first. Logged out: authenticated=false."""
+    from app.services import replies
+    return await replies.list_replies(get_database(), video_id, current_user, cursor, limit)
+
 
 # --- Search endpoint ---
 @router.get("/search")

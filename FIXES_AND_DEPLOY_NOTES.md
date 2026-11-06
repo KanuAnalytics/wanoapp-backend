@@ -729,3 +729,27 @@ return). Points have no money value, can't be bought or sent to others.
 a Boost button on own posts. Settling runs in the growth loop every 15 minutes; no one-time steps.
 
 Tests: tests/pressure/test_points.py (27 attacks, two rounds). Whole suite: 584 pass on real MongoDB.
+
+## engagement — replies & duets, weekly challenges, trending sounds, local mix
+
+**Replies & duets.** `POST /videos/post` takes `reply_to` (video id) and `reply_type` ("reply" | "duet"; the app does
+the layout). Allowed on public live posts whose creator allows remixes and hasn't blocked you, and on your own posts.
+The original's `remix_count` goes up (down when the reply is deleted; scheduled replies count when they go live) and
+its creator gets a push (max 3/day, daytime). `GET /videos/{id}/replies?cursor=` lists visible replies.
+`remix_enabled` from the app is now saved (it was always stored as true).
+
+**Weekly challenges.** Admin `POST /challenges {hashtag, title, description, starts_at, ends_at (≤14 days), prize_points}`.
+`GET /challenges` (live, upcoming, recently ended), `GET /challenges/{id}/leaderboard` (best post per creator; same
+score as the weekly leaderboard). An hour after the end, the top 3 get a badge ("#1 in Wano Dance Week") and the
+prize points, once.
+
+**Trending sounds.** `GET /music/trending?country=ug` — sounds used by the most different creators in the last 7 days
+(spamming one sound counts once). `GET /music/sounds/{id}/posts` — the sound's page, most watched first.
+
+**Local mix.** `PUT /users/me/city {"city": "Gulu"}` (null clears). For You then gives ~10% of the page to popular posts
+from the last 7 days by creators in the same city (taken from the Recombee share). No city = no change.
+
+**App side:** reply/duet buttons and a replies row on posts; a Challenges screen; a Sound page and trending sounds in
+the music picker; a city field in settings or onboarding.
+
+Tests: tests/pressure/test_engagement.py (19 attacks, two rounds). Whole suite: 603 pass on real MongoDB.

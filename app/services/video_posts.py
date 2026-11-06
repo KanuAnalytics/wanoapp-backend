@@ -97,6 +97,8 @@ async def create_video_post(
     sound: Optional[dict] = None,
     scheduled_at: Optional[datetime] = None,
     scheduled_timezone: Optional[str] = None,
+    reply_to: Optional[dict] = None,
+    remix_enabled: bool = True,
 ) -> str:
     """
     Saves the post, counts it on the user, and syncs it to Recombee. Returns the new video's id.
@@ -153,7 +155,7 @@ async def create_video_post(
         # Standard fields
         "hashtags": hashtags,
         "categories": [],
-        "remix_enabled": True,
+        "remix_enabled": bool(remix_enabled),
         "comments_enabled": comments_enabled,
         "created_at": now,
         "updated_at": now,
@@ -166,7 +168,7 @@ async def create_video_post(
         "is_approved": True,
         "is_flagged": False,
         "report_count": 0,
-        "is_remix": False,
+        "is_remix": bool(reply_to),
         "remix_count": 0,
         "country": user.get("localization", {}).get("country", "NG"),
         "language": user.get("localization", {}).get("languages", ["en"])[0]
@@ -174,6 +176,8 @@ async def create_video_post(
 
     if supports_landscape is not None:
         video_doc["supports_landscape"] = supports_landscape
+    if reply_to:
+        video_doc["reply_to"] = reply_to
 
     # A copy of the song ({id, title, uri, artist}), so the feed can show its
     # name -- and play it, for photo posts -- without looking the song up.

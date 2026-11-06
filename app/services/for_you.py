@@ -6,6 +6,8 @@ Sources (share of a page, for a viewer in the "mix" variant):
   fresh      ~15%  posts under 72 h old with few views, so new work gets tested
   trending   ~10%  last 7 days, ranked by engagement velocity
   following   ~5%  recent posts from creators the viewer follows
+  local      ~10%  popular recent posts from creators in the viewer's city (when
+                   they set one: PUT /users/me/city), taken from personal
 The "control" variant is Recombee only, with the same feed rules, so the two
 can be compared (FOR_YOU_MIX_ROLLOUT = percent of viewers in "mix").
 
@@ -47,7 +49,9 @@ MAX_PER_CREATOR = 2
 DIVERSITY = 0.3
 ROTATION_RATE = 0.5
 
-SHARES = {"fresh": 0.15, "trending": 0.10, "following": 0.05}
+SHARES = {"fresh": 0.15, "trending": 0.10, "following": 0.05, "local": 0.10}
+LOCAL_DAYS = 7
+LOCAL_CREATORS = 3000
 
 
 def _now():
@@ -75,12 +79,14 @@ def variant_for(viewer: str) -> str:
     return "mix" if bucket < rollout else "control"
 
 
-def _quotas(limit: int, variant: str, follows_anyone: bool) -> Dict[str, int]:
+def _quotas(limit: int, variant: str, follows_anyone: bool, has_city: bool = False) -> Dict[str, int]:
     if variant != "mix":
         return {"personal": limit}
     q = {}
     for src, share in SHARES.items():
         if src == "following" and not follows_anyone:
+            continue
+        if src == "local" and not has_city:
             continue
         q[src] = max(1, round(share * limit)) if limit >= 6 else 0
     q["personal"] = max(0, limit - sum(q.values()))
@@ -91,7 +97,7 @@ def _slot_plan(limit: int, quotas: Dict[str, int]) -> List[str]:
     """Spread the non-personal slots evenly through the page."""
     plan = ["personal"] * limit
     taken = set()
-    for src in ("fresh", "trending", "following"):
+    for src in ("fresh", "trending", "following", "local"):
         k = quotas.get(src, 0)
         for i in range(k):
             pos = min(limit - 1, max(1, round((i + 1) * limit / (k + 1))))
@@ -152,6 +158,21 @@ async def _trending(db, excluded_oids, own, country=None) -> List[dict]:
     """Momentum-ranked trending (app/services/trending.py), viewer's country first."""
     from app.services import trending
     return await trending.top(db, country=country, limit=40, exclude_oids=excluded_oids, exclude_creator=own)
+
+
+async def _local(db, city_key: str, excluded_oids, own) -> List[dict]:
+    """Popular recent posts by creators in the viewer's city."""
+    ids = [u["_id"] async for u in db.users.find(
+        {"localization.city_key": city_key, "is_active": {"$ne": False}}, {"_id": 1}).limit(LOCAL_CREATORS)]
+    ids = [i for i in ids if i != own]
+    if not ids:
+        return []
+    q = {**showable_filter(), "moderation.state": {"$nin": ["held", "removed"]}, "creator_id": {"$in": ids},
+         "created_at": {"$gte": _now() - timedelta(days=LOCAL_DAYS)}}
+    if excluded_oids:
+        q["_id"] = {"$nin": excluded_oids}
+    return await db.videos.find(q, {"creator_id": 1, "created_at": 1}).sort(
+        [("likes_count", -1), ("created_at", -1)]).limit(40).to_list(40)
 
 
 async def _following(db, following: List[ObjectId], excluded_oids) -> List[dict]:
@@ -264,7 +285,9 @@ async def build_page(db, *, viewer: str, current_user: Optional[str], scenario: 
     excluded_oids = [ObjectId(x) for x in excluded if ObjectId.is_valid(x)]
 
     slots = limit - (1 if featured else 0)
-    quotas = _quotas(slots, page.variant, bool(following))
+    city_key = (user.get("localization") or {}).get("city_key")
+    city_key = city_key if isinstance(city_key, str) and city_key else None
+    quotas = _quotas(slots, page.variant, bool(following), bool(city_key))
 
     # Over-fetch from Recombee: some picks get dropped by the rules above.
     want = min(100, max(slots * 5, 20))
@@ -279,10 +302,12 @@ async def build_page(db, *, viewer: str, current_user: Optional[str], scenario: 
         queues["trending"] = await _trending(db, excluded_oids, own,
                                              ((user.get("localization") or {}).get("country")))
         queues["following"] = await _following(db, following, excluded_oids)
+        if city_key:
+            queues["local"] = await _local(db, city_key, excluded_oids, own)
 
     # Each post counts for its most specific source only.
     claimed = set()
-    for k in ("following", "trending", "fresh", "personal"):   # a rising post is "trending", not "fresh"
+    for k in ("following", "local", "trending", "fresh", "personal"):   # a rising post is "trending", not "fresh"
         if k in queues:
             queues[k] = [d for d in queues[k] if str(d["_id"]) not in claimed]
             claimed.update(str(d["_id"]) for d in queues[k])
@@ -302,7 +327,7 @@ async def build_page(db, *, viewer: str, current_user: Optional[str], scenario: 
         prev = str(featured.get("creator_id"))
         counts[prev] = 1
 
-    backup_order = ["personal", "trending", "fresh", "following", "popular"]
+    backup_order = ["personal", "trending", "fresh", "following", "local", "popular"]
     backup_loaded = False
 
     async def load_backup():

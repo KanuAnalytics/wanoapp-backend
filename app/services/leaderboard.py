@@ -123,6 +123,8 @@ def label(badge: dict) -> str:
         except ValueError:
             when = "this week"
         return f"#{badge.get('rank')} on Wano, {when}"
+    if kind == "challenge_top3":
+        return f"#{badge.get('rank')} in {badge.get('challenge') or 'a Wano challenge'}"
     if kind and kind.startswith("streak_"):
         return f"{kind.split('_')[1]}-day posting streak"
     return str(kind)

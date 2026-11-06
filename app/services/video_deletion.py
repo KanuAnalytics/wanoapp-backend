@@ -191,6 +191,11 @@ async def soft_delete_video(db, video: dict) -> bool:
             {"_id": video["creator_id"]},
             {"$inc": {"videos_count": -1}},
         )
+        # A deleted reply no longer counts on the post it answered.
+        reply_to = video.get("reply_to") if isinstance(video.get("reply_to"), dict) else None
+        if reply_to and isinstance(reply_to.get("video_id"), ObjectId):
+            await db.videos.update_one({"_id": reply_to["video_id"], "remix_count": {"$gt": 0}},
+                                       {"$inc": {"remix_count": -1}})
 
     # Cloudflare Stream (delete_stream_video itself refuses the placeholder).
     if stream_uid and stream_uid != DELETED_VIDEO_PLACEHOLDER_UID:

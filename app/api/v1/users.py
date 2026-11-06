@@ -1039,6 +1039,30 @@ async def get_my_profile(current_user: str = Depends(get_current_active_user)):
     user["_id"] = str(user["_id"])
     return UserResponse(**user)
 
+class CityIn(BaseModel):
+    city: Optional[str] = None
+
+
+_CITY = re.compile(r"^[^\W\d_][\w .'\-]{1,59}$", re.UNICODE)
+
+
+@router.put("/me/city")
+async def set_my_city(body: CityIn, current_user: str = Depends(get_current_active_user)):
+    """The viewer's city, for the local mix in For You. null clears it."""
+    db = get_database()
+    if body.city is None:
+        await db.users.update_one({"_id": ObjectId(current_user)},
+                                  {"$unset": {"localization.city": "", "localization.city_key": ""}})
+        return {"city": None}
+    name = " ".join(body.city.split())
+    if not _CITY.match(name) or any(ch.isdigit() for ch in name) or "$" in name:
+        raise HTTPException(status_code=422, detail="Enter a city name (letters only, up to 60)")
+    name = " ".join(w[:1].upper() + w[1:].lower() for w in name.split(" "))
+    await db.users.update_one({"_id": ObjectId(current_user)},
+                              {"$set": {"localization.city": name, "localization.city_key": name.casefold()}})
+    return {"city": name}
+
+
 @router.put("/me/tags", response_model=UserResponse)
 async def update_user_tags(
     tags_update: TagsUpdate,

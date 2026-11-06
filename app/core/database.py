@@ -120,6 +120,11 @@ async def create_indexes():
         (d.user_badges, [("user_id", 1), ("at", -1)], {}),
         (d.user_badges, [("at", 1)], {"name": "user_badges_unnotified",
                                        "partialFilterExpression": {"notified": False}}),
+        # Replies/duets, challenges, sounds, local mix.
+        (d.videos, [("reply_to.video_id", 1), ("created_at", -1)], {"sparse": True}),
+        (d.videos, [("sound.id", 1), ("views_count", -1)], {"sparse": True}),
+        (d.challenges, [("ends_at", 1)], {}),
+        (d.users, [("localization.city_key", 1)], {"sparse": True}),
         # Wano points (points.py).
         (d.post_daily, [("day", 1), ("creator_id", 1)], {}),
         (d.post_daily, [("day", -1)], {"name": "post_daily_ttl", "expireAfterSeconds": 60 * 24 * 3600}),

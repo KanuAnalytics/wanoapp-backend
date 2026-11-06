@@ -27,6 +27,7 @@ from app.api.v1.tv import router as tv_router
 from app.api.v1.creators import router as creators_router
 from app.api.v1.leaderboard import router as leaderboard_router
 from app.api.v1.points import router as points_router
+from app.api.v1.challenges import router as challenges_router
 
 
 
@@ -50,3 +51,4 @@ api_router.include_router(tv_router, prefix="/tv", tags=["wano-tv"])
 api_router.include_router(creators_router, prefix="/creators", tags=["creators"])
 api_router.include_router(leaderboard_router, prefix="/leaderboard", tags=["leaderboard"])
 api_router.include_router(points_router, prefix="/points", tags=["points"])
+api_router.include_router(challenges_router, prefix="/challenges", tags=["challenges"])

@@ -122,6 +122,9 @@ async def publish_post(video_id) -> bool:
         logger.exception("Counting scheduled post %s on its creator failed", video["_id"])
     await _sync_recombee(video, now)
     await _notify_creator(video, now)
+    if isinstance(video.get("reply_to"), dict):
+        from app.services import replies
+        await replies.after_create(db, video["reply_to"], str(video["_id"]), str(video["creator_id"]), False)
     return True
 
 
