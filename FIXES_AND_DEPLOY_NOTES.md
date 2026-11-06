@@ -449,3 +449,39 @@ App: optional — show "Upload failed, try again" for notification type "video_f
 
 Check on staging: run POST /api/v1/recombee/rescue-uploads after deploy. The first run tells
 you how many posts were stuck; "ready" ones appear in feeds right away.
+
+---
+
+## Wano TV film protection (branch tv-protect, on top of stuck-uploads)
+
+Server-only, no app change. Attack tests (test_tv_protect.py 13, test_tv_protect_round2.py 10):
+12 fail against the old catalogue code; the rest guard the new signing code (forged/expired/
+tampered tokens, path tricks, foreign URLs injected into playlists, stampedes, 2-hour playlists,
+storage errors, a late start getting segments that outlast a pause).
+
+Before: the catalogue gave the app the film's public CDN address. Anyone with it could download
+the full 1080p film (checked live with Middleton).
+
+Now (app/services/tv_stream.py):
+- /api/v1/tv/titles returns video_url = {BACKEND_URL}/api/v1/tv/stream/<token>/master.m3u8.
+  The token is signed with SECRET_KEY and expires after 6 h (a fresh one every catalogue load).
+- That endpoint reads the playlist from Spaces privately, points quality levels and subtitles back
+  through the same token, and gives video segments Spaces links signed for 4 h-7 days.
+  Anything outside the title's own folder is dropped. No login header needed by the player.
+- Expired link: 403 "This link has expired" -> the app reloads the catalogue (it does on open).
+- Trailers, posters and artwork stay public.
+- Upload scripts now make new film files private (acl_for); trailers and art public.
+
+Steps, in order:
+1. Deploy. Check BACKEND_URL is the address phones reach (today https://devbe.wanoafrica.com).
+2. On a phone: open Middleton in Wano TV, play, seek, turn subtitles on, pause a few minutes, resume.
+3. Only then lock the files:  python -m scripts.protect_wano_tv  (dry run lists the files)
+                              python -m scripts.protect_wano_tv --apply
+4. Check the old public address now fails:
+   https://wano-africadev.lon1.cdn.digitaloceanspaces.com/wanoafrica-dospaces-key/wano-tv/middleton/master.m3u8 -> 403
+Undo if ever needed: set those keys back to public-read.
+
+Trade-off to watch: film segments now come from the Spaces origin (London) with signed links,
+not the CDN edge (Spaces CDN doesn't serve private files). If start-up or buffering in Africa is
+noticeably worse, the long-term fix is moving films to Cloudflare Stream with signed URLs
+(shorts already use Stream).

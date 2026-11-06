@@ -20,6 +20,7 @@ import sys
 import boto3
 from botocore.client import Config
 from app.core.config import settings
+from app.services.tv_stream import acl_for
 
 PREFIX = "wano-tv"
 GROUP = "subs"
@@ -63,7 +64,7 @@ def main():
             Bucket=bucket,
             Key=key,
             Body=body.encode("utf-8"),
-            ACL="public-read",
+            ACL=acl_for(key),   # film files private, played through signed links
             ContentType=content_type,
             CacheControl="public, max-age=300",
         )
