@@ -285,7 +285,15 @@ async def _compute(db) -> List[Tuple[str, float, Optional[str], str]]:
 
 
 _cache: Dict[str, Tuple[float, list]] = {}
-_lock = asyncio.Lock()
+_lock_for = {"loop": None, "lock": None}
+
+
+def _lock() -> asyncio.Lock:
+    """One lock per event loop (a module-level Lock binds to the first loop that uses it)."""
+    loop = asyncio.get_running_loop()
+    if _lock_for["loop"] is not loop:
+        _lock_for["loop"], _lock_for["lock"] = loop, asyncio.Lock()
+    return _lock_for["lock"]
 
 
 def clear_cache() -> None:
@@ -300,7 +308,7 @@ async def _ranking(db) -> list:
     hit = _cache.get("global")
     if hit and time.monotonic() - hit[0] < CACHE_SECONDS:
         return hit[1]
-    async with _lock:   # one computation even when many requests arrive at once
+    async with _lock():   # one computation even when many requests arrive at once
         hit = _cache.get("global")
         if hit and time.monotonic() - hit[0] < CACHE_SECONDS:
             return hit[1]

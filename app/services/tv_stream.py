@@ -156,7 +156,7 @@ async def _playlist(key: str) -> str:
     hit = _cache.get(key)
     if hit and time.monotonic() - hit[0] < PLAYLIST_CACHE_SECONDS:
         return hit[1]
-    lock = _locks.setdefault(key, asyncio.Lock())
+    lock = _locks.setdefault((id(asyncio.get_running_loop()), key), asyncio.Lock())
     async with lock:
         hit = _cache.get(key)
         if hit and time.monotonic() - hit[0] < PLAYLIST_CACHE_SECONDS:

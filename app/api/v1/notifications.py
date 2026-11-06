@@ -14,6 +14,7 @@ from app.api.deps import get_current_active_user, require_admin
 from app.services.expo import send_push_batch
 from fastapi import Depends, Query
 from typing import List, Optional
+from pydantic import BaseModel, ConfigDict
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,39 @@ async def broadcast_notification(
         _broadcast_lock.release()
         raise
     return {"message": "Broadcast started in background"}
+
+class NotificationPrefs(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    new_posts: Optional[bool] = None       # "Amina just posted" from people you follow
+    creator_tips: Optional[bool] = None    # first-viewer results, streak reminders
+
+
+def _prefs_out(user: dict) -> dict:
+    p = user.get("notification_prefs") if isinstance(user.get("notification_prefs"), dict) else {}
+    return {"new_posts": p.get("new_posts") is not False, "creator_tips": p.get("creator_tips") is not False}
+
+
+@router.get("/preferences")
+async def get_notification_prefs(current_user: str = Depends(get_current_active_user)):
+    db = get_database()
+    user = await db.users.find_one({"_id": ObjectId(current_user)}, {"notification_prefs": 1}) or {}
+    return _prefs_out(user)
+
+
+@router.put("/preferences")
+async def set_notification_prefs(body: NotificationPrefs, current_user: str = Depends(get_current_active_user)):
+    """Turn growth notifications on or off. Only these two switches are stored."""
+    db = get_database()
+    changes = {f"notification_prefs.{k}": v for k, v in (("new_posts", body.new_posts),
+                                                         ("creator_tips", body.creator_tips)) if v is not None}
+    user = await db.users.find_one({"_id": ObjectId(current_user)}, {"notification_prefs": 1}) or {}
+    if not isinstance(user.get("notification_prefs"), dict):
+        await db.users.update_one({"_id": ObjectId(current_user)}, {"$set": {"notification_prefs": {}}})
+    if changes:
+        await db.users.update_one({"_id": ObjectId(current_user)}, {"$set": changes})
+    user = await db.users.find_one({"_id": ObjectId(current_user)}, {"notification_prefs": 1}) or {}
+    return _prefs_out(user)
+
 
 @router.get("/")
 async def get_notifications(

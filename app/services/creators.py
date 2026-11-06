@@ -137,14 +137,47 @@ async def record_fy_watch(db, video_id: str, portion: float) -> None:
     by For You and scrolled to the post. Counts toward its first-viewer test."""
     if not ObjectId.is_valid(str(video_id)):
         return
+    from pymongo import ReturnDocument
     try:
-        await db.video_reach.update_one(
+        after = await db.video_reach.find_one_and_update(
             {"_id": ObjectId(video_id)},
             {"$inc": {"fy_views": 1, "fy_portion_sum": float(portion), "fy_finished": int(portion >= 0.9)}},
-            upsert=True,
+            upsert=True, return_document=ReturnDocument.AFTER,
         )
     except Exception:
         logger.warning("Could not record For You watch of %s", video_id)
+        return
+    try:
+        await _maybe_tell_creator(db, ObjectId(video_id), after or {})
+    except Exception:
+        logger.exception("First-viewer result for %s not sent", video_id)
+
+
+async def _maybe_tell_creator(db, video_id: ObjectId, reach: dict) -> None:
+    """Once, when the post's first-viewer test is complete, tell the creator how it went."""
+    if reach.get("tip_sent") or _num(reach.get("fy_views")) < NEW_ACCOUNT_TEST:
+        return
+    video = await db.videos.find_one({"_id": video_id}, {"creator_id": 1})
+    creator = (video or {}).get("creator_id")
+    if not isinstance(creator, ObjectId):
+        return
+    user = await db.users.find_one({"_id": creator}, {"created_at": 1}) or {}
+    created = user.get("created_at")
+    young = False
+    if isinstance(created, datetime):
+        created = created if created.tzinfo else created.replace(tzinfo=timezone.utc)
+        young = created > _now() - timedelta(hours=NEW_ACCOUNT_HOURS)
+    s = ((await streaks(db, [creator])).get(creator) or {}).get("current", 0)
+    audience = test_audience(s, young)
+    if _num(reach.get("fy_views")) < audience:
+        return
+    claimed = await db.video_reach.update_one({"_id": video_id, "tip_sent": {"$ne": True}},
+                                              {"$set": {"tip_sent": True}})
+    if not claimed.modified_count:
+        return
+    stage, _ = _stage(reach, s, young)
+    from app.services import growth_notifications
+    await growth_notifications.first_viewers_result(db, video_id, reach, stage == "boost", audience)
 
 
 async def record_engagement(db, creator, kind: str) -> None:
@@ -169,12 +202,12 @@ async def _daily(db, creator: ObjectId, **incs) -> None:
 
 # ---------------------------------------------------------------- streaks
 
-async def streaks(db, creator_ids: Iterable[ObjectId]) -> Dict[ObjectId, dict]:
+async def streaks(db, creator_ids: Iterable[ObjectId], now: Optional[datetime] = None) -> Dict[ObjectId, dict]:
     """{creator: {"current": days, "posted_today": bool}}. A streak stays alive
     until the end of the day after the last post. One grouped query for all the
     creators (days with a post, per creator), cached briefly."""
     out = {}
-    today = _day(_now())
+    today = _day(now or _now())
     now = time.monotonic()
     todo = []
     for c in {c for c in creator_ids if isinstance(c, ObjectId)}:

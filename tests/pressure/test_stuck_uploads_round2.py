@@ -84,7 +84,7 @@ async def test_UR5_rescue_and_webhook_at_once_notify_once(client, db, rb, cf):
 
 async def test_UR6_broken_push_tokens_do_not_stop_the_rescue(client, db, rb, cf, monkeypatch):
     from app.services import expo
-    async def boom(*a, **k):
+    def boom(*a, **k):          # blocking, like the real sender
         raise RuntimeError("expo down")
     monkeypatch.setattr(expo, "send_push_message", boom)
     c, vid, u = await _stuck(db, 53)
@@ -94,3 +94,42 @@ async def test_UR6_broken_push_tokens_do_not_stop_the_rescue(client, db, rb, cf,
     cf.states[u2] = {"exists": True, "ready": True, "state": "ready"}
     r = await _run(db)
     assert r["failed"] == 1 and r["ready"] == 1
+
+
+async def test_UR7_failed_upload_push_really_goes_out(client, db, rb, cf, calls, caplog):
+    """The real push sender is blocking: awaiting it used to throw after sending
+    (and block the server while it sent)."""
+    import logging
+    caplog.set_level(logging.WARNING)
+    c, vid, u = await _stuck(db, 55)
+    await db.users.update_one({"_id": ObjectId(c)}, {"$set": {"expo_push_tokens": ["tok-1", "tok-2"]}})
+    cf.states[u] = {"exists": False, "ready": False, "state": None}
+    r = await _run(db)
+    assert r["failed"] == 1
+    sent = [p for p in calls["pushes"] if p[0] == "send_push_message"]
+    assert sorted(p[1][0] for p in sent) == ["tok-1", "tok-2"]
+    assert "did not send" not in caplog.text, "push sender was awaited"
+
+
+async def test_UR8_ready_rescue_sends_pushes_off_the_server_loop(client, db, rb, cf, monkeypatch):
+    """The 'uploaded' push after a rescue must not run the blocking sender on the event loop."""
+    import asyncio
+    import threading
+    from app.services import expo
+    threads = []
+
+    def slow_blocking_send(*a, **k):
+        threads.append(threading.current_thread() is threading.main_thread())
+    monkeypatch.setattr(expo, "send_push_message", slow_blocking_send)
+    from app.routes import upload_video
+    monkeypatch.setattr(upload_video, "send_push_message", slow_blocking_send, raising=False)
+    c, vid, u = await _stuck(db, 61)
+    await db.users.update_one({"_id": ObjectId(c)}, {"$set": {"expo_push_tokens": ["t1"]}})
+    cf.states[u] = {"exists": True, "ready": True, "state": "ready"}
+    r = await _run(db)
+    for _ in range(50):
+        if threads:
+            break
+        await asyncio.sleep(0.02)
+    assert r["ready"] == 1 and threads, "no push sent"
+    assert not any(threads), "blocking push ran on the server's event loop"

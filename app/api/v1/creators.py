@@ -57,8 +57,21 @@ class PostStats(BaseModel):
     reach_stage: str      # "testing" | "boosted" | "done"
 
 
+class Posting(BaseModel):
+    """Posts in the creator's own time zone; weeks start Monday."""
+    this_week: int
+    last_week: int
+    this_month: int
+    last_month: int
+
+
+def _utcnow():
+    return datetime.now(timezone.utc)
+
+
 class CreatorStats(BaseModel):
     period_days: int
+    posting: Posting
     totals: Totals
     streak: Streak
     posts: List[PostStats]
@@ -121,8 +134,22 @@ async def my_stats(
                          else creators.stage_label(r, s["current"], v.get("created_at"))),
         ))
 
+    from app.services import growth_notifications as g
+    now = _utcnow()
+    user = await db.users.find_one({"_id": me}, {"localization": 1}) or {"_id": me}
+    local, off = g._local(user, now), g._offset(user)
+    hours = (await g.hourly_posts(db, [me], now - timedelta(days=70), now + timedelta(hours=1))).get(me, {})
+    wk, mo = g.week_start(local), g.month_start(local)
+    posting = Posting(
+        this_week=g.count_between(hours, off, wk, wk + timedelta(days=7)),
+        last_week=g.count_between(hours, off, wk - timedelta(days=7), wk),
+        this_month=g.count_between(hours, off, mo, g.month_start(local, -1)),
+        last_month=g.count_between(hours, off, g.month_start(local, 1), mo),
+    )
+
     return CreatorStats(
         period_days=days,
+        posting=posting,
         totals=Totals(
             views=int(cur["views"]), previous_views=int(prev["views"]),
             views_change_pct=_pct(cur["views"] - prev["views"], prev["views"]),
