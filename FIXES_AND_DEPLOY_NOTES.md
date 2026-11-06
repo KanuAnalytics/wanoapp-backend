@@ -281,3 +281,44 @@ App change (Nasir)
 - New tab: first request `GET /api/v1/feed/?cursor=start&limit=20` (plus `authenticated=false`
   when logged out, `exclude_watched=true` if wanted). Next page: `cursor=<X-Next-Cursor>`.
   No X-Next-Cursor header = end of feed. Don't send skip with cursor.
+
+---
+
+## New tab: "new videos" bubble and your own pinned posts
+
+Attack tests first (tests/pressure/test_new_interactive.py: 22 of 26 failed, the 4 passing
+were old-app guards), built, then a second round (test_new_interactive_round2.py) that found
+3 more holes, fixed: small pages with pins could push a post out of the feed, a shared video
+shown on top could appear again further down, and a future-dated post could sit on top of New
+forever and keep the bubble lit.
+
+### GET /api/v1/feed/new-count?since=<id of the newest video on screen>
+Add `authenticated=false` when logged out. Read-only, cheap; poll every `poll_after_seconds` (60)
+while the New tab is open. Response (Cache-Control: private, max-age=15):
+
+    {"count": 5, "more": false,
+     "creators": [{"id": "...", "username": "...", "display_name": "...", "profile_picture": "..."}],
+     "newest_at": "2026-11-05T18:02:11Z", "last_post_at": "2026-11-05T18:02:11Z",
+     "poll_after_seconds": 60}
+
+- count = posts New would show above `since` (same rules: public, playable, not yours, not
+  blocked, not "not interested", active creators). Capped at 99 (`more: true` = "99+").
+- creators = up to 3 newest distinct creators, for the avatars on the bubble. Public fields only.
+- last_post_at = newest post on New, for "You're all caught up · last post 3h ago".
+- A private or deleted `since` falls back to the time inside its id (no date probing).
+
+App: show "▲ N new videos" with the avatars when count > 0; tap or pull = reload New with
+`cursor=start`. count == 0 on pull = "You're all caught up · last post <last_post_at ago>"
+with Watch Trending / Post something.
+
+### include_own=true on the New tab
+`GET /api/v1/feed/?cursor=start&include_own=true` (logged in): up to 3 of your own public posts
+from the last 24 h are pinned on top (after a shared video_id, if any), each with
+`"pinned": true` and `"status": "processing"` or `"live"` (views in views_count + buffered_views).
+Processing posts may have no playable URL yet: show a "Processing…" card, don't play it.
+First page only, never repeated, never shown to anyone else, ignored on profile/saved and when
+logged out. Without the flag nothing changes (old app builds).
+
+### Hardening that came with it
+- Cursor carries the shared video so it is never repeated further down (old cursors still work).
+- Posts dated in the future are ignored by New and the bubble.
