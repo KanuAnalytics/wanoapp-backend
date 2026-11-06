@@ -46,6 +46,7 @@ GOOD_FINISH = 0.25
 PER_CREATOR_TESTS = 3
 STREAK_MIN = 3
 STREAK_MAX_DAYS = 120
+STREAK_RANK_DAYS = 8        # ranking only needs to know 3+ (bigger test) and up to 7 (boost)
 MILESTONES = (3, 7, 14, 30, 60, 100, 365)
 CANDIDATE_LIMIT = 3000
 STREAK_CACHE_SECONDS = 120
@@ -53,7 +54,7 @@ NEW_ACCOUNT_HOURS = 24      # creators younger than this get a smaller test
 NEW_ACCOUNT_TEST = 10
 NEW_ACCOUNT_BOOST_CAP = 100
 
-_streak_cache: Dict[ObjectId, tuple] = {}
+_streak_cache: Dict[tuple, tuple] = {}
 
 
 def clear_cache():
@@ -202,7 +203,8 @@ async def _daily(db, creator: ObjectId, **incs) -> None:
 
 # ---------------------------------------------------------------- streaks
 
-async def streaks(db, creator_ids: Iterable[ObjectId], now: Optional[datetime] = None) -> Dict[ObjectId, dict]:
+async def streaks(db, creator_ids: Iterable[ObjectId], now: Optional[datetime] = None,
+                  max_days: int = STREAK_MAX_DAYS) -> Dict[ObjectId, dict]:
     """{creator: {"current": days, "posted_today": bool}}. A streak stays alive
     until the end of the day after the last post. One grouped query for all the
     creators (days with a post, per creator), cached briefly."""
@@ -211,7 +213,7 @@ async def streaks(db, creator_ids: Iterable[ObjectId], now: Optional[datetime] =
     now = time.monotonic()
     todo = []
     for c in {c for c in creator_ids if isinstance(c, ObjectId)}:
-        hit = _streak_cache.get(c)
+        hit = _streak_cache.get((c, max_days))
         if hit and hit[0] == today and now - hit[1] < STREAK_CACHE_SECONDS:
             out[c] = hit[2]
         else:
@@ -219,14 +221,14 @@ async def streaks(db, creator_ids: Iterable[ObjectId], now: Optional[datetime] =
     if not todo:
         return out
     days = {c: set() for c in todo}
-    since = today - timedelta(days=STREAK_MAX_DAYS)
+    since = today - timedelta(days=max_days)
     try:
         rows = await db.videos.aggregate([
             {"$match": {**_showable(), "creator_id": {"$in": todo},
                         "created_at": {"$gte": since, "$lt": today + timedelta(days=1)}}},
             {"$group": {"_id": {"c": "$creator_id",
                                 "d": {"$dateToString": {"format": "%Y-%m-%d", "date": "$created_at"}}}}},
-        ]).to_list(length=len(todo) * (STREAK_MAX_DAYS + 1))
+        ]).to_list(length=len(todo) * (max_days + 1))
     except Exception:
         logger.warning("Streak lookup failed for %d creators", len(todo))
         rows = []
@@ -239,11 +241,11 @@ async def streaks(db, creator_ids: Iterable[ObjectId], now: Optional[datetime] =
         posted_today = today.date().isoformat() in have
         day = today if posted_today else today - timedelta(days=1)
         n = 0
-        while n < STREAK_MAX_DAYS and day.date().isoformat() in have:
+        while n < max_days and day.date().isoformat() in have:
             n += 1
             day -= timedelta(days=1)
         result = {"current": n, "posted_today": posted_today}
-        _streak_cache[c] = (today, now, result)
+        _streak_cache[(c, max_days)] = (today, now, result)
         out[c] = result
     return out
 
@@ -301,7 +303,8 @@ async def first_viewers(db, excluded_oids: List[ObjectId], own: Optional[ObjectI
         return []
 
     reach = {r["_id"]: r async for r in db.video_reach.find({"_id": {"$in": [d["_id"] for d in kept]}})}
-    streak = await streaks(db, [d.get("creator_id") for d in kept])
+    # A week of history is all the ranking uses (For You calls this on every page).
+    streak = await streaks(db, [d.get("creator_id") for d in kept], max_days=STREAK_RANK_DAYS)
     young = set()
     cutoff = now - timedelta(hours=NEW_ACCOUNT_HOURS)
     async for u in db.users.find({"_id": {"$in": list({d.get("creator_id") for d in kept})}}, {"created_at": 1}):

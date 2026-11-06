@@ -118,8 +118,10 @@ async def search_users_endpoint(
     if not term:
         raise HTTPException(status_code=400, detail="Empty query")
 
-    escaped = re.escape(term)
-    regex = {"$regex": f"^{escaped}", "$options": "i"}
+    # Case-insensitive prefix as a range on collation indexes (users_username_ci,
+    # users_display_name_ci): reads only the matches, unlike a /^term/i regex,
+    # which has to check every user. U+FFFF sorts after everything in ICU.
+    prefix = {"$gte": term, "$lt": term + "\uffff"}
 
     # Fetch current user's following list once and build a set for O(1) membership checks
     me = await db.users.find_one({"_id": ObjectId(current_user)}, {"following": 1})
@@ -129,10 +131,13 @@ async def search_users_endpoint(
         {"$match": {
             "is_active": True,
             "$or": [
-                {"username": regex},
-                {"display_name": regex},
+                {"username": prefix},
+                {"display_name": prefix},
             ],
         }},
+        # Short prefixes ("a") can match most users: take the first matches off the
+        # index, then sort, instead of fetching and sorting everyone.
+        {"$limit": 500},
         {"$sort": { "created_at": -1, "_id": 1}},
         {"$skip": skip},
         {"$limit": limit},
@@ -145,7 +150,7 @@ async def search_users_endpoint(
             "created_at": {"$dateToString": {"format": "%Y-%m-%dT%H:%M:%S.%LZ", "date": "$created_at"}},
         }}
     ]
-    docs = await db.users.aggregate(pipeline).to_list(length=limit)
+    docs = await db.users.aggregate(pipeline, collation={"locale": "en", "strength": 2}).to_list(length=limit)
     for user in docs:
         try:
             user_oid = ObjectId(user["_id"])  # _id is a string due to $toString
