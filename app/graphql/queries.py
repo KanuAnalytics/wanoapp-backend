@@ -231,20 +231,11 @@ class Query:
             return []
         pattern = re.escape(term)
 
-        search_query = {
-            "is_active": True,
-            "privacy": "public",
-            "$or": [
-                {"title": {"$regex": pattern, "$options": "i"}},
-                {"description": {"$regex": pattern, "$options": "i"}},
-                {"hashtags": {"$in": [term.lower()]}}
-            ]
-        }
-
+        from app.services import search
         limit = _clamp(limit, 1, MAX_PAGE)
         offset = max(offset, 0)
-        cursor = db.videos.find(search_query).sort("views_count", -1).skip(offset).limit(limit)
-        return [await _video_with_buffer(v) async for v in cursor]
+        docs = await search.find_videos(db, term, offset, limit)
+        return [await _video_with_buffer(v) for v in docs]
 
     @strawberry.field
     async def metrics_status(self, info) -> MetricsStatusType:

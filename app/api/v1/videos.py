@@ -7,7 +7,7 @@ app/api/v1/vidoes.py
 from typing import List, Literal, Optional
 from fastapi import APIRouter, HTTPException, Depends, Header, Request, status, UploadFile, File, Form, Query, BackgroundTasks
 from bson import ObjectId
-from datetime import datetime
+from datetime import datetime, timezone as _utc_tz
 from app.models.video import Video, VideoType, VideoPrivacy
 from app.core.database import get_database
 from app.core.config import settings
@@ -22,7 +22,7 @@ from bson.json_util import dumps
 from app.models.user import UserType
 from recombee_api_client.api_requests import SetViewPortion, AddRating, DeleteRating, AddBookmark, DeleteBookmark, SetItemValues, Batch, DeleteItem
 from app.services.recombee_service import recombee_send
-from app.services import creators, for_you, moderation, recommendations, trending
+from app.services import creators, for_you, moderation, recommendations, search, trending
 from app.services.recommendations import anon_id, viewer_id
 from app.services.video_deletion import soft_delete_video
 from app.services.stitch_jobs import MAX_CLIPS, StitchValidationError, create_stitch_job
@@ -460,38 +460,29 @@ async def search_videos(
     limit: int = Query(20, ge=1, le=50),
 ):
     """
-    Search videos by description field only.
+    Search public videos: words in the title, description or hashtags
+    (Atlas Search when enabled; see app/services/search.py).
     """
     db = get_database()
-    regex = {"$regex": f"^{re.escape(q.strip())}", "$options": "i"}
-    pipeline = [
-        {"$match": {"description": regex, "is_active": True, "privacy": "public"}},
-        {"$sort": {"created_at": -1}},
-        {"$skip": skip},
-        {"$limit": limit},
-        {"$lookup": {
-            "from": "users",
-            "localField": "creator_id",
-            "foreignField": "_id",
-            "as": "creator"
-        }},
-        {"$unwind": {"path": "$creator", "preserveNullAndEmptyArrays": True}},
-        {"$project": {
-            "_id": {"$toString": "$_id"},
-            "creator_id": {"$toString": "$creator_id"},
-            "description": 1,
-            "created_at": {"$dateToString": {"format": "%Y-%m-%dT%H:%M:%S.%LZ", "date": "$created_at"}},
-            "thumbnail": "$urls.thumbnail",
-            "user": {
-                "username": "$creator.username",
-                "display_name": "$creator.display_name",
-                "profile_picture": "$creator.profile_picture"
-            }
-        }}
-    ]
-    cursor = db.videos.aggregate(pipeline)
-    docs = await cursor.to_list(length=limit)
-    return json.loads(dumps(docs))
+    docs = await search.find_videos(db, q, skip, limit)
+    ids = list({d.get("creator_id") for d in docs if isinstance(d.get("creator_id"), ObjectId)})
+    users = {u["_id"]: u async for u in db.users.find(
+        {"_id": {"$in": ids}}, {"username": 1, "display_name": 1, "profile_picture": 1})} if ids else {}
+    out = []
+    for d in docs:
+        row = {"_id": str(d["_id"]), "creator_id": str(d.get("creator_id")) if d.get("creator_id") else None}
+        if "description" in d:
+            row["description"] = d["description"]
+        at = d.get("created_at")
+        row["created_at"] = (at.astimezone(_utc_tz.utc) if at.tzinfo else at).strftime("%Y-%m-%dT%H:%M:%S.") + \
+            f"{at.microsecond // 1000:03d}Z" if isinstance(at, datetime) else None
+        if isinstance(d.get("urls"), dict) and "thumbnail" in d["urls"]:
+            row["thumbnail"] = d["urls"]["thumbnail"]
+        u = users.get(d.get("creator_id")) or {}
+        row["user"] = {k: u[k] for k in ("username", "display_name", "profile_picture") if k in u}
+        out.append(row)
+    return out
+
 
 async def _send_milestone_push(db, video: dict, video_id: str, background_tasks: BackgroundTasks, title: str):
     recipient = await db.users.find_one(

@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     DOPPLER_PROJECT: str
 
 
+    # Atlas Search for video/comment search (create the indexes first:
+    # python -m scripts.create_search_indexes --apply). Off: word match.
+    ATLAS_SEARCH: bool = False
+
     # Database
     MONGODB_URI: str
     # App

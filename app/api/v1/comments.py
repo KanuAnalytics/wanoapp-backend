@@ -414,25 +414,12 @@ async def search_comments(
     limit: int = Query(20, ge=1, le=MAX_PAGE_SIZE),
     current_user: str = Depends(get_current_active_user)
 ):
-    """Search comments by content or user display name"""
+    """Search comments by content or user display name, on posts the viewer can see."""
+    from app.services import search
     db = get_database()
-
-    # The query is matched literally - user input is never a regex.
-    pattern = re.escape(q)
-    search_filter = {
-        "is_active": True,
-        "$or": [
-            {"content": {"$regex": pattern, "$options": "i"}},
-            {"user_display_name": {"$regex": pattern, "$options": "i"}}
-        ]
-    }
-
-    # Filter by video if specified
-    if video_id:
-        search_filter["video_id"] = _object_id(video_id, "video ID")
-
-    cursor = db.comments.find(search_filter).sort("created_at", -1).skip(skip).limit(limit)
-    return [_stored_comment_response(c, current_user) async for c in cursor]
+    video = _object_id(video_id, "video ID") if video_id else None
+    rows = await search.find_comments(db, q, current_user, video, skip, limit)
+    return [_stored_comment_response(c, current_user) for c in rows]
 
 @router.get("/user/{user_id}", response_model=List[CommentResponse])
 async def get_user_comments(

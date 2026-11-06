@@ -672,3 +672,16 @@ New collections `tv_title_daily`, `tv_play_once`, `tv_play_ip` (indexes + TTLs c
 send `?episode=` on history; make credit names with a `profile` tappable to that profile.
 
 Tests: tests/pressure/test_tv_series.py (24 attacks, two rounds). Full suite: 514 pass on real MongoDB.
+
+## search — video and comment search (Atlas Search ready)
+
+- `GET /api/v1/videos/search` and GraphQL `searchVideos`: every word must appear in the title, description or
+  hashtags (was: description starting with the text). Most watched first. Same response shape as before.
+- `GET /api/v1/search` (comments): only comments on posts the viewer can see (public, or their own).
+- Hidden posts never show: private, held for review, deleted, still uploading, scheduled, future-dated.
+- Input is always literal. A slow search returns an empty list after 3 s instead of an error.
+- Atlas Search (typos forgiven, ranked by relevance × views): `python -m scripts.create_search_indexes --apply`,
+  wait until both indexes show "Active" in Atlas → Search, then set `ATLAS_SEARCH=true` in Doppler and redeploy.
+  If Atlas Search errors, search falls back to word match by itself and retries Atlas after 10 minutes.
+
+Tests: tests/pressure/test_search.py (18 attacks, two rounds).
