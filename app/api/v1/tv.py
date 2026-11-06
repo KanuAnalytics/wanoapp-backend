@@ -166,6 +166,10 @@ def _credits(data: dict, profiles: dict) -> None:
             prof = profiles.get("x:" + name) or profiles.get("u:" + name.lower())
         people.append({"name": p["name"], "role": p["role"], "profile": prof})
     data["credits"] = {**credits, "people": people}
+    data["makers"] = [{"user_id": x["profile"]["id"], "username": x["profile"]["username"],
+                       "display_name": x["profile"].get("display_name"),
+                       "profile_picture": x["profile"].get("profile_picture"), "role": x["role"]}
+                      for x in people if x["profile"]]
 
 
 def _makers(doc: dict, profiles: dict) -> List[TvMaker]:

@@ -50,3 +50,19 @@ async def get_app_version():
         showUpdateAndroid=doc.get("showUpdateAndroid", False),
         showUpdateIos=doc.get("showUpdateIos", False),
     )
+
+
+# Switches for new app features, set in the config document as
+# {"features": {"points": true, ...}}. Anything missing, unknown or not exactly
+# true is off, so an app release can ship the screens before they're turned on.
+APP_FEATURES = ("points", "boost", "earnings", "replies", "challenges", "sounds", "city", "leaderboard",
+                "badges", "tv_series", "tv_play")
+
+
+@router.get("/features")
+async def get_app_features():
+    db = get_database()
+    doc = await db.config.find_one({"features": {"$type": "object"}}, projection={"features": 1},
+                                   sort=[("_id", -1)]) or {}
+    on = doc.get("features") if isinstance(doc.get("features"), dict) else {}
+    return {k: on.get(k) is True for k in APP_FEATURES}

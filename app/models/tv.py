@@ -106,6 +106,8 @@ class TvTitleResponse(BaseModel):
     # then the first episode. Empty for movies.
     seasons: List[TvSeason] = Field(default_factory=list)
     episode_count: int = 0
+    # Credited people who have a Wano account ("Meet the Makers" in the app).
+    makers: List[dict] = Field(default_factory=list)
     # History only: the episode the viewer last started.
     last_episode: Optional[str] = None
     # Wano users credited on the title ("Meet the Makers").
