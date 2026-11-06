@@ -307,3 +307,51 @@ logged out. Without the flag nothing changes (old app builds).
 ### Hardening that came with it
 - Cursor carries the shared video so it is never repeated further down (old cursors still work).
 - Posts dated in the future are ignored by New and the bubble.
+
+---
+
+## Creator growth: first viewers, streaks, creator stats (branch creators-growth)
+
+Server-only: merge and deploy, no app update needed for 1 and 2. Attack tests first
+(tests/pressure/test_creators.py: 27 of 30 failed), built, then a gaming/sabotage round
+(test_creators_round2.py, 12 tests). Found on the way: For You's popular backup (used when
+Recombee runs short) could show viewers their own posts. Fixed.
+
+### 1. Every new post gets first viewers (For You "fresh" slots)
+Before: fresh slots picked at random from the 200 newest posts. In the test, 33 of 120 new
+posts never got a single viewer, and one creator posting 40 videos got 30 of them tested.
+Now (app/services/creators.py):
+- A post under 48 h is tested on 30 For You viewers (fewest viewers / longest waiting first).
+- It keeps being shown only if those viewers stayed: avg watch >= 40% or finish rate >= 25%,
+  up to 300 For You viewers. Posts people skip leave the pool (Recombee can still pick them).
+- Max 3 posts per creator per day in the pool (flooding and delete/repost buy nothing).
+- Only viewers For You chose count toward the test: watches by link or by a ring of accounts
+  don't pass it, and bots loading pages without scrolling don't use it up.
+
+### 2. Posting streaks
+Consecutive UTC days with at least one public, playable post (several posts in a day = one day).
+3+ days: test audience 50 instead of 30, cap 600 instead of 300, higher rank among posts that
+passed. Never saves a post people skip. One grouped query for all creators on a page, cached 2 min.
+
+### 3. GET /api/v1/creators/me/stats?days=7   (logged in, days 1-30)
+    {"period_days": 7,
+     "totals": {"views", "previous_views", "views_change_pct", "finished", "avg_watch_pct",
+                "likes", "comments", "shares", "posts"},
+     "streak": {"current": 3, "posted_today": true, "boost_active": true, "next_milestone": 7},
+     "posts": [{"id", "title", "thumbnail", "created_at", "views", "avg_watch_pct",
+                "finish_rate_pct", "likes", "comments", "shares",
+                "reach_stage": "testing" | "boosted" | "done"}]}     # newest 20
+Only the caller's own posts; nothing about who watched. The creator's own views and engagement
+never count. Totals start counting from deploy (no backfill).
+
+### New data
+- video_reach: per post (For You impressions, views, watch portion, finishes; fy_* = For You viewers).
+- creator_daily: per creator per day, kept 120 days (TTL index).
+- Indexes added in app/core/database.py (creator_daily, videos by creator/active/privacy/date).
+
+### How to check on staging after deploy
+1. Post 2-3 test videos from a test account. Within minutes they should appear for other test
+   accounts in For You with "source": "fresh" (A/B "mix" group).
+2. Watch one fully from 2-3 accounts, then GET /api/v1/creators/me/stats as the poster:
+   views/finished/avg_watch_pct move; reach_stage "testing".
+3. GET /api/v1/metrics/for-you?days=1 (admin): watch rate of "fresh" vs "personal".
