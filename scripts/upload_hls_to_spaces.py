@@ -21,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 import boto3
 from botocore.client import Config
 from app.core.config import settings
+from app.services.tv_stream import acl_for
 
 PREFIX = "wano-tv"
 CONTENT_TYPES = {
@@ -66,7 +67,8 @@ def main():
             settings.DO_SPACES_BUCKET_NAME,
             key,
             ExtraArgs={
-                "ACL": "public-read",
+                # Films private (played through signed links), trailers public.
+                "ACL": acl_for(key),
                 "ContentType": CONTENT_TYPES.get(ext)
                 or mimetypes.guess_type(path)[0]
                 or "application/octet-stream",

@@ -12,10 +12,11 @@ from datetime import datetime
 from typing import List, Optional
 from bson import ObjectId
 from pydantic import ValidationError
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from app.api.deps import get_current_active_user
 from app.core.database import get_database
 from app.models.tv import TvGenreResponse, TvTitleResponse, TvWatchResponse
+from app.services import tv_stream
 
 logger = logging.getLogger(__name__)
 
@@ -25,13 +26,34 @@ router = APIRouter()
 HISTORY_LIMIT = 50
 
 
-def _title_response(doc: dict) -> Optional[TvTitleResponse]:
+def _protect(data: dict, viewer: str) -> dict:
+    """Films on our Spaces get an expiring signed link instead of the public file."""
+    key = tv_stream.spaces_key(data.get("video_url"))
+    if not key:
+        return data
+    signed = tv_stream.stream_url(data["id"], viewer, key)
+    if not signed:
+        return data
+    data["video_url"] = signed
+    caps = []
+    for c in data.get("captions") or []:
+        if isinstance(c, dict):
+            ck = tv_stream.spaces_key(c.get("url"))
+            if ck and tv_stream.title_folder(ck) == tv_stream.title_folder(key):
+                c = {**c, "url": tv_stream.stream_url(data["id"], viewer, ck) or c.get("url")}
+        caps.append(c)
+    data["captions"] = caps
+    return data
+
+
+def _title_response(doc: dict, viewer: str = "") -> Optional[TvTitleResponse]:
     """The title as the app sees it, or None (logged) if the document is malformed,
     so one bad catalogue entry can't 500 the whole list."""
     raw_id = doc.get("_id")
     try:
         data = {**doc, "id": str(doc["_id"])}
         data.pop("_id", None)
+        data = _protect(data, viewer)
         return TvTitleResponse(**data)
     except (ValidationError, KeyError, TypeError, ValueError) as e:
         logger.warning("Skipping invalid tv_titles document %s: %s", raw_id, e)
@@ -62,8 +84,26 @@ async def get_titles(current_user: str = Depends(get_current_active_user)):
     docs = await db.tv_titles.find({"is_active": True}).sort(
         [("popularity", -1), ("_id", 1)]
     ).to_list(length=None)
-    titles = (_title_response(doc) for doc in docs)
+    titles = (_title_response(doc, current_user) for doc in docs)
     return [t for t in titles if t is not None]
+
+
+@router.get("/stream/{token}/{path:path}", include_in_schema=False)
+async def stream_playlist(token: str, path: str):
+    """Signed film playback (see app/services/tv_stream.py). No login header:
+    the token in the link is the permission, and it expires."""
+    db = get_database()
+    try:
+        body = await tv_stream.serve(db, token, path)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This link has expired")
+    except tv_stream.NotFound:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    except Exception:
+        logger.exception("Could not serve Wano TV playlist %s", path)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Could not load the video")
+    return Response(body, media_type="application/vnd.apple.mpegurl",
+                    headers={"Cache-Control": "private, max-age=60"})
 
 
 @router.get("/genres", response_model=List[TvGenreResponse])
@@ -92,7 +132,7 @@ async def get_history(current_user: str = Depends(get_current_active_user)):
     by_id = {doc["_id"]: doc for doc in docs}
 
     # Keep the history order; skip titles that have since been taken down.
-    titles = (_title_response(by_id[i]) for i in title_ids if i in by_id)
+    titles = (_title_response(by_id[i], current_user) for i in title_ids if i in by_id)
     return [t for t in titles if t is not None]
 
 
