@@ -13,6 +13,18 @@ from tests.pressure.test_points import _month, clock  # noqa: F401
 
 pytestmark = pytest.mark.asyncio
 
+
+@pytest.fixture(autouse=True)
+def _any_creator_qualifies(monkeypatch, request):
+    """These tests check other rules; Wano Creator requirements and the top-N
+    limit have their own attacks in test_wano_creators.py."""
+    if request.module.__name__.endswith(("test_points_pool", "test_points_deep")):
+        from app.services import points
+
+        async def everyone(db, shares, month, n):
+            return shares
+        monkeypatch.setattr(points, "_eligible_top", everyone)
+
 AFTER_OCT = datetime(2026, 11, 2, 4, 0, tzinfo=timezone.utc)
 
 

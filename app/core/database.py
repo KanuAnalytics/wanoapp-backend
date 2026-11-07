@@ -136,7 +136,10 @@ async def create_indexes():
         (d.creator_earnings, [("user_id", 1), ("month", -1)], {}),
         (d.creator_earnings, [("state", 1), ("available_at", 1)], {}),
         (d.payout_accounts, [("method", 1), ("account", 1)], {}),
-        (d.points_viewer_daily, [("at", 1)], {"expireAfterSeconds": 3 * 24 * 3600}),
+        # Kept 35 days: Wano Creator status counts distinct viewers over 28.
+        (d.points_viewer_daily, [("at", 1)], {"expireAfterSeconds": 35 * 24 * 3600}),
+        (d.points_viewer_daily, [("creator", 1), ("at", 1), ("viewer", 1)], {}),
+        (d.points_device_daily, [("at", 1)], {"expireAfterSeconds": 2 * 24 * 3600}),
         (d.videos, [("points_boost.until", 1)], {"sparse": True}),
         (d.videos, [("category", 1), ("created_at", -1)], {"sparse": True}),
         # Wano TV popularity (tv_popularity): daily plays per title, and

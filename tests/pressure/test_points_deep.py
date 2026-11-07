@@ -13,6 +13,18 @@ from tests.pressure.test_points_pool import AFTER_OCT, _cash, _close_october
 from tests.pressure.test_for_you import rb  # noqa: F401
 
 pytestmark = pytest.mark.asyncio
+
+
+@pytest.fixture(autouse=True)
+def _any_creator_qualifies(monkeypatch, request):
+    """These tests check other rules; Wano Creator requirements and the top-N
+    limit have their own attacks in test_wano_creators.py."""
+    if request.module.__name__.endswith(("test_points_pool", "test_points_deep")):
+        from app.services import points
+
+        async def everyone(db, shares, month, n):
+            return shares
+        monkeypatch.setattr(points, "_eligible_top", everyone)
 real_only = pytest.mark.skipif(not REAL_MONGO, reason="needs a real MongoDB (WANO_REAL_MONGO)")
 
 D = datetime(2026, 11, 10)
@@ -27,6 +39,7 @@ def day_clock(monkeypatch, clock):
 
 
 async def _viewer(db, days_old=30, **extra):
+    extra.setdefault("phone_number", f"+2567{ObjectId().binary.hex()[-8:]}")
     u, _ = await make_user(db, created_at=datetime(2026, 11, 10, tzinfo=timezone.utc) - timedelta(days=days_old), **extra)
     return u
 

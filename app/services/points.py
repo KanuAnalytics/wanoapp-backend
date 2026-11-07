@@ -83,6 +83,29 @@ MAX_SHARE = 0.25
 HOLD_DAYS = 14
 PAYOUT_METHODS = ("mobile_money", "pix", "bank")
 
+# Wano Creators: who can share the cash pool (each a setting, see _cfg).
+CREATOR_DEFAULTS = {
+    "CREATOR_MIN_AGE": 18,
+    "CREATOR_ACCOUNT_DAYS": 30,
+    "CREATOR_MIN_FOLLOWERS": 100,
+    "CREATOR_MIN_VIEWS_28D": 1000,
+    "CREATOR_MIN_VIEWERS_28D": 50,
+    "CREATOR_STRIKE_DAYS": 90,
+    "POINTS_USD_PER_CREATOR": 10,       # top N creators share the pool, N = pool / this
+    "POINTS_DEVICE_ACCOUNTS": 3,        # earning accounts per phone per day
+    "POINTS_IP_ACCOUNTS": 50,           # per connection (mobile networks share IPs, so looser)
+}
+
+
+def _cfg(name: str):
+    v = getattr(settings, name, None)
+    return CREATOR_DEFAULTS[name] if v is None else v
+
+
+def viewer_needs_phone() -> bool:
+    v = getattr(settings, "POINTS_VIEWER_NEEDS_PHONE", None)
+    return True if v is None else bool(v)
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -166,24 +189,44 @@ async def grant(db, user: ObjectId, amount: int, reason: str) -> None:
 
 # ---------------------------------------------------------------- who can earn
 
-async def view_earns(db, video: dict, viewer, now: datetime) -> bool:
+async def _slot(db, kind: str, key: str, viewer: str, day: str, limit: int, now: datetime) -> bool:
+    """One of the first `limit` accounts seen on this device/connection today."""
+    row = await db.points_device_daily.find_one_and_update(
+        {"_id": f"{kind}:{key}:{day}"},
+        {"$addToSet": {"accounts": viewer}, "$setOnInsert": {"at": _naive(now)}},
+        upsert=True, return_document=ReturnDocument.AFTER)
+    accounts = (row or {}).get("accounts") or []
+    return viewer in accounts[:limit]
+
+
+async def view_earns(db, video: dict, viewer, now: datetime, device: Optional[str] = None,
+                     ip: Optional[str] = None) -> bool:
     """Whether a counted view (already once per viewer per video, never the
     creator's own) also earns the creator points. Never raises."""
     try:
         if not viewer or not ObjectId.is_valid(str(viewer)):
             return False
         creator = video.get("creator_id")
-        u = await db.users.find_one({"_id": ObjectId(str(viewer)), "is_active": True}, {"created_at": 1})
+        u = await db.users.find_one({"_id": ObjectId(str(viewer)), "is_active": True},
+                                    {"created_at": 1, "phone_number": 1})
         created = (u or {}).get("created_at")
         if not isinstance(created, datetime) or _naive(created) > _naive(now) - timedelta(days=VIEWER_MIN_AGE_DAYS):
+            return False
+        # A real phone number per account makes fake viewers expensive.
+        if viewer_needs_phone() and not (isinstance(u.get("phone_number"), str) and u["phone_number"].strip()):
             return False
         if await db.feed_impressions.find_one({"viewer": str(viewer), "video_id": video.get("_id"), "source": "boost"},
                                               {"_id": 1}):
             return False
         day = _naive(now).strftime("%Y%m%d")
+        dev = re.sub(r"[^A-Za-z0-9_\-]", "", device or "")[:64]
+        if dev and not await _slot(db, "d", dev, str(viewer), day, int(_cfg("POINTS_DEVICE_ACCOUNTS")), now):
+            return False
+        if ip and not await _slot(db, "ip", str(ip)[:64], str(viewer), day, int(_cfg("POINTS_IP_ACCOUNTS")), now):
+            return False
         row = await db.points_viewer_daily.find_one_and_update(
             {"_id": f"{viewer}:{creator}:{day}"},
-            {"$inc": {"n": 1}, "$setOnInsert": {"at": _naive(now)}},
+            {"$inc": {"n": 1}, "$setOnInsert": {"at": _naive(now), "viewer": ObjectId(str(viewer)), "creator": creator}},
             upsert=True, return_document=ReturnDocument.AFTER)
         return (row or {}).get("n", 1) <= VIEWER_DAILY_CAP
     except Exception:
@@ -421,6 +464,77 @@ async def _month_shares(db, month: str) -> Dict[ObjectId, int]:
     return out
 
 
+async def creator_status(db, user: ObjectId, end: datetime) -> dict:
+    """Whether a creator qualifies as a Wano Creator (can share the cash pool),
+    judged over the 28 days before `end`. Returns {eligible, checks}."""
+    end = _naive(end)
+    start = end - timedelta(days=28)
+    u = await db.users.find_one({"_id": user}, {"date_of_birth": 1, "phone_number": 1, "created_at": 1,
+                                                "followers_count": 1, "is_active": 1}) or {}
+    dob = u.get("date_of_birth")
+    age = None
+    if isinstance(dob, datetime):
+        dob = _naive(dob)
+        age = end.year - dob.year - ((end.month, end.day) < (dob.month, dob.day))
+    created = u.get("created_at")
+    account_days = (end - _naive(created)).days if isinstance(created, datetime) else 0
+    followers = _num(u.get("followers_count"))
+    views = 0
+    async for r in db.post_daily.aggregate([
+        {"$match": {"creator_id": user, "day": {"$gte": start, "$lt": end}}},
+        {"$group": {"_id": None, "v": {"$sum": {"$ifNull": ["$pviews", 0]}}}},
+    ]):
+        views = _num(r.get("v"))
+    viewers = len(await db.points_viewer_daily.distinct(
+        "viewer", {"creator": user, "at": {"$gte": start, "$lt": end}}))
+    strikes = await db.videos.count_documents({
+        "creator_id": user, "originality.state": "rejected",
+        "originality.at": {"$gte": end - timedelta(days=int(_cfg("CREATOR_STRIKE_DAYS")))}})
+    checks = [
+        {"key": "age", "ok": age is not None and age >= int(_cfg("CREATOR_MIN_AGE")),
+         "have": None, "need": int(_cfg("CREATOR_MIN_AGE"))},
+        {"key": "phone", "ok": isinstance(u.get("phone_number"), str) and bool(u["phone_number"].strip()),
+         "have": None, "need": None},
+        {"key": "account_days", "ok": account_days >= int(_cfg("CREATOR_ACCOUNT_DAYS")),
+         "have": max(0, account_days), "need": int(_cfg("CREATOR_ACCOUNT_DAYS"))},
+        {"key": "followers", "ok": followers >= int(_cfg("CREATOR_MIN_FOLLOWERS")),
+         "have": followers, "need": int(_cfg("CREATOR_MIN_FOLLOWERS"))},
+        {"key": "views_28d", "ok": views >= int(_cfg("CREATOR_MIN_VIEWS_28D")),
+         "have": views, "need": int(_cfg("CREATOR_MIN_VIEWS_28D"))},
+        {"key": "viewers_28d", "ok": viewers >= int(_cfg("CREATOR_MIN_VIEWERS_28D")),
+         "have": viewers, "need": int(_cfg("CREATOR_MIN_VIEWERS_28D"))},
+        {"key": "no_copied_posts", "ok": strikes == 0, "have": strikes, "need": 0},
+    ]
+    return {"eligible": u.get("is_active") is True and all(c["ok"] for c in checks), "checks": checks}
+
+
+async def _eligible_top(db, shares: Dict[ObjectId, int], month: str, n: int) -> Dict[ObjectId, int]:
+    """The top `n` creators by points who qualify as Wano Creators for `month`."""
+    y, m = (int(x) for x in month.split("-"))
+    end = datetime(y + (m == 12), m % 12 + 1, 1)
+    ranked = sorted(shares.items(), key=lambda t: (-t[1], str(t[0])))
+    out: Dict[ObjectId, int] = {}
+    # Cheap checks in bulk first (account fields), the full status only for those left.
+    cutoff_created = end - timedelta(days=int(_cfg("CREATOR_ACCOUNT_DAYS")))
+    for i in range(0, len(ranked), 500):
+        chunk = ranked[i:i + 500]
+        maybe = {u["_id"] async for u in db.users.find({
+            "_id": {"$in": [u for u, _ in chunk]}, "is_active": True,
+            "followers_count": {"$gte": int(_cfg("CREATOR_MIN_FOLLOWERS"))},
+            "phone_number": {"$type": "string", "$ne": ""},
+            "created_at": {"$lte": cutoff_created}}, {"_id": 1})}
+        for u, p in chunk:
+            if len(out) >= n:
+                return out
+            if u in maybe and (await creator_status(db, u, end))["eligible"]:
+                out[u] = p
+    return out
+
+
+def top_n(pool_cents: int) -> int:
+    return max(1, int(pool_cents // (float(_cfg("POINTS_USD_PER_CREATOR")) * 100)))
+
+
 def _split(cents: int, shares: Dict[ObjectId, int], share_cap: Optional[float] = None) -> Dict[ObjectId, int]:
     """Cents per creator, proportional to points, nobody above share_cap of the
     pool (what the cap frees goes to the others, up to their own cap; anything
@@ -483,7 +597,7 @@ async def distribute(db, month: str) -> dict:
         raise PointsError(409, "Already shared out")
     if claimed is not None and claimed.get("state") == "distributed":
         raise PointsError(409, "Already shared out")
-    shares = await _month_shares(db, month)
+    shares = await _eligible_top(db, await _month_shares(db, month), month, top_n(cents))
     split = _split(cents, shares, max_share())
     now = _utcnow()
     held = HOLD_DAYS > 0
@@ -672,6 +786,7 @@ async def summary(db, user: ObjectId) -> dict:
         "days_needed": QUALIFY_DAYS,
         "boost": {"min_points": MIN_BOOST, "viewers_per_point": VIEWERS_PER_POINT, "days": BOOST_DAYS},
         "earnings": await _earnings(db, user),
+        "creator_status": await creator_status(db, user, _utcnow()),
         "history": [{"kind": h.get("kind"), "state": h.get("state"), "amount": h.get("amount"),
                      "month": h.get("month"), "video_id": str(h["video_id"]) if h.get("video_id") else None,
                      "at": h.get("at")} for h in hist],

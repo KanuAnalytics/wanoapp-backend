@@ -28,6 +28,17 @@ class Settings(BaseSettings):
     # than POINTS_MAX_SHARE of a month's pool.
     POINTS_POOL_MAX_USD: float = 5000
     POINTS_MAX_SHARE: float = 0.25
+    # Wano Creators (who can share the cash pool) and real-viewer rules.
+    CREATOR_MIN_AGE: int = 18
+    CREATOR_ACCOUNT_DAYS: int = 30
+    CREATOR_MIN_FOLLOWERS: int = 100
+    CREATOR_MIN_VIEWS_28D: int = 1000
+    CREATOR_MIN_VIEWERS_28D: int = 50
+    CREATOR_STRIKE_DAYS: int = 90
+    POINTS_USD_PER_CREATOR: float = 10
+    POINTS_VIEWER_NEEDS_PHONE: bool = True
+    POINTS_DEVICE_ACCOUNTS: int = 3
+    POINTS_IP_ACCOUNTS: int = 50
 
     # Database
     MONGODB_URI: str

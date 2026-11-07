@@ -791,3 +791,21 @@ Found and fixed (each has an attack test in tests/pressure/test_points_deep.py):
 
 New collections: payout_accounts, points_viewer_daily (TTL). New settings: POINTS_POOL_MAX_USD=5000, POINTS_MAX_SHARE=0.25.
 Whole suite: 642 pass on real MongoDB.
+
+## wano-creators — who gets cash: the top qualifying creators each month
+
+Based on research (TikTok's fixed fund, Spotify's unique-listener rule) and a simulation on the real split code with
+view farms (see the summary shared with Eilmer):
+- **Top N share the pool:** N = pool ÷ $10 (`POINTS_USD_PER_CREATOR`), so 20 creators at $200. Everyone else keeps
+  points for boosts. Ties are broken the same way every time.
+- **Wano Creator (needed for cash), over the 28 days before month end:** 18+ (date of birth), a phone number on the
+  account (verified at sign-up, unique), account 30+ days old, 100+ followers, 1,000+ earning views, 50+ different
+  earning viewers, no copied-post rulings in 90 days. All are settings (`CREATOR_*`). `GET /points/me` returns
+  `creator_status` with each check (have / need), without the birth date.
+- **Only real viewers earn creators points:** accounts with a phone number (`POINTS_VIEWER_NEEDS_PHONE`), at most 3
+  earning accounts per device per day (`POINTS_DEVICE_ACCOUNTS`), and 50 per connection (`POINTS_IP_ACCOUNTS`: mobile
+  networks share IP addresses, so this one is loose). `/watch` passes X-Device-Id and the client IP.
+- Choosing winners among 2,000 locked-in creators where the top 1,980 fail a check: ~4 s on real MongoDB.
+
+New collection: points_device_daily (TTL 2 days). points_viewer_daily now keeps viewer/creator and lives 35 days.
+Whole suite: 666 pass on real MongoDB.

@@ -115,7 +115,8 @@ async def record_impressions(db, video_ids: Iterable[str]) -> None:
         logger.warning("Could not record reach for %d impressions", len(ops))
 
 
-async def record_view(db, video: dict, *, viewer: Optional[str], portion: float) -> None:
+async def record_view(db, video: dict, *, viewer: Optional[str], portion: float,
+                      device: Optional[str] = None, ip: Optional[str] = None) -> None:
     """A counted view (once per viewer per video, see trending.count_view_once)."""
     creator = video.get("creator_id")
     if viewer and creator is not None and str(viewer) == str(creator):
@@ -132,7 +133,7 @@ async def record_view(db, video: dict, *, viewer: Optional[str], portion: float)
             # Per post per day, for Wano points (points.py).
             day = _day(_now())
             from app.services import points
-            earns = await points.view_earns(db, video, viewer, _now())
+            earns = await points.view_earns(db, video, viewer, _now(), device=device, ip=ip)
             incs = {"views": 1, "finished": finished}
             if earns:
                 incs.update(pviews=1, pfinished=finished)

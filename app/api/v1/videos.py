@@ -694,7 +694,8 @@ async def track_video_watch(
         await metrics_buffer.increment_view(video_id)
         await trending.record_watch(db, video_id, logged_in=bool(current_user), portion=body.portion,
                                     viewer=current_user, creator=video.get("creator_id"))
-        await creators.record_view(db, video, viewer=current_user, portion=body.portion)
+        await creators.record_view(db, video, viewer=current_user, portion=body.portion,
+                                   device=x_device_id, ip=_client_ip(request))
         buffered = await metrics_buffer.get_buffered_counts(video_id)
         total_views = video.get("views_count", 0) + buffered["views"]
         await notify_view_milestones(db, video, video_id, total_views, background_tasks)
