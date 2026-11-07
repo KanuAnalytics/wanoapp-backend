@@ -768,3 +768,26 @@ Tests: tests/pressure/test_engagement.py (19 attacks, two rounds). Whole suite: 
 - `POINTS_PAYOUT_ENABLED` / `POINTS_PAYOUT_MIN` are gone.
 
 Tests: tests/pressure/test_points_pool.py (13 attacks, two rounds). Whole suite: 613 pass on real MongoDB.
+
+## points-hardening — deep pressure test of points and cash (2 rounds)
+
+Found and fixed (each has an attack test in tests/pressure/test_points_deep.py):
+- **Fake views:** logged-out views, and views from accounts under 7 days old, no longer earn points (they still count
+  as views). New `pviews`/`pfinished` on post_daily; settling uses only those. Older post_daily rows have none, so
+  earning starts from deploy.
+- **Rewatch / binge farming:** one viewer gives one creator at most 3 earning views a day (atomic counter; held up to
+  12 views fired at once).
+- **Boost money printer:** 1 point bought 1 viewer who could earn 2 back. Paid For You slots are now labelled
+  `source: "boost"` and those viewers earn nothing.
+- **One creator draining the pool:** nobody gets more than 25% of a month's pool (`POINTS_MAX_SHARE`); what's left
+  stays with Wano. 300 random splits: never above the pool or the cap, more points never means less cash.
+- **Pool typos:** a pool above $5,000 (`POINTS_POOL_MAX_USD`) needs `"confirm": true`.
+- **Copied content found late:** new cash is on hold for 14 days; a not-original ruling in that time takes that post's
+  part back (safe when several rulings land at once; found by the real-MongoDB run). After the hold, only points go.
+- **Deleted/hidden posts:** their pending points don't lock in at month end.
+- **Payouts:** a payout account is required (`PUT /points/payout-account`: mobile_money, pix or bank); the request keeps
+  a copy, so changing the account later can't redirect it. Admins see creators who share a payout number (written in
+  any format) or Pix key. Banned creators can't cash out. The number is never shown back in full to the creator.
+
+New collections: payout_accounts, points_viewer_daily (TTL). New settings: POINTS_POOL_MAX_USD=5000, POINTS_MAX_SHARE=0.25.
+Whole suite: 642 pass on real MongoDB.

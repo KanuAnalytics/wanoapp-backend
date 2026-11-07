@@ -26,6 +26,20 @@ class CategoryRequest(BaseModel):
     category: Category
 
 
+class PoolIn(BaseModel):
+    revenue_usd: Optional[float] = Field(None, ge=0, le=100_000_000)
+    percent: Optional[float] = Field(None, ge=0, le=100)
+    floor_usd: Optional[float] = Field(None, ge=0, le=1_000_000)
+    # Needed when the resulting pool is above POINTS_POOL_MAX_USD (typo guard).
+    confirm: bool = False
+
+
+class PayoutAccountIn(BaseModel):
+    method: Literal["mobile_money", "pix", "bank"]
+    account: str = Field(..., min_length=3, max_length=80)
+    country: str = Field(..., pattern=r"^[A-Za-z]{2}$")
+
+
 def _oid(v: str, what: str = "ID") -> ObjectId:
     if not ObjectId.is_valid(v):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid {what}")
@@ -69,6 +83,13 @@ async def boost(body: BoostRequest, current_user: str = Depends(get_current_acti
                                    body.points))
 
 
+@router.put("/payout-account")
+async def set_payout_account(body: PayoutAccountIn, current_user: str = Depends(get_current_active_user)):
+    """Where to send the creator's money: mobile money number, Pix key, or bank account."""
+    return await _run(points.set_payout_account(get_database(), ObjectId(current_user), body.method,
+                                                body.account, body.country))
+
+
 @router.post("/payouts")
 async def request_payout(current_user: str = Depends(get_current_active_user)):
     return await _run(points.request_payout(get_database(), ObjectId(current_user)))
@@ -76,20 +97,27 @@ async def request_payout(current_user: str = Depends(get_current_active_user)):
 
 @router.get("/admin/payouts")
 async def payouts_to_review(limit: int = Query(100, ge=1, le=500), admin: str = Depends(require_admin)):
+    """Requests waiting for a decision. shared_account_with lists other creators
+    paying to the same number or key (often one person with several accounts)."""
     db = get_database()
     rows = await db.points_payouts.find({"state": "requested"}).sort("at", 1).limit(limit).to_list(limit)
     users = {u["_id"]: u async for u in db.users.find({"_id": {"$in": [r["user_id"] for r in rows]}},
-                                                      {"username": 1, "display_name": 1, "phone_number": 1})}
-    return [{"id": str(r["_id"]), "usd": r.get("cents", 0) / 100, "requested_at": r["at"],
-             "user": {"id": str(r["user_id"]), "username": users.get(r["user_id"], {}).get("username"),
-                      "display_name": users.get(r["user_id"], {}).get("display_name"),
-                      "phone_number": users.get(r["user_id"], {}).get("phone_number")}} for r in rows]
-
-
-class PoolIn(BaseModel):
-    revenue_usd: Optional[float] = Field(None, ge=0, le=10_000_000)
-    percent: Optional[float] = Field(None, ge=0, le=100)
-    floor_usd: Optional[float] = Field(None, ge=0, le=1_000_000)
+                                                      {"username": 1, "display_name": 1, "phone_number": 1,
+                                                       "is_active": 1})}
+    out = []
+    for r in rows:
+        acct = r.get("payout_account") or {}
+        others = []
+        if acct.get("account"):
+            others = [str(x["_id"]) async for x in db.payout_accounts.find(
+                {"method": acct.get("method"), "account": acct["account"], "_id": {"$ne": r["user_id"]}}, {"_id": 1})]
+        u = users.get(r["user_id"], {})
+        out.append({"id": str(r["_id"]), "usd": r.get("cents", 0) / 100, "requested_at": r["at"],
+                    "payout_account": acct, "shared_account_with": others,
+                    "user": {"id": str(r["user_id"]), "username": u.get("username"),
+                             "display_name": u.get("display_name"), "phone_number": u.get("phone_number"),
+                             "account_active": u.get("is_active") is True}})
+    return out
 
 
 Month = Path(..., pattern=r"^20\d\d-(0[1-9]|1[0-2])$")
@@ -104,7 +132,8 @@ async def pool(current_user=Depends(get_optional_active_user)):
 @router.put("/admin/pool/{month}")
 async def set_pool(body: PoolIn, month: str = Month, admin: str = Depends(require_admin)):
     """Enter the month's revenue (and optionally change the % or the floor)."""
-    return await _run(points.set_pool(get_database(), month, **body.model_dump()))
+    data = body.model_dump()
+    return await _run(points.set_pool(get_database(), month, confirm=data.pop("confirm"), **data))
 
 
 @router.get("/admin/pool/{month}")

@@ -35,6 +35,7 @@ checks), points_ledger (history; earned rows carry their state), points_days
 
 import logging
 import math
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
@@ -68,6 +69,20 @@ MAX_BOOST = 100_000
 VIEWERS_PER_POINT = 1
 BOOST_DAYS = 3
 
+# Who can earn a creator points (anti-farming). A view earns only when the
+# viewer is signed in to an account at least VIEWER_MIN_AGE_DAYS old, didn't
+# reach the post through a paid boost, and has given this creator fewer than
+# VIEWER_DAILY_CAP earning views today.
+VIEWER_MIN_AGE_DAYS = 7
+VIEWER_DAILY_CAP = 3
+
+# The cash pool: no creator gets more than MAX_SHARE of a month's pool (the
+# rest stays with Wano); new cash waits HOLD_DAYS before it can be paid out,
+# so a copied post found in that time loses its cash.
+MAX_SHARE = 0.25
+HOLD_DAYS = 14
+PAYOUT_METHODS = ("mobile_money", "pix", "bank")
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -87,6 +102,14 @@ def pool_defaults() -> dict:
     return {"floor_usd": float(getattr(settings, "POINTS_POOL_FLOOR_USD", 200)),
             "percent": float(getattr(settings, "POINTS_POOL_PERCENT", 20)),
             "revenue_usd": 0.0}
+
+
+def pool_max_usd() -> float:
+    return float(getattr(settings, "POINTS_POOL_MAX_USD", 5000) or 5000)
+
+
+def max_share() -> float:
+    return float(getattr(settings, "POINTS_MAX_SHARE", MAX_SHARE) or MAX_SHARE)
 
 
 def cash_minimum_cents() -> int:
@@ -141,6 +164,33 @@ async def grant(db, user: ObjectId, amount: int, reason: str) -> None:
     await _wallet(db, user, amount)
 
 
+# ---------------------------------------------------------------- who can earn
+
+async def view_earns(db, video: dict, viewer, now: datetime) -> bool:
+    """Whether a counted view (already once per viewer per video, never the
+    creator's own) also earns the creator points. Never raises."""
+    try:
+        if not viewer or not ObjectId.is_valid(str(viewer)):
+            return False
+        creator = video.get("creator_id")
+        u = await db.users.find_one({"_id": ObjectId(str(viewer)), "is_active": True}, {"created_at": 1})
+        created = (u or {}).get("created_at")
+        if not isinstance(created, datetime) or _naive(created) > _naive(now) - timedelta(days=VIEWER_MIN_AGE_DAYS):
+            return False
+        if await db.feed_impressions.find_one({"viewer": str(viewer), "video_id": video.get("_id"), "source": "boost"},
+                                              {"_id": 1}):
+            return False
+        day = _naive(now).strftime("%Y%m%d")
+        row = await db.points_viewer_daily.find_one_and_update(
+            {"_id": f"{viewer}:{creator}:{day}"},
+            {"$inc": {"n": 1}, "$setOnInsert": {"at": _naive(now)}},
+            upsert=True, return_document=ReturnDocument.AFTER)
+        return (row or {}).get("n", 1) <= VIEWER_DAILY_CAP
+    except Exception:
+        logger.exception("Could not check whether a view earns points")
+        return False
+
+
 # ---------------------------------------------------------------- settling
 
 async def settle_day(db, day: datetime) -> int:
@@ -171,7 +221,8 @@ async def settle_day(db, day: datetime) -> int:
             v = ok.get(r.get("video_id"))
             if not v or v["_id"] in bad or v.get("creator_id") != r.get("creator_id"):
                 continue
-            amount = _num(r.get("views")) * PER_VIEW + _num(r.get("finished")) * PER_FINISH
+            # Earning views only (see view_earns); plain views stay for stats.
+            amount = _num(r.get("pviews")) * PER_VIEW + _num(r.get("pfinished")) * PER_FINISH
             if amount > 0:
                 per.setdefault(v["creator_id"], []).append((amount, v["_id"]))
         now = _utcnow()
@@ -210,7 +261,16 @@ async def close_month(db, month: str) -> int:
     for u in users:
         days = await db.points_days.count_documents({"user_id": u, "month": month})
         rows = await db.points_ledger.find({"user_id": u, "kind": "earned", "state": "pending", "month": month},
-                                           {"amount": 1}).to_list(None)
+                                           {"amount": 1, "video_id": 1}).to_list(None)
+        # Posts deleted, hidden, held or reported as copies since don't lock in.
+        vids = list({r.get("video_id") for r in rows if isinstance(r.get("video_id"), ObjectId)})
+        still = {v["_id"] for v in await db.videos.find({**qualifying(), "_id": {"$in": vids}}, {"_id": 1}).to_list(None)}
+        still -= await _copy_reported(db, list(still))
+        dropped = [r["_id"] for r in rows if r.get("video_id") not in still]
+        if dropped:
+            await db.points_ledger.update_many({"_id": {"$in": dropped}, "state": "pending"},
+                                               {"$set": {"state": "expired", "reason": "post no longer qualifies"}})
+        rows = [r for r in rows if r.get("video_id") in still]
         total = sum(_num(r.get("amount")) for r in rows)
         keep = days >= QUALIFY_DAYS
         # The summary row is the once-only guard for this user and month.
@@ -269,6 +329,7 @@ async def settle(db) -> dict:
         out["months"] += await close_month(db, month_of(prev))
     out["boosts"] = await end_boosts(db)
     out["pools"] = await auto_distribute(db)
+    out["released"] = await release_held(db)
     return out
 
 
@@ -327,11 +388,15 @@ async def _pool_cfg(db, month: str) -> dict:
     return {**cfg, "state": doc.get("state", "open")}
 
 
-async def set_pool(db, month: str, **changes) -> dict:
+async def set_pool(db, month: str, confirm: bool = False, **changes) -> dict:
     cur = await db.points_pool.find_one({"_id": month})
     if cur and cur.get("state") != "open":
         raise PointsError(409, "This month's pool was already shared out")
     sets = {k: float(v) for k, v in changes.items() if v is not None}
+    after = {**(await _pool_cfg(db, month)), **sets}
+    if _pool_cents(after) > pool_max_usd() * 100 and not confirm:
+        raise PointsError(400, f"That makes a pool of ${_pool_cents(after) / 100:,.2f}, over ${pool_max_usd():,.0f}. "
+                               "Check the numbers and send confirm: true if it's right.")
     try:
         await db.points_pool.update_one({"_id": month, "state": {"$in": ["open", None]}},
                                         {"$set": sets, "$setOnInsert": {"state": "open"}}, upsert=True)
@@ -356,15 +421,35 @@ async def _month_shares(db, month: str) -> Dict[ObjectId, int]:
     return out
 
 
-def _split(cents: int, shares: Dict[ObjectId, int]) -> Dict[ObjectId, int]:
-    total = sum(shares.values())
-    if not total or cents <= 0:
+def _split(cents: int, shares: Dict[ObjectId, int], share_cap: Optional[float] = None) -> Dict[ObjectId, int]:
+    """Cents per creator, proportional to points, nobody above share_cap of the
+    pool (what the cap frees goes to the others, up to their own cap; anything
+    left stays unpaid). Always whole cents, never more than the pool."""
+    shares = {u: p for u, p in shares.items() if p > 0}
+    if not shares or cents <= 0:
         return {}
-    base = {u: cents * p // total for u, p in shares.items()}
-    left = cents - sum(base.values())
-    for u in sorted(shares, key=lambda u: (-((cents * shares[u]) % total), str(u)))[:left]:
-        base[u] += 1
-    return base
+    cap = int(cents * share_cap) if share_cap and share_cap < 1 else cents
+    out: Dict[ObjectId, int] = {}
+    left, active = cents, dict(shares)
+    while active:
+        total = sum(active.values())
+        over = [u for u, p in active.items() if left * p / total > cap]
+        if not over:
+            break
+        for u in over:
+            out[u] = cap
+            left -= cap
+            del active[u]
+        if left <= 0:
+            return out
+    if active:
+        total = sum(active.values())
+        base = {u: left * p // total for u, p in active.items()}
+        rem = left - sum(base.values())
+        for u in sorted(active, key=lambda u: (-((left * active[u]) % total), str(u)))[:rem]:
+            base[u] += 1
+        out.update(base)
+    return out
 
 
 async def pool_preview(db, month: str) -> dict:
@@ -372,7 +457,7 @@ async def pool_preview(db, month: str) -> dict:
     shares = await _month_shares(db, month)
     total = sum(shares.values())
     cents = _pool_cents(cfg)
-    split = _split(cents, shares)
+    split = _split(cents, shares, max_share())
     top = sorted(split.items(), key=lambda t: -t[1])[:20]
     return {"month": month, "state": cfg["state"], "floor_usd": cfg["floor_usd"], "percent": cfg["percent"],
             "revenue_usd": cfg["revenue_usd"], "pool_usd": cents / 100, "total_points": total,
@@ -399,24 +484,48 @@ async def distribute(db, month: str) -> dict:
     if claimed is not None and claimed.get("state") == "distributed":
         raise PointsError(409, "Already shared out")
     shares = await _month_shares(db, month)
-    split = _split(cents, shares)
+    split = _split(cents, shares, max_share())
     now = _utcnow()
+    held = HOLD_DAYS > 0
     paid = 0
     for u, c in split.items():
         if c <= 0:
             continue
         try:
-            await db.creator_earnings.insert_one({"_id": f"share:{u}:{month}", "user_id": u, "month": month,
-                                                  "points": shares[u], "cents": c, "at": _naive(now)})
+            await db.creator_earnings.insert_one({
+                "_id": f"share:{u}:{month}", "user_id": u, "month": month, "points": shares[u], "cents": c,
+                "orig_points": shares[u], "orig_cents": c,
+                "state": "held" if held else "available", "at": _naive(now),
+                "available_at": _naive(now) + timedelta(days=HOLD_DAYS)})
         except DuplicateKeyError:
             continue
-        await db.earnings_wallet.update_one({"_id": u}, {"$inc": {"cents": c}}, upsert=True)
+        await db.earnings_wallet.update_one({"_id": u}, {"$inc": {"held_cents" if held else "cents": c}}, upsert=True)
         paid += c
     total = sum(shares.values())
     await db.points_pool.update_one({"_id": month}, {"$set": {"total_points": total, "paid_cents": paid,
-                                                              "creators": len(split)}})
+                                                              "kept_cents": cents - paid, "creators": len(split)}})
     return {"month": month, "pool_usd": cents / 100, "total_points": total, "creators": len(split),
-            "paid_usd": paid / 100}
+            "paid_usd": paid / 100, "kept_usd": (cents - paid) / 100}
+
+
+async def release_held(db) -> int:
+    """Move cash whose hold is over to the spendable balance (once each)."""
+    now = _naive(_utcnow())
+    n = 0
+    async for row in db.creator_earnings.find({"state": "held", "available_at": {"$lte": now}}, {"_id": 1}):
+        r = await db.creator_earnings.find_one_and_update({"_id": row["_id"], "state": "held"},
+                                                          {"$set": {"state": "available", "released_at": now}})
+        if r and _num(r.get("cents")) > 0:
+            await db.earnings_wallet.update_one({"_id": r["user_id"]},
+                                                {"$inc": {"held_cents": -_num(r["cents"]), "cents": _num(r["cents"])}},
+                                                upsert=True)
+            n += 1
+    return n
+
+
+async def _credit_cash(db, user: ObjectId, cents: int) -> None:
+    """Admin / tests: add cash that can be paid out now."""
+    await db.earnings_wallet.update_one({"_id": user}, {"$inc": {"cents": int(cents)}}, upsert=True)
 
 
 async def auto_distribute(db) -> int:
@@ -434,7 +543,46 @@ async def auto_distribute(db) -> int:
         return 0
 
 
+_ACCOUNT_RULES = {
+    "mobile_money": re.compile(r"^\d{8,15}$"),
+    "pix": re.compile(r"^[A-Za-z0-9@._+\-]{3,80}$"),
+    "bank": re.compile(r"^[A-Za-z0-9\-]{6,40}$"),
+}
+
+
+def normalize_account(method: str, account: str) -> Optional[str]:
+    if method not in _ACCOUNT_RULES or not isinstance(account, str):
+        return None
+    a = account.strip()
+    if method == "mobile_money":
+        # Digits only, so "+256 700 000 001" and "256-700-000-001" are the same number.
+        a = re.sub(r"\D", "", a) if re.fullmatch(r"[\d\s\-+().]+", a) else a
+    elif method == "bank":
+        a = re.sub(r"[\s\-]", "", a).upper()
+    if method == "pix":
+        a = a.lower() if "@" in a else a
+    return a if _ACCOUNT_RULES[method].match(a) else None
+
+
+def _hint(account: str) -> str:
+    return "•••• " + account[-4:] if len(account) > 4 else "••••"
+
+
+async def set_payout_account(db, user: ObjectId, method: str, account: str, country: str) -> dict:
+    a = normalize_account(method, account)
+    if not a or not isinstance(country, str) or not re.fullmatch(r"[A-Za-z]{2}", country):
+        raise PointsError(422, "Check the payout method, number and country")
+    await db.payout_accounts.update_one({"_id": user}, {"$set": {
+        "method": method, "account": a, "country": country.lower(), "updated_at": _naive(_utcnow())}}, upsert=True)
+    return {"method": method, "country": country.lower(), "account_hint": _hint(a)}
+
+
 async def request_payout(db, user: ObjectId) -> dict:
+    if not await db.users.find_one({"_id": user, "is_active": True}, {"_id": 1}):
+        raise PointsError(403, "This account can't request payouts")
+    acct = await db.payout_accounts.find_one({"_id": user})
+    if not acct:
+        raise PointsError(400, "Add where we should send your money first")
     w = await db.earnings_wallet.find_one({"_id": user}) or {}
     cents = w.get("cents") if isinstance(w.get("cents"), int) else 0
     if cents < cash_minimum_cents():
@@ -443,7 +591,8 @@ async def request_payout(db, user: ObjectId) -> dict:
         raise PointsError(409, "Your balance changed, try again")
     pid = ObjectId()
     await db.points_payouts.insert_one({"_id": pid, "user_id": user, "cents": cents, "state": "requested",
-                                        "at": _naive(_utcnow())})
+                                        "at": _naive(_utcnow()),
+                                        "payout_account": {k: acct.get(k) for k in ("method", "account", "country")}})
     return {"id": str(pid), "usd": cents / 100, "state": "requested"}
 
 
@@ -474,7 +623,36 @@ async def not_original(db, video_id: ObjectId, admin: str) -> dict:
             await _wallet(db, before["user_id"], -_num(before.get("amount")))
         if before:
             removed += _num(before.get("amount"))
+            if before["state"] == "locked" and before.get("month"):
+                await _claw_back(db, before["user_id"], before["month"], _num(before.get("amount")))
     return {"video_id": str(video_id), "points_removed": removed}
+
+
+async def _claw_back(db, user: ObjectId, month: str, points_removed: int) -> None:
+    """A post of that month lost its points while the month's cash is on hold:
+    take its part of the cash back (it stays with Wano). Each ruling's part is
+    worked out from the original share, so rulings landing at the same time
+    add up the same in any order; the write retries until it applies."""
+    if points_removed <= 0:
+        return
+    for _ in range(25):
+        row = await db.creator_earnings.find_one({"_id": f"share:{user}:{month}", "state": "held"})
+        if not row:
+            return
+        orig_c = _num(row.get("orig_cents", row.get("cents")))
+        orig_p = _num(row.get("orig_points", row.get("points")))
+        if orig_p <= 0 or _num(row.get("cents")) <= 0:
+            return
+        take = min(_num(row["cents"]), -(-orig_c * points_removed // orig_p))
+        done = await db.creator_earnings.find_one_and_update(
+            {"_id": row["_id"], "state": "held", "cents": row["cents"]},
+            {"$inc": {"cents": -take, "points": -min(points_removed, _num(row.get("points"))),
+                      "clawed_back_cents": take},
+             "$set": {"orig_cents": orig_c, "orig_points": orig_p}})
+        if done:
+            await db.earnings_wallet.update_one({"_id": user}, {"$inc": {"held_cents": -take}})
+            return
+    logger.error("Could not claw back cash for %s %s after retries", user, month)
 
 
 # ---------------------------------------------------------------- reading
@@ -503,9 +681,16 @@ async def summary(db, user: ObjectId) -> dict:
 async def _earnings(db, user: ObjectId) -> dict:
     w = await db.earnings_wallet.find_one({"_id": user}) or {}
     cents = w.get("cents") if isinstance(w.get("cents"), int) else 0
+    held = w.get("held_cents") if isinstance(w.get("held_cents"), int) else 0
     last = await db.creator_earnings.find_one({"user_id": user}, sort=[("month", -1)])
-    return {"cash_usd": cents / 100, "payout_minimum_usd": cash_minimum_cents() / 100,
-            "can_request_payout": cents >= cash_minimum_cents(),
+    acct = await db.payout_accounts.find_one({"_id": user})
+    nxt = await db.creator_earnings.find_one({"user_id": user, "state": "held"}, sort=[("available_at", 1)])
+    return {"cash_usd": cents / 100, "held_usd": max(0, held) / 100,
+            "held_until": nxt.get("available_at") if nxt else None,
+            "payout_minimum_usd": cash_minimum_cents() / 100,
+            "can_request_payout": cents >= cash_minimum_cents() and bool(acct),
+            "payout_account": {"method": acct["method"], "country": acct.get("country"),
+                               "account_hint": _hint(acct["account"])} if acct else None,
             "last_share": {"month": last["month"], "points": last["points"], "usd": last["cents"] / 100} if last else None}
 
 

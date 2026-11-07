@@ -131,9 +131,14 @@ async def record_view(db, video: dict, *, viewer: Optional[str], portion: float)
             await _daily(db, creator, views=1, finished=finished, portion_sum=float(portion))
             # Per post per day, for Wano points (points.py).
             day = _day(_now())
+            from app.services import points
+            earns = await points.view_earns(db, video, viewer, _now())
+            incs = {"views": 1, "finished": finished}
+            if earns:
+                incs.update(pviews=1, pfinished=finished)
             await db.post_daily.update_one(
                 {"_id": f"{video['_id']}:{day.date().isoformat()}"},
-                {"$inc": {"views": 1, "finished": finished},
+                {"$inc": incs,
                  "$setOnInsert": {"video_id": video["_id"], "creator_id": creator, "day": day}},
                 upsert=True,
             )

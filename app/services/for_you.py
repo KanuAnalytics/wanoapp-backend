@@ -363,7 +363,8 @@ async def build_page(db, *, viewer: str, current_user: Optional[str], scenario: 
         used.add(vid)
         counts[creator] = counts.get(creator, 0) + 1
         prev = creator
-        page.items.append({"id": vid, "creator_id": creator, "source": s})
+        # Paid points boosts are labelled, so those viewers don't earn the creator points back.
+        page.items.append({"id": vid, "creator_id": creator, "source": "boost" if d.get("stage") == "paid" else s})
 
     return page
 

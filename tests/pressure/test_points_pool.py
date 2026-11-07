@@ -16,6 +16,16 @@ pytestmark = pytest.mark.asyncio
 AFTER_OCT = datetime(2026, 11, 2, 4, 0, tzinfo=timezone.utc)
 
 
+@pytest.fixture(autouse=True)
+def plain_split(monkeypatch, request):
+    """These tests check the split itself; the share cap and the hold have their
+    own attacks in test_points_deep.py."""
+    if request.module.__name__.endswith("test_points_pool"):
+        from app.services import points
+        monkeypatch.setattr(points, "max_share", lambda: 1.0)
+        monkeypatch.setattr(points, "HOLD_DAYS", 0)
+
+
 async def _close_october(db, clock, creators):
     """creators: {user_id: views_per_day} each posting 20 days in October."""
     from app.services import points
@@ -118,6 +128,9 @@ async def test_PL8_cash_payout_minimum_and_review(client, db, clock):
     poor, ph = await make_user(db)
     await _close_october(db, clock, {rich: 99, poor: 1})               # $198 and $2
     await points.distribute(db, "2026-10")
+    for hh in (rh, ph):
+        await client.put("/api/v1/points/payout-account", headers=hh,
+                         json={"method": "mobile_money", "account": "+256700000001", "country": "ug"})
     assert (await client.post("/api/v1/points/payouts", headers=ph)).status_code == 400   # under $5
     rs = await asyncio.gather(*[client.post("/api/v1/points/payouts", headers=rh) for _ in range(4)])
     ok = [r for r in rs if r.status_code == 200]
@@ -150,6 +163,8 @@ async def test_PL10_my_page_shows_cash_and_last_share(client, db, clock):
     a, h = await make_user(db)
     await _close_october(db, clock, {a: 10})
     await points.distribute(db, "2026-10")
+    await client.put("/api/v1/points/payout-account", headers=h,
+                     json={"method": "pix", "account": "creator@example.com", "country": "br"})
     e = (await client.get("/api/v1/points/me", headers=h)).json()["earnings"]
     assert e["cash_usd"] == 200 and e["last_share"] == {"month": "2026-10", "points": 200, "usd": 200}
     assert e["payout_minimum_usd"] == 5 and e["can_request_payout"] is True

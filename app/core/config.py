@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     POINTS_POOL_FLOOR_USD: float = 200
     POINTS_POOL_PERCENT: float = 20
     POINTS_CASH_MIN_USD: float = 5
+    # A pool above this needs confirm: true (typo guard); no creator gets more
+    # than POINTS_MAX_SHARE of a month's pool.
+    POINTS_POOL_MAX_USD: float = 5000
+    POINTS_MAX_SHARE: float = 0.25
 
     # Database
     MONGODB_URI: str

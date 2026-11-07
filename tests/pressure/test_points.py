@@ -32,7 +32,7 @@ async def _post(db, c, day=D, hour=9, category="comedy", **extra):
 async def _views(db, vid, creator, day=D, views=0, finished=0):
     await db.post_daily.update_one(
         {"_id": f"{vid}:{day.date().isoformat()}"},
-        {"$inc": {"views": views, "finished": finished},
+        {"$inc": {"views": views, "finished": finished, "pviews": views, "pfinished": finished},
          "$setOnInsert": {"video_id": ObjectId(vid), "creator_id": ObjectId(creator), "day": day}},
         upsert=True)
 
@@ -377,7 +377,7 @@ async def test_R5_settling_a_busy_day_is_quick(client, db, clock):
                                           "isReadyToStream": True, "category": "comedy",
                                           "created_at": D + timedelta(hours=10)} for u in users])).inserted_ids
     await db.post_daily.insert_many([{"_id": f"{v}:{D.date()}", "video_id": v, "creator_id": u, "day": D,
-                                      "views": 7, "finished": 1} for v, u in zip(vids, users)])
+                                      "views": 7, "finished": 1, "pviews": 7, "pfinished": 1} for v, u in zip(vids, users)])
     t0 = time.perf_counter()
     await points.settle(db)
     assert time.perf_counter() - t0 < 10
