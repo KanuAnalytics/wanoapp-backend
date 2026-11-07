@@ -387,3 +387,16 @@ async def test_R9_admin_pool_preview_pays_what_distribute_pays(client, db, monke
         assert w["cents"] == round(t["usd"] * 100)
     # 3 creators and a 25% cap: $150 paid, $50 stays with Wano, and the page says so
     assert sum(t["usd"] for t in prev["top"]) == 150 and prev["kept_usd"] == 50
+
+
+async def test_R10_admin_session_really_ends(client, db):
+    """App logins never expire on the live code; an admin session must, even so."""
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    from jose import jwt
+    from app.core.config import settings
+    await make_user(db, username="boss9", user_type="admin", password_hash=get_password_hash("pw-12345678"))
+    tok = (await client.post(f"{A}/login", json={"username": "boss9", "password": "pw-12345678"})).json()["access_token"]
+    claims = jwt.decode(tok, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+    old = jwt.encode({**claims, "exp": int((_dt.now(_tz.utc) - _td(minutes=1)).timestamp())},
+                     settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    assert (await client.get(f"{A}/me", headers={"Authorization": f"Bearer {old}"})).status_code == 401

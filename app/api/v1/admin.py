@@ -5,7 +5,7 @@ use the existing /points/admin/* endpoints; challenges are created with
 POST /challenges; moderation uses /reports/admin/*."""
 
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
 
 from bson import ObjectId
@@ -51,7 +51,10 @@ async def login(body: LoginIn, request: Request):
         auth_api._record_login_failure(key)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Wrong username or password, or not an admin account")
     auth_api._clear_login_failures(key)
-    token = create_access_token({"sub": str(user["_id"])}, expires_delta=timedelta(hours=SESSION_HOURS))
+    # The exp claim is set here, not via expires_delta: app logins don't expire
+    # (create_access_token ignores expires_delta), but an admin session must.
+    exp = int((datetime.now(timezone.utc) + timedelta(hours=SESSION_HOURS)).timestamp())
+    token = create_access_token({"sub": str(user["_id"]), "exp": exp})
     return {"access_token": token, "username": user["username"], "expires_in": SESSION_HOURS * 3600}
 
 
