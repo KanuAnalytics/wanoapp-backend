@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.api.deps import get_optional_active_user, require_admin
 from app.core.database import get_database
+from app.services import admin_log
 from app.services import challenges as svc
 
 router = APIRouter()
@@ -47,6 +48,7 @@ async def create(body: ChallengeIn, admin: str = Depends(require_admin)):
            "starts_at": svc._naive(body.starts_at), "ends_at": svc._naive(body.ends_at),
            "prize_points": body.prize_points, "created_by": ObjectId(admin), "created_at": datetime.utcnow()}
     doc["_id"] = (await db.challenges.insert_one(doc)).inserted_id
+    await admin_log.record(db, admin, "challenge_create", {"id": str(doc["_id"]), "hashtag": doc["hashtag"]})
     return svc.public(doc, svc._utcnow())
 
 

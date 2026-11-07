@@ -8,6 +8,7 @@ from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from pydantic import BaseModel, Field
 
+from app.services import admin_log
 from app.api.deps import get_current_active_user, get_optional_active_user, require_admin
 from app.core.database import get_database
 from app.services import points
@@ -133,26 +134,50 @@ async def pool(current_user=Depends(get_optional_active_user)):
 async def set_pool(body: PoolIn, month: str = Month, admin: str = Depends(require_admin)):
     """Enter the month's revenue (and optionally change the % or the floor)."""
     data = body.model_dump()
-    return await _run(points.set_pool(get_database(), month, confirm=data.pop("confirm"), **data))
+    out = await _run(points.set_pool(get_database(), month, confirm=data.pop("confirm"), **data))
+    await admin_log.record(get_database(), admin, "pool", {"month": month, **{k: v for k, v in data.items() if v is not None},
+                                                           "pool_usd": out.get("pool_usd")})
+    return out
 
 
 @router.get("/admin/pool/{month}")
 async def preview_pool(month: str = Month, admin: str = Depends(require_admin)):
-    return await points.pool_preview(get_database(), month)
+    """What sharing out would pay now: only the top N Wano Creators, with names."""
+    db = get_database()
+    out = await points.pool_preview(db, month, as_paid=True)
+    ids = [ObjectId(t["user_id"]) for t in out["top"]]
+    names = {str(u["_id"]): u.get("username") async for u in db.users.find({"_id": {"$in": ids}}, {"username": 1})}
+    for t in out["top"]:
+        t["username"] = names.get(t["user_id"])
+    return out
 
 
 @router.post("/admin/pool/{month}/distribute")
 async def distribute_pool(month: str = Month, admin: str = Depends(require_admin)):
     """Share the pool out now (otherwise it happens on the 5th)."""
-    return await _run(points.distribute(get_database(), month))
+    out = await _run(points.distribute(get_database(), month))
+    await admin_log.record(get_database(), admin, "distribute", {"month": month, "paid_usd": out.get("paid_usd"),
+                                                                 "creators": out.get("creators")})
+    return out
 
 
 @router.post("/admin/payouts/{payout_id}/{decision}")
 async def decide(payout_id: str, decision: Literal["approve", "reject"], admin: str = Depends(require_admin)):
     """Approve once the creator has been paid outside Wano; reject returns the points."""
-    return await _run(points.decide_payout(get_database(), _oid(payout_id), decision == "approve", admin))
+    out = await _run(points.decide_payout(get_database(), _oid(payout_id), decision == "approve", admin))
+    await admin_log.record(get_database(), admin, "payout_" + decision, {"id": payout_id, "usd": out.get("usd")})
+    return out
 
 
 @router.post("/admin/videos/{video_id}/not-original")
 async def mark_not_original(video_id: str, admin: str = Depends(require_admin)):
-    return await _run(points.not_original(get_database(), _oid(video_id, "video ID"), admin))
+    out = await _run(points.not_original(get_database(), _oid(video_id, "video ID"), admin))
+    await admin_log.record(get_database(), admin, "not_original", {"video_id": video_id})
+    return out
+
+
+@router.post("/admin/videos/{video_id}/original-again")
+async def mark_original_again(video_id: str, admin: str = Depends(require_admin)):
+    out = await _run(points.original_again(get_database(), _oid(video_id, "video ID"), admin))
+    await admin_log.record(get_database(), admin, "original_again", {"video_id": video_id})
+    return out

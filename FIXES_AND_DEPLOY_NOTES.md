@@ -809,3 +809,30 @@ view farms (see the summary shared with Eilmer):
 
 New collection: points_device_daily (TTL 2 days). points_viewer_daily now keeps viewer/creator and lives 35 days.
 Whole suite: 666 pass on real MongoDB.
+
+## admin-panel — an admin web page at /admin (so day-to-day running needs no developer)
+
+Open `https://<backend>/admin` and log in with an admin account (`user_type: "admin"`). Pages:
+- **Overview:** payouts to send, reported posts, this month's pool, live challenges, features on.
+- **Payouts:** waiting / paid / rejected. Shows the full mobile money number or Pix key to send to, warns about
+  shared accounts and banned creators. "Mark as paid" (after sending the money) or "Reject" (cash goes back).
+- **Cash pool:** pick a month, enter revenue / % / floor (big pools ask for confirmation), see exactly who would be
+  paid (top N Wano Creators, with names, and what stays with Wano), "Share out now" (otherwise automatic on the 5th).
+- **Creators:** look up by username, ID or post link: the Wano Creator checklist, points, cash, payout account, recent
+  posts with "Not original" and a new **Undo** (`POST /points/admin/videos/{id}/original-again`: clears the strike;
+  points already removed stay removed).
+- **Reported posts:** the moderation queue with Restore / Remove.
+- **Challenges:** create, list, "End now" (an upcoming one is ended properly too).
+- **Feature switches:** every app switch with an on/off toggle, plus "Turn everything off". Boost and Cash earnings
+  need Wano points on (turning points off turns them off); Play Wano TV films needs Wano TV series. Switches are
+  written into the existing config document the app reads, so the version check (`/config/version`) is untouched.
+- **Activity log:** every admin action, who and when (`admin_log` collection).
+
+Security: separate admin login (`POST /admin/login`, admins only, 8-hour session, same failed-login lockout, kept
+separate so failed admin logins can't lock someone's app login); the session is per tab (sessionStorage). The page
+is three fixed files with a strict Content-Security-Policy (no inline scripts), no framing, no caching, noindex;
+everything is put on the page as text, so names like `<script>` show as text (checked in a real browser).
+
+New endpoints under `/api/v1/admin/*` (all admin-only). New collection: admin_log. Nothing to configure.
+Nasir: make sure Eilmer's account has `user_type: "admin"`.
+Tests: tests/pressure/test_admin_panel.py (31 attacks, 2 rounds) plus a browser click-through.

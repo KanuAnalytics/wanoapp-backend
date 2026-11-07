@@ -12,6 +12,7 @@ from datetime import datetime
 from app.models.report import VideoReport, ReportCreate, ReportResponse
 from app.core.database import get_database
 from app.api.deps import get_current_active_user, require_admin
+from app.services import admin_log
 from app.services import moderation
 from pydantic import BaseModel, Field
 from typing import Literal
@@ -460,5 +461,6 @@ async def moderation_decision(
     if not video:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video not found")
     after = await moderation.decide(db, video, body.action, admin_id, body.note)
+    await admin_log.record(db, admin_id, "moderation_" + body.action, {"video_id": video_id})
     return {"id": video_id, "state": (after.get("moderation") or {}).get("state"),
             "privacy": after.get("privacy"), "is_active": after.get("is_active")}

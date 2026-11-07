@@ -21,7 +21,7 @@ from app.api.v1 import api_router  # This imports the router
 from app.graphql.schema import graphql_app
 from app.services.metrics_service import metrics_buffer
 from app.services.scheduled_publisher import scheduled_publisher
-from app.routes import upload_video, share
+from app.routes import upload_video, share, admin_page
 from app.services import recommendations
 from collections.abc import Mapping
 
@@ -214,6 +214,7 @@ app.include_router(api_router, prefix="/api/v1")
 
 app.include_router(upload_video.router)
 app.include_router(share.router)  # /v/{id} share links, sitemaps, app-link files
+app.include_router(admin_page.router)  # /admin: the admin page
 
 # Include GraphQL endpoint
 app.include_router(graphql_app, prefix="/graphql")

@@ -566,17 +566,25 @@ def _split(cents: int, shares: Dict[ObjectId, int], share_cap: Optional[float] =
     return out
 
 
-async def pool_preview(db, month: str) -> dict:
+async def pool_preview(db, month: str, as_paid: bool = False) -> dict:
+    """as_paid: split only among the top N Wano Creators, the way distribute()
+    will (slower; for the admin page)."""
     cfg = await _pool_cfg(db, month)
     shares = await _month_shares(db, month)
     total = sum(shares.values())
     cents = _pool_cents(cfg)
+    out = {"month": month, "state": cfg["state"], "floor_usd": cfg["floor_usd"], "percent": cfg["percent"],
+           "revenue_usd": cfg["revenue_usd"], "pool_usd": cents / 100, "total_points": total,
+           "usd_per_1000_points": round(cents / total * 10, 4) if total else None, "creators": len(shares)}
+    if as_paid:
+        shares = await _eligible_top(db, shares, month, top_n(cents))
+        out.update({"top_n": top_n(cents), "wano_creators": len(shares)})
     split = _split(cents, shares, max_share())
     top = sorted(split.items(), key=lambda t: -t[1])[:20]
-    return {"month": month, "state": cfg["state"], "floor_usd": cfg["floor_usd"], "percent": cfg["percent"],
-            "revenue_usd": cfg["revenue_usd"], "pool_usd": cents / 100, "total_points": total,
-            "usd_per_1000_points": round(cents / total * 10, 4) if total else None, "creators": len(shares),
-            "top": [{"user_id": str(u), "points": shares[u], "usd": c / 100} for u, c in top]}
+    out["top"] = [{"user_id": str(u), "points": shares[u], "usd": c / 100} for u, c in top]
+    if as_paid:   # the 25% cap can leave some of the pool unpaid when few creators qualify
+        out["kept_usd"] = (cents - sum(split.values())) / 100
+    return out
 
 
 def _month_closed_tag(month: str) -> str:
@@ -740,6 +748,18 @@ async def not_original(db, video_id: ObjectId, admin: str) -> dict:
             if before["state"] == "locked" and before.get("month"):
                 await _claw_back(db, before["user_id"], before["month"], _num(before.get("amount")))
     return {"video_id": str(video_id), "points_removed": removed}
+
+
+async def original_again(db, video_id: ObjectId, admin: str) -> dict:
+    """Undo a mistaken "not original": the strike goes and the post earns again
+    from now. Points already taken away stay taken away."""
+    v = await db.videos.find_one_and_update(
+        {"_id": video_id, "originality.state": "rejected"},
+        {"$set": {"originality.state": "cleared", "originality.cleared_by": admin,
+                  "originality.cleared_at": _naive(_utcnow())}})
+    if not v:
+        raise PointsError(409, "This post isn't marked as not original")
+    return {"video_id": str(video_id), "state": "cleared"}
 
 
 async def _claw_back(db, user: ObjectId, month: str, points_removed: int) -> None:
