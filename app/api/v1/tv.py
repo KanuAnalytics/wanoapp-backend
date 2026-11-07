@@ -166,10 +166,18 @@ def _credits(data: dict, profiles: dict) -> None:
             prof = profiles.get("x:" + name) or profiles.get("u:" + name.lower())
         people.append({"name": p["name"], "role": p["role"], "profile": prof})
     data["credits"] = {**credits, "people": people}
-    data["makers"] = [{"user_id": x["profile"]["id"], "username": x["profile"]["username"],
-                       "display_name": x["profile"].get("display_name"),
-                       "profile_picture": x["profile"].get("profile_picture"), "role": x["role"]}
-                      for x in people if x["profile"]]
+    # Credited people with a Wano account join "Meet the Makers", after any
+    # makers stored on the title, each person once.
+    makers = list(data.get("makers") or [])
+    seen = {m.user_id if isinstance(m, TvMaker) else m.get("user_id") for m in makers}
+    for x in people:
+        prof = x["profile"]
+        if prof and prof["id"] not in seen:
+            seen.add(prof["id"])
+            makers.append(TvMaker(user_id=prof["id"], username=(prof.get("username") or "").strip(),
+                                  display_name=prof.get("display_name"),
+                                  profile_picture=prof.get("profile_picture"), role=x["role"]))
+    data["makers"] = makers
 
 
 def _makers(doc: dict, profiles: dict) -> List[TvMaker]:

@@ -51,3 +51,29 @@ async def test_M2_no_people_no_makers(client, db, rb, spaces):
     await _title(db, "middleton")
     t = (await client.get("/api/v1/tv/titles", params={"authenticated": "false"})).json()[0]
     assert t["makers"] == []
+
+
+async def test_M3_makers_stored_on_the_title_survive_alongside_linked_credits(client, db, rb, spaces):
+    """Live titles (One Field, Middleton) store makers as {user_id, role}; linked
+    credits add more. Both show, each person once, closed accounts left out."""
+    team, _ = await make_user(db, username="wanoteam", display_name="Wano Team")
+    smsaid, _ = await make_user(db, username="smsaid", display_name="Smsaid")
+    gone, _ = await make_user(db, username="gone", is_active=False)
+    await _title(db, "middleton", credits={"director": "Eilmer Bahri", "cast": [], "production": "p",
+                                           "distributor": "w", "people": [
+        {"name": "Smsaid", "role": "Cast", "username": "smsaid"},
+        {"name": "Wano Team", "role": "Producer", "username": "wanoteam"}]})
+    await db.tv_titles.update_one({}, {"$set": {"makers": [
+        {"user_id": ObjectId(team), "role": "Filmmaker"},
+        {"user_id": ObjectId(gone), "role": "Featured in film"}]}})
+    t = (await client.get("/api/v1/tv/titles", params={"authenticated": "false"})).json()[0]
+    assert [(m["username"], m["role"]) for m in t["makers"]] == [("wanoteam", "Filmmaker"), ("smsaid", "Cast")]
+
+
+async def test_M4_stored_makers_with_no_credit_people(client, db, rb, spaces):
+    team, _ = await make_user(db, username="wanoteam2")
+    await _title(db, "onefield")
+    await db.tv_titles.update_one({}, {"$set": {"makers": [{"user_id": ObjectId(team), "role": "Filmmaker"},
+                                                           {"user_id": "not-an-id", "role": "x"}, "junk"]}})
+    t = (await client.get("/api/v1/tv/titles", params={"authenticated": "false"})).json()[0]
+    assert [m["username"] for m in t["makers"]] == ["wanoteam2"]
