@@ -116,6 +116,20 @@ async def list_replies(db, video_id: str, viewer: Optional[str], cursor: Optiona
     if not original or (not mine and not await db.videos.find_one({"_id": oid, **_visible()}, {"_id": 1})):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Post not found")
     q = {"reply_to.video_id": oid, **_visible()}
+    # Left out in the query itself (not after), so a page is never empty while
+    # more replies exist: banned accounts, and people the viewer blocked or
+    # who blocked the viewer.
+    hidden = set(await db.users.distinct("_id", {"is_active": False}))
+    if viewer and ObjectId.is_valid(str(viewer)):
+        me = await db.users.find_one({"_id": ObjectId(str(viewer))}, {"blocked_users": 1, "blocked_by": 1}) or {}
+        for k in ("blocked_users", "blocked_by"):
+            for x in me.get(k) or []:
+                if isinstance(x, ObjectId):
+                    hidden.add(x)
+                elif isinstance(x, str) and ObjectId.is_valid(x):
+                    hidden.add(ObjectId(x))
+    if hidden:
+        q["creator_id"] = {"$nin": list(hidden)}
     if cursor:
         at, last = _uncursor(cursor)
         q["$or"] = [{"created_at": {"$lt": at}}, {"created_at": at, "_id": {"$lt": last}}]

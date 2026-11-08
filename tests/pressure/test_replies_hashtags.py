@@ -252,3 +252,32 @@ async def test_R2_5_many_posts_and_tags_stay_fast(client, db):
     await client.get("/api/v1/hashtags/suggest", params={"q": "tag1", "authenticated": "false"})
     cached = time.monotonic() - t0
     assert tags[0]["tag"] == "wano" and first < 5 and cached < 1
+
+
+# ---------------------------------------------------------------- round 3 (deep review)
+
+async def test_R3_1_page_of_banned_replies_doesnt_end_the_list_early(client, db):
+    c, ch = await make_user(db, username="amina")
+    target = await make_video(db, c)
+    good, gh = await make_user(db, username="good")
+    rid = (await _post(client, gh, reply_to=target)).json()["video_id"]
+    for _ in range(5):
+        b, bh = await make_user(db)
+        assert (await _post(client, bh, reply_to=target)).status_code == 201
+        await db.users.update_one({"_id": ObjectId(b)}, {"$set": {"is_active": False}})
+    r = await client.get(f"/api/v1/videos/{target}/replies", params={"limit": 3, "authenticated": "false"})
+    body = r.json()
+    assert [i["id"] for i in body["items"]] == [rid] and body["next_cursor"] is None
+
+
+async def test_R3_2_blocked_people_dont_show_in_my_replies_list(client, db):
+    c, ch = await make_user(db, username="amina")
+    target = await make_video(db, c)
+    troll, th = await make_user(db, username="troll")
+    assert (await _post(client, th, reply_to=target)).status_code == 201
+    viewer, vh = await make_user(db, username="viewer")
+    assert (await client.post(f"/api/v1/users/block_user/{troll}", headers=vh)).status_code == 204
+    mine = (await client.get(f"/api/v1/videos/{target}/replies", headers=vh)).json()["items"]
+    assert mine == []
+    anon = (await client.get(f"/api/v1/videos/{target}/replies", params={"authenticated": "false"})).json()["items"]
+    assert len(anon) == 1

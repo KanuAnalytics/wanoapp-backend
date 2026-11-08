@@ -93,8 +93,9 @@ def _tier_rank(key) -> int:
 
 
 def _live_post() -> dict:
-    return {"is_active": True, "privacy": "public", "moderation.state": {"$nin": ["held", "removed"]},
-            "$or": [{"status": {"$exists": False}}, {"status": {"$ne": "scheduled"}}]}
+    """Same "can people see it" rule the leaderboard and creator stats use."""
+    from app.services.creators import _showable
+    return {**_showable(), "moderation.state": {"$nin": ["held", "removed"]}}
 
 
 async def _real_followers(db, followers, now: datetime) -> int:
@@ -161,16 +162,22 @@ async def _award_one(db, cid: ObjectId, s: dict, now: datetime) -> int:
     if not user:
         return 0
     state = user.get("milestones") if isinstance(user.get("milestones"), dict) else None
-    first = state is None
     state = dict(state or {})
     values = {"views": s["views"], "post_views": s["best"]}
     count = user.get("followers_count") if isinstance(user.get("followers_count"), int) else 0
     next_f = next((n for n in LADDERS["followers"] if n > int(state.get("followers") or 0)), None)
     values["followers"] = 0
+    sets = {}
     if next_f is not None and count >= next_f:
-        full = await db.users.find_one({"_id": cid}, {"followers": 1})
-        values["followers"] = await _real_followers(db, (full or {}).get("followers"), now)
-    awarded, sets = 0, {}
+        if state.get("checked_count") == count and isinstance(state.get("real"), int):
+            # Same follower count as the last check: don't recount (it was below the step).
+            values["followers"] = state["real"]
+        else:
+            full = await db.users.find_one({"_id": cid}, {"followers": 1})
+            values["followers"] = await _real_followers(db, (full or {}).get("followers"), now)
+            sets["milestones.checked_count"] = count
+            sets["milestones.real"] = values["followers"]
+    awarded = 0
     for ladder, value in values.items():
         have = int(state.get(ladder) or 0)
         steps = [n for n in _reached(ladder, value) if n > have]
@@ -191,8 +198,6 @@ async def _award_one(db, cid: ObjectId, s: dict, now: datetime) -> int:
             t = tier_for(top)
             if t and _tier_rank(t) > _tier_rank(user.get("tier")):
                 sets["tier"] = t
-    if first and not sets:
-        sets["milestones"] = {}
     if sets:
         await db.users.update_one({"_id": cid}, {"$set": sets})
     return awarded
@@ -202,7 +207,11 @@ async def summary(db, me: ObjectId) -> dict:
     user = await db.users.find_one({"_id": me}, {"followers_count": 1, "milestones": 1, "tier": 1, "username": 1,
                                                  "display_name": 1, "profile_picture": 1}) or {}
     s = (await _view_stats(db, [me])).get(me) or {"views": 0, "best": 0}
-    current = {"followers": _int(user.get("followers_count")), "views": s["views"],
+    count = _int(user.get("followers_count"))
+    st = user.get("milestones") if isinstance(user.get("milestones"), dict) else {}
+    if st.get("checked_count") == count and isinstance(st.get("real"), int):
+        count = min(count, st["real"])  # what milestones count: real followers
+    current = {"followers": count, "views": s["views"],
                "post_views": s["best"]}
     rows = await db.user_badges.find({"user_id": me}).sort([("at", -1), ("_id", 1)]).to_list(200)
     rows = [r for r in rows if is_milestone(r.get("kind"))]

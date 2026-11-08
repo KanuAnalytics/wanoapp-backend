@@ -282,3 +282,55 @@ async def test_R2_8_tier_in_feed_never_leaks_junk(client, db):
     _, vh = await make_user(db, username="viewer2")
     prof = (await client.get(f"/api/v1/users/{uid}/complete", headers=vh)).json()
     assert prof.get("tier") is None
+
+
+# ---------------------------------------------------------------- round 3 (deep review)
+
+async def test_R3_1_posts_still_publishing_or_cancelled_dont_count(client, db):
+    await _on(db)
+    uid, h = await _creator(db)
+    await make_video(db, uid, views_count=50000, status="publishing")
+    await make_video(db, uid, views_count=50000, status="cancelled")
+    await make_video(db, uid, views_count=50000, isReadyToStream=False)
+    await _run(db)
+    assert await db.user_badges.count_documents({}) == 0
+
+
+async def test_R3_2_inflated_count_is_not_recounted_every_run(client, db, monkeypatch):
+    await _on(db)
+    from app.services import milestones
+    uid, h = await _creator(db, followers=60, fake=80)
+    n = {"c": 0}
+    real = milestones._real_followers
+
+    async def counting(*a, **k):
+        n["c"] += 1
+        return await real(*a, **k)
+    monkeypatch.setattr(milestones, "_real_followers", counting)
+    for _ in range(4):
+        await _run(db)
+    assert n["c"] == 1
+    # a new follow changes the count -> checked again
+    fan = (await _fans(db, 1))[0]
+    await db.users.update_one({"_id": ObjectId(uid)}, {"$push": {"followers": fan}, "$inc": {"followers_count": 1}})
+    await _run(db)
+    assert n["c"] == 2
+
+
+async def test_R3_3_progress_shows_real_followers_not_the_inflated_count(client, db):
+    await _on(db)
+    uid, h = await _creator(db, followers=60, fake=80)
+    await _run(db)
+    f = next(l for l in (await _me(client, h))["ladders"] if l["key"] == "followers")
+    assert f["current"] == 60 and f["next"] == 100
+
+
+async def test_R3_4_bots_aging_past_3_days_count_on_the_next_follow(client, db):
+    await _on(db)
+    uid, h = await _creator(db, followers=60, fake=50)
+    await _run(db)
+    await db.users.update_many({"created_at": {"$gt": OLD}}, {"$set": {"created_at": OLD}})
+    fan = (await _fans(db, 1))[0]
+    await db.users.update_one({"_id": ObjectId(uid)}, {"$push": {"followers": fan}, "$inc": {"followers_count": 1}})
+    await _run(db)
+    assert await db.user_badges.count_documents({"kind": "followers_100"}) == 1
