@@ -221,6 +221,99 @@ async def admin_wano_tv(body: WanoTvIn, admin: str = Depends(require_admin)):
     return out
 
 
+# ---------------------------------------------------------------- Studio (house accounts)
+
+class HouseIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    creator: str
+    on: StrictBool = True
+
+
+class UploadUrlIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    filename: str
+
+
+class DraftIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    account_id: str
+    stream_uid: str
+    title: str = ""
+    caption: str = ""
+    ai: StrictBool = False
+    scheduled_for: Optional[datetime] = None
+
+
+class ApproveIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    scheduled_for: Optional[datetime] = None
+
+
+class RejectIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    note: str = ""
+
+
+@router.get("/studio/accounts")
+async def studio_accounts(admin: str = Depends(require_admin)):
+    from app.services import studio
+    return {"items": await studio.house_accounts(get_database())}
+
+
+@router.post("/studio/accounts")
+async def studio_set_account(body: HouseIn, admin: str = Depends(require_admin)):
+    from app.services import studio
+    db = get_database()
+    out = await studio.set_house(db, body.creator[:200], body.on)
+    await admin_log.record(db, admin, "house_account_on" if body.on else "house_account_off", {"user": out["id"]})
+    return out
+
+
+@router.post("/studio/upload-url")
+async def studio_upload_url(body: UploadUrlIn, admin: str = Depends(require_admin)):
+    import asyncio
+    from app.services.upload_DO import generate_stream_direct_upload_url
+    name = "".join(c for c in body.filename[:100] if c.isalnum() or c in "._-") or "studio.mp4"
+    try:
+        return await asyncio.to_thread(generate_stream_direct_upload_url, filename=name, folder="studio")
+    except Exception:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Couldn't get an upload link from Cloudflare, try again")
+
+
+@router.get("/studio/drafts")
+async def studio_drafts(state: Optional[str] = Query(None, max_length=20), admin: str = Depends(require_admin)):
+    from app.services import studio
+    return {"items": await studio.drafts(get_database(), state)}
+
+
+@router.post("/studio/drafts", status_code=201)
+async def studio_new_draft(body: DraftIn, admin: str = Depends(require_admin)):
+    from app.services import studio
+    db = get_database()
+    out = await studio.create_draft(db, admin, body.account_id, body.stream_uid, body.title, body.caption,
+                                    body.ai, body.scheduled_for)
+    await admin_log.record(db, admin, "studio_draft", {"draft": out["id"]})
+    return out
+
+
+@router.post("/studio/drafts/{draft_id}/approve")
+async def studio_approve(draft_id: str, body: ApproveIn, admin: str = Depends(require_admin)):
+    from app.services import studio
+    db = get_database()
+    out = await studio.approve(db, admin, draft_id, body.scheduled_for)
+    await admin_log.record(db, admin, "studio_approved", {"draft": draft_id, "post": out["post_id"]})
+    return out
+
+
+@router.post("/studio/drafts/{draft_id}/reject")
+async def studio_reject(draft_id: str, body: RejectIn, admin: str = Depends(require_admin)):
+    from app.services import studio
+    db = get_database()
+    await studio.reject(db, admin, draft_id, body.note)
+    await admin_log.record(db, admin, "studio_rejected", {"draft": draft_id})
+    return {"rejected": True}
+
+
 # ---------------------------------------------------------------- challenges
 
 @router.get("/challenges")

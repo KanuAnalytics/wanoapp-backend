@@ -128,7 +128,7 @@ $("logout").addEventListener("click", () => logout());
 
 const PAGES = [
   ["overview", "Overview"], ["payouts", "Payouts"], ["pool", "Cash pool"], ["creators", "Creators"],
-  ["moderation", "Reported posts"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["switches", "Feature switches"], ["log", "Activity log"],
+  ["moderation", "Reported posts"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["switches", "Feature switches"], ["log", "Activity log"],
 ];
 let current = "overview";
 const counts = {};
@@ -390,6 +390,84 @@ const RENDER = {
             if (!(await confirmBox("Remove this pick?", "It leaves Discover now. The creator keeps the badge.", "Remove", true))) return;
             if (await act(e.target, () => api("DELETE", `/admin/picks/${p.id}`), "Pick removed")) RENDER.picks(main);
           }})))))) : el("div", { class: "empty", text: "No picks yet." }))));
+  },
+
+  async studio(main) {
+    const [accts, pend, done] = await Promise.all([api("GET", "/admin/studio/accounts"),
+      api("GET", "/admin/studio/drafts?state=pending"), api("GET", "/admin/studio/drafts")]);
+    counts.studio = pend.items.length; drawNav();
+    const active = accts.items.filter((a) => a.active);
+    const acct = el("select", {}, ...active.map((a) => el("option", { value: a.id, text: "@" + a.username })));
+    const file = el("input", { type: "file", accept: "video/mp4,video/quicktime,video/*", id: "studio-file" });
+    const title = el("input", { type: "text", maxlength: 100, placeholder: "Title" });
+    const caption = el("textarea", { rows: 4, maxlength: 2200, placeholder: "Caption with #hashtags" });
+    const ai = el("input", { type: "checkbox", id: "studio-ai" });
+    const local = (d) => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+    const when = el("input", { type: "datetime-local", value: local(new Date(Date.now() + 864e5)) });
+    const progress = el("div", { class: "small muted", id: "studio-progress" });
+    const save = el("button", { class: "btn", id: "studio-save", text: "Upload and send for review", onclick: async (e) => {
+      const f = file.files && file.files[0];
+      if (!acct.value) return toast("Add a house account first", true);
+      if (!f) return toast("Choose a video file", true);
+      if (f.size > 190 * 1024 * 1024) return toast("Video is over 190 MB", true);
+      e.target.disabled = true;
+      try {
+        progress.textContent = "Getting an upload link…";
+        const up = await api("POST", "/admin/studio/upload-url", { filename: f.name });
+        progress.textContent = "Uploading " + Math.round(f.size / 1048576) + " MB to Cloudflare…";
+        const fd = new FormData(); fd.append("file", f);
+        const r = await fetch(up.upload_url, { method: "POST", body: fd });
+        if (!r.ok) throw new Error("Upload to Cloudflare failed (" + r.status + ")");
+        const at = new Date(when.value);
+        await api("POST", "/admin/studio/drafts", { account_id: acct.value, stream_uid: up.stream_uid,
+          title: title.value.trim(), caption: caption.value, ai: ai.checked, scheduled_for: isNaN(at) ? null : at.toISOString() });
+        progress.textContent = "";
+        toast("Draft saved: waiting for approval");
+        RENDER.studio(main);
+      } catch (err) { progress.textContent = ""; toast(err.message, true); }
+      finally { e.target.disabled = false; }
+    }});
+    const who = el("input", { type: "text", placeholder: "@username", maxlength: 200 });
+    const addAcct = el("button", { class: "btn secondary small", text: "Make house account", onclick: async (e) => {
+      if (!who.value.trim()) return;
+      const ok = await confirmBox("Make this a Wano house account?", "Studio posts can then be published on it after approval.", "Confirm");
+      if (ok && await act(e.target, () => api("POST", "/admin/studio/accounts", { creator: who.value.trim(), on: true }), "House account added")) RENDER.studio(main);
+    }});
+    const card = (d) => el("div", { class: "card", "data-draft": d.id },
+      el("div", { class: "row space" }, el("div", {}, el("div", { style: "font-weight: 700;", text: "@" + (d.account.username || "") + " · " + (d.title || "(no title)") }),
+        el("div", { class: "small muted", text: (d.scheduled_for ? "for " + when_(d.scheduled_for) : "post now") + (d.ai ? " · Made with AI" : "") })),
+        el("a", { class: "btn secondary small", href: "https://watch.videodelivery.net/" + d.stream_uid, target: "_blank", rel: "noopener", text: "Watch" })),
+      el("p", { class: "small", style: "white-space: pre-wrap;", text: d.caption || "" }),
+      el("div", { class: "row" },
+        el("button", { class: "btn small", text: "Approve", onclick: async (e) => {
+          const ok = await confirmBox("Approve this post?", "It goes live on @" + d.account.username + (d.scheduled_for ? " at " + when_(d.scheduled_for) : " now") + ".", "Approve");
+          if (ok && await act(e.target, () => api("POST", `/admin/studio/drafts/${d.id}/approve`, {}), "Approved")) RENDER.studio(main);
+        }}),
+        el("button", { class: "btn ghost-danger small", text: "Reject", onclick: async (e) => {
+          const note = window.prompt ? (window.prompt("Why? (optional)") || "") : "";
+          if (await act(e.target, () => api("POST", `/admin/studio/drafts/${d.id}/reject`, { note }), "Rejected")) RENDER.studio(main);
+        }})));
+    const when_ = (v) => { try { return new Date(v + (String(v).endsWith("Z") ? "" : "Z")).toLocaleString(); } catch (e) { return v; } };
+    const history = done.items.filter((d) => d.state !== "pending").slice(0, 30);
+    main.replaceChildren(...head("Studio", "Posts for Wano's own accounts. Nothing goes live until you approve it."),
+      el("div", { class: "two" },
+        el("div", { class: "card" }, el("h3", { text: "New post" }),
+          active.length ? null : el("p", { class: "small muted", text: "No house accounts yet. Add one below." }),
+          el("label", { class: "field" }, el("span", { text: "Account" }), acct),
+          el("label", { class: "field" }, el("span", { text: "Video" }), file),
+          el("label", { class: "field" }, el("span", { text: "Title" }), title),
+          el("label", { class: "field" }, el("span", { text: "Caption" }), caption),
+          el("label", { class: "field" }, el("span", { text: "Goes live at" }), when),
+          el("label", { class: "row", style: "gap: 8px; margin: 8px 0;" }, ai, el("span", { text: "Made with AI (AI voice or visuals)" })),
+          save, progress,
+          el("h3", { text: "House accounts", style: "margin-top: 24px;" }),
+          el("div", { class: "small", text: accts.items.map((a) => "@" + a.username).join(", ") || "None" }),
+          el("div", { class: "row", style: "gap: 8px; margin-top: 8px;" }, who, addAcct)),
+        el("div", {}, el("h3", { text: `Waiting for approval (${pend.items.length})` }),
+          ...(pend.items.length ? pend.items.map(card) : [el("div", { class: "empty", text: "Nothing waiting." })]),
+          el("h3", { text: "Recent", style: "margin-top: 16px;" }),
+          ...(history.length ? history.map((d) => el("div", { class: "small", style: "padding: 6px 0;",
+            text: `${d.state === "approved" ? "✓" : "✕"} @${d.account.username} · ${d.title || "(no title)"}${d.note ? " — " + d.note : ""}` })) : [el("div", { class: "small muted", text: "No history yet." })]))));
   },
 
   async switches(main) {
