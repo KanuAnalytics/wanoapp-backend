@@ -412,8 +412,16 @@ async def get_feed(
                 q = {"user_id": ObjectId(current_user), "video_id": {"$in": candidate_ids}}
                 if not apply_watch_filter:
                     q["not_interested"] = True
-                hidden_ids = {str(w["video_id"]) async for w in db.watch_history.find(q, {"video_id": 1})}
-                docs = [d for d in docs if d["_id"] not in hidden_ids]
+                rows = [w async for w in db.watch_history.find(q, {"video_id": 1, "not_interested": 1})]
+                never = {str(w["video_id"]) for w in rows if w.get("not_interested") is True}
+                watched = {str(w["video_id"]) for w in rows} - never
+                fresh = [d for d in docs if d["_id"] not in never and d["_id"] not in watched]
+                # Someone who has watched nearly everything would otherwise get
+                # empty pages one after another (Discover looked dead). Unseen
+                # posts come first; watched ones fill the page back up.
+                if apply_watch_filter and len(fresh) < (len(docs) + 1) // 2:
+                    fresh += [d for d in docs if d["_id"] in watched]
+                docs = fresh
             # Posts of accounts that were deactivated before their posts were.
             if not user_id:
                 docs = [d for d in docs if (d.get("user") or {}).get("is_active") is not False]

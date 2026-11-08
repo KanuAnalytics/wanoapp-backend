@@ -259,6 +259,7 @@ async def build_page(db, *, viewer: str, current_user: Optional[str], scenario: 
 
     # What this viewer has already seen.
     watched = set()
+    never = set()   # "Not interested": never shown again, however empty the feed gets
     if own:
         # The most recent watches only: a heavy viewer can have tens of thousands.
         since = _now() - timedelta(days=WATCHED_LOOKBACK_DAYS)
@@ -268,7 +269,7 @@ async def build_page(db, *, viewer: str, current_user: Optional[str], scenario: 
             watched.add(str(w["video_id"]))
         # "Not interested" always stays excluded, however old.
         async for w in db.watch_history.find({"user_id": own, "not_interested": True}, {"video_id": 1}).limit(5000):
-            watched.add(str(w["video_id"]))
+            never.add(str(w["video_id"]))
     shown = set()
     # Everyone on a build that sends no device id shares one viewer id, so
     # those impressions say nothing about the person asking: excluding them
@@ -281,17 +282,41 @@ async def build_page(db, *, viewer: str, current_user: Optional[str], scenario: 
         async for imp in cursor:
             shown.add(str(imp["video_id"]))
     featured_id = str(featured["_id"]) if featured else None
-    excluded = watched | shown | ({featured_id} if featured_id else set())
-    excluded_oids = [ObjectId(x) for x in excluded if ObjectId.is_valid(x)]
+    if featured_id:
+        never.add(featured_id)
 
     slots = limit - (1 if featured else 0)
-    city_key = (user.get("localization") or {}).get("city_key")
-    city_key = city_key if isinstance(city_key, str) and city_key else None
-    quotas = _quotas(slots, page.variant, bool(following), bool(city_key))
 
     # Over-fetch from Recombee: some picks get dropped by the rules above.
     want = min(100, max(slots * 5, 20))
     ids, page.recomm_id = await _personal(viewer, scenario, want, next_recomm_id, user.get("tags") or [])
+
+    # A heavy viewer can have seen nearly everything. Rather than an empty
+    # feed, loosen step by step: first allow posts they watched (but weren't
+    # shown today), then anything but "Not interested". Unseen posts always
+    # come first; the app also drops repeats within one session.
+    tiers = [watched | shown | never, shown | never, never]
+    picked: list = []
+    for excluded in tiers:
+        got = await _assemble(db, page, ids, excluded | {it["id"] for it in picked}, own, user, following,
+                              slots - len(picked), featured, picked)
+        picked += got
+        if len(picked) >= max(1, (slots + 1) // 2):
+            break
+    page.items = picked
+    return page
+
+
+async def _assemble(db, page, ids, excluded: set, own, user: dict, following: list, slots: int,
+                    featured: Optional[dict], already: list) -> list:
+    """One pass of the page rules with this exclusion set. Returns new items."""
+    if slots <= 0:
+        return []
+    items: list = []
+    excluded_oids = [ObjectId(x) for x in excluded if ObjectId.is_valid(x)]
+    city_key = (user.get("localization") or {}).get("city_key")
+    city_key = city_key if isinstance(city_key, str) and city_key else None
+    quotas = _quotas(slots, page.variant, bool(following), bool(city_key))
     personal = await _docs_for(db, ids, excluded)
     if not ids:
         personal = await _popular_backup(db, excluded_oids, own)
@@ -326,6 +351,10 @@ async def build_page(db, *, viewer: str, current_user: Optional[str], scenario: 
     if featured:
         prev = str(featured.get("creator_id"))
         counts[prev] = 1
+    for it in already:
+        c = it.get("creator_id")
+        counts[c] = counts.get(c, 0) + 1
+        prev = c
 
     backup_order = ["personal", "trending", "fresh", "following", "local", "popular"]
     backup_loaded = False
@@ -364,9 +393,9 @@ async def build_page(db, *, viewer: str, current_user: Optional[str], scenario: 
         counts[creator] = counts.get(creator, 0) + 1
         prev = creator
         # Paid points boosts are labelled, so those viewers don't earn the creator points back.
-        page.items.append({"id": vid, "creator_id": creator, "source": "boost" if d.get("stage") == "paid" else s})
+        items.append({"id": vid, "creator_id": creator, "source": "boost" if d.get("stage") == "paid" else s})
 
-    return page
+    return items
 
 
 async def record_impressions(db, *, viewer: str, current_user: Optional[str], variant: str,

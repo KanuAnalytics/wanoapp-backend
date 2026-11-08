@@ -73,9 +73,15 @@ async def test_M5_everything_watched_does_not_trap_the_viewer(client, db):
     uid, viewer = await make_user(db)
     await db.watch_history.insert_many([{"user_id": ObjectId(uid), "video_id": ObjectId(v),
                                          "watched_at": datetime.utcnow()} for v in ids[:390]])
+    # Watched nearly everything: the feed still fills (watched posts come back
+    # rather than empty pages), every unseen post still shows, nothing repeats,
+    # and it stays chronological page by page.
+    first, r = await _ids(client, viewer, cursor="start", exclude_watched="true")
+    assert len(first) == 10
     seen, pages = await _walk(client, viewer, exclude_watched="true")
-    assert seen == ids[390:], (len(seen), pages)
-    assert pages < 40
+    assert set(ids[390:]) <= set(seen), (len(seen), pages)
+    assert len(seen) == len(set(seen))
+    assert pages < 60
 
 
 async def test_M6_profile_grid_with_cursor_is_not_capped(client, db):

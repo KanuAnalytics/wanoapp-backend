@@ -131,6 +131,10 @@ async def _hidden_for(db, viewer: Optional[str], ids: List[ObjectId], exclude_wa
     return {w["video_id"] async for w in db.watch_history.find(q, {"video_id": 1})}
 
 
+async def _not_interested(db, viewer: Optional[str], ids: List[ObjectId]) -> set:
+    return await _hidden_for(db, viewer, ids, False)
+
+
 async def _inactive_creators(db, creator_ids) -> set:
     ids = [c for c in set(creator_ids) if isinstance(c, ObjectId)]
     if not ids:
@@ -234,6 +238,7 @@ async def cursor_page(db, match: dict, *, limit: int, cursor: str, viewer: Optio
 
     # 2. Older posts, in batches, from the boundary down.
     boundary = (at, oid)
+    watched_skipped: list = []
     done = False
     scanned, batch = 0, max(limit * BATCH_FACTOR, 20)
     while len(chosen) < limit and not done and scanned < limit * MAX_SCANNED_FACTOR:
@@ -244,6 +249,7 @@ async def cursor_page(db, match: dict, *, limit: int, cursor: str, viewer: Optio
         fresh = await db.videos.find(q).sort([("created_at", -1), ("_id", -1)]).limit(batch).to_list(length=batch)
         scanned += len(fresh)
         hidden = await _hidden_for(db, viewer, [d["_id"] for d in fresh], exclude_watched)
+        never = await _not_interested(db, viewer, list(hidden)) if exclude_watched and hidden else hidden
         gone = await _inactive_creators(db, [d.get("creator_id") for d in fresh])
         stopped = False
         for d in fresh:
@@ -251,11 +257,24 @@ async def cursor_page(db, match: dict, *, limit: int, cursor: str, viewer: Optio
                 stopped = True
                 break
             boundary = (_naive(d["created_at"]), d["_id"])
-            if d["_id"] in hidden or d.get("creator_id") in gone:
+            if d.get("creator_id") in gone or d["_id"] in never:
+                continue
+            if d["_id"] in hidden:
+                watched_skipped.append(d)   # only watched: may come back below
                 continue
             offer(d)
         if not stopped and len(fresh) < batch:
             done = True
+
+    # Someone who has watched nearly everything got an empty New tab. When
+    # unseen posts can't fill half the page, posts they watched (that the
+    # boundary has already passed) fill it, kept newest first.
+    if exclude_watched and watched_skipped and len(chosen) < (limit + 1) // 2:
+        for d in watched_skipped:
+            if len(chosen) >= limit:
+                break
+            take(d)
+        chosen.sort(key=lambda d: (_naive(d["created_at"]), d["_id"]), reverse=True)
 
     # Held-back posts ride in the cursor. Past MAX_DEFERRED it's a flood: the
     # oldest extras are left to the creator's profile and For You.
