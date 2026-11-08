@@ -63,6 +63,7 @@ async def test_ML2_crossing_100_followers_is_celebrated_once(client, db, calls):
     me = await _me(client, h)
     assert [c["kind"] for c in me["celebrate"]] == ["followers_100"]
     assert me["celebrate"][0]["label"] == "100 followers"
+    assert me["user"]["username"] == "amina"
     assert await db.user_badges.count_documents({"kind": "followers_100"}) == 1
     # seen -> not again
     ids = [c["id"] for c in me["celebrate"]]

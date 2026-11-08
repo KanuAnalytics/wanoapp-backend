@@ -199,7 +199,8 @@ async def _award_one(db, cid: ObjectId, s: dict, now: datetime) -> int:
 
 
 async def summary(db, me: ObjectId) -> dict:
-    user = await db.users.find_one({"_id": me}, {"followers_count": 1, "milestones": 1, "tier": 1}) or {}
+    user = await db.users.find_one({"_id": me}, {"followers_count": 1, "milestones": 1, "tier": 1, "username": 1,
+                                                 "display_name": 1, "profile_picture": 1}) or {}
     s = (await _view_stats(db, [me])).get(me) or {"views": 0, "best": 0}
     current = {"followers": _int(user.get("followers_count")), "views": s["views"],
                "post_views": s["best"]}
@@ -216,7 +217,10 @@ async def summary(db, me: ObjectId) -> dict:
     nt = next(((at, k, l) for at, k, l in TIERS if _tier_rank(k) > _tier_rank(tier)), None)
     celebrate = [{"id": r["_id"], "kind": r["kind"], "label": label(r["kind"]), "value": r.get("value"),
                   "at": r.get("at")} for r in rows if r.get("seen") is False]
+    text = lambda k: user.get(k) if isinstance(user.get(k), str) else None  # noqa: E731
     return {
+        "user": {"username": text("username"), "display_name": text("display_name"),
+                 "profile_picture": text("profile_picture")},
         "tier": {"key": tier, "label": TIER_LABELS[tier]} if tier else None,
         "next_tier": {"key": nt[1], "label": nt[2], "at": nt[0]} if nt else None,
         "ladders": ladders,
