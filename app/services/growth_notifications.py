@@ -167,8 +167,10 @@ async def notify_new_posts(db) -> dict:
     if _started_at is not None:
         since = max(since, _started_at - START_GRACE)
     out = {"posts": 0, "sent": 0}
-    q = {**_visible_post(), "created_at": {"$gte": _naive(since), "$lte": _naive(now + timedelta(minutes=10))},
-         "followers_notified_at": {"$exists": False}}
+    window = {"$gte": _naive(since), "$lte": _naive(now + timedelta(minutes=10))}
+    # Trial posts wait until the creator shares them with followers.
+    q = {**_visible_post(), "trial": {"$ne": True}, "followers_notified_at": {"$exists": False},
+         "$or": [{"created_at": window}, {"trial_shared_at": window}]}
     posts = await db.videos.find(q, {"creator_id": 1, "description": 1, "title": 1}).sort(
         "created_at", 1).limit(200).to_list(200)
     for post in posts:

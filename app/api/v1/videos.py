@@ -31,6 +31,11 @@ from app.services.songs import sound_for_post
 from app.services.points import CATEGORIES as _POINTS_CATEGORIES
 
 PointsCategory = Literal[tuple(_POINTS_CATEGORIES)]  # type: ignore[valid-type]
+
+
+async def _trial_on() -> bool:
+    from app.services import features
+    return (await features.current(get_database())).get("trial_posts") is True
 from app.services.scheduled_publisher import normalize_schedule
 
 
@@ -130,6 +135,8 @@ class VideoPost(BaseModel):
     reply_type: Literal["reply", "duet"] = "reply"
     # The Wano points category (app/services/points.CATEGORIES), picked while posting.
     points_category: Optional[PointsCategory] = None
+    # Trial post: not announced to followers, not on the profile for others (trial_posts switch).
+    trial: bool = False
 
 class StitchClip(BaseModel):
     url: str
@@ -168,6 +175,8 @@ class VideoStitch(BaseModel):
     reply_type: Literal["reply", "duet"] = "reply"
     # The Wano points category (app/services/points.CATEGORIES), picked while posting.
     points_category: Optional[PointsCategory] = None
+    # Trial post: not announced to followers, not on the profile for others (trial_posts switch).
+    trial: bool = False
 
 class VideoCreate(BaseModel):
     title: Optional[str] = None
@@ -292,6 +301,7 @@ async def post_video(
             current_user,
             reply_to=reply_to,
             points_category=input.points_category,
+            trial=input.trial and await _trial_on(),
             remix_enabled=input.remix_enabled is not False,
             media_type=input.media_type,
             images=input.images,
@@ -318,6 +328,9 @@ async def post_video(
         if reply_to:
             from app.services import replies
             await replies.after_create(get_database(), reply_to, video_id, current_user, bool(scheduled_at))
+        if not scheduled_at and not input.trial and input.privacy == "public":
+            from app.services import mentions
+            mentions.notify_later(get_database(), current_user, input.description, video_id)
 
         message = "Photo posted successfully" if is_photo_post else "Video posted successfully"
         if scheduled_at:
@@ -386,6 +399,7 @@ async def _create_stitch_job(input: VideoStitch, current_user: str, sound, sched
             "scheduled_timezone": scheduled_timezone,
             "reply_to": reply_to,
             "points_category": input.points_category,
+            "trial": bool(input.trial and await _trial_on()),
         },
     )
 

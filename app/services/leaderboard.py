@@ -126,6 +126,10 @@ def label(badge: dict) -> str:
         except ValueError:
             when = "this week"
         return f"#{badge.get('rank')} on Wano, {when}"
+    if kind == "wano_pick":
+        return "Wano Pick"
+    if kind == "wano_tv":
+        return "Featured on Wano TV"
     if kind in ("crown_city", "crown_country"):
         try:
             d = datetime.strptime(badge.get("week_start", ""), "%Y-%m-%d")
@@ -166,6 +170,10 @@ async def _tell(db, badge: dict, now: datetime) -> bool:
     from app.services import milestones
     if milestones.is_milestone(badge["kind"]):
         title, body = milestones.push_text(badge["kind"])
+    elif badge["kind"] == "wano_pick":
+        title, body = "You're a Wano Pick!", "The Wano team picked your post. It's on Discover this week."
+    elif badge["kind"] == "wano_tv":
+        title, body = "You're going to Wano TV", "Congratulations! The Wano team will be in touch."
     elif badge["kind"] in ("crown_city", "crown_country"):
         title, body = f"You're the top creator in {badge.get('place_name') or 'your home ground'}", \
             "You won the week for your home ground. Keep it!"

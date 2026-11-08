@@ -314,6 +314,8 @@ async def create_comment(
     # Insert comment
     result = await db.comments.insert_one(comment_doc)
     comment_doc["_id"] = str(result.inserted_id)
+    from app.services import mentions as _mentions
+    _mentions.notify_later(db, current_user, comment.content, video_oid, result.inserted_id)
 
     # Update parent comment's reply count if it's a reply
     if parent_oid:

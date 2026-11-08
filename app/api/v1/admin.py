@@ -175,6 +175,52 @@ async def lookup(q: str = Query(..., min_length=1, max_length=200), admin: str =
     }
 
 
+# ---------------------------------------------------------------- Wano Picks
+
+class PickIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    video: str
+    note: str = ""
+
+
+class WanoTvIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    creator: str
+
+
+@router.get("/picks")
+async def admin_picks(admin: str = Depends(require_admin)):
+    from app.services import creator_push
+    return {"items": await creator_push.current_picks(get_database(), admin=True)}
+
+
+@router.post("/picks", status_code=201)
+async def admin_add_pick(body: PickIn, admin: str = Depends(require_admin)):
+    from app.services import creator_push
+    db = get_database()
+    out = await creator_push.add_pick(db, admin, body.video[:500], body.note)
+    await admin_log.record(db, admin, "pick_added", {"pick": out["id"]})
+    return out
+
+
+@router.delete("/picks/{pick_id}")
+async def admin_remove_pick(pick_id: str, admin: str = Depends(require_admin)):
+    from app.services import creator_push
+    db = get_database()
+    await creator_push.remove_pick(db, pick_id)
+    await admin_log.record(db, admin, "pick_removed", {"pick": pick_id})
+    return {"removed": True}
+
+
+@router.post("/wano-tv")
+async def admin_wano_tv(body: WanoTvIn, admin: str = Depends(require_admin)):
+    from app.services import creator_push
+    db = get_database()
+    out = await creator_push.give_wano_tv(db, admin, body.creator[:200])
+    await admin_log.record(db, admin, "wano_tv_featured", {"user": out["user_id"]})
+    return out
+
+
 # ---------------------------------------------------------------- challenges
 
 @router.get("/challenges")

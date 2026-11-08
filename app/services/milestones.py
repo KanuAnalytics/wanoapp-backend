@@ -234,6 +234,7 @@ async def summary(db, me: ObjectId) -> dict:
         "next_tier": {"key": nt[1], "label": nt[2], "at": nt[0]} if nt else None,
         "ladders": ladders,
         "celebrate": celebrate[:3],
+        "road": await _road(db, me),
     }
 
 
@@ -243,3 +244,12 @@ async def mark_seen(db, me: ObjectId, ids: List[str]) -> int:
         return 0
     r = await db.user_badges.update_many({"_id": {"$in": ids}, "user_id": me}, {"$set": {"seen": True}})
     return r.modified_count
+
+
+async def _road(db, me: ObjectId) -> list:
+    from app.services import creator_push
+    try:
+        return await creator_push.road(db, me)
+    except Exception:
+        logger.exception("road for %s failed", me)
+        return []

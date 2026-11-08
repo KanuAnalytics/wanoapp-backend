@@ -128,7 +128,7 @@ $("logout").addEventListener("click", () => logout());
 
 const PAGES = [
   ["overview", "Overview"], ["payouts", "Payouts"], ["pool", "Cash pool"], ["creators", "Creators"],
-  ["moderation", "Reported posts"], ["challenges", "Challenges"], ["switches", "Feature switches"], ["log", "Activity log"],
+  ["moderation", "Reported posts"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["switches", "Feature switches"], ["log", "Activity log"],
 ];
 let current = "overview";
 const counts = {};
@@ -169,6 +169,11 @@ const FEATURES = {
   tv_series: ["Wano TV series", "Series, seasons and episodes on Wano TV."],
   hashtags: ["Hashtag suggestions", "Suggestions while typing a caption, popular hashtags and video ideas."],
   home_ground: ["Home Ground", "Users represent a city and country: weekly country and city battles, local creator boards, weekly crowns."],
+  picks: ["Wano Picks", "Posts you pick on the Wano Picks page show on Discover for 7 days; the creator gets a badge."],
+  missions: ["Weekly missions", "Tasks like posting 3 times that earn boost points (never cash)."],
+  creator_stats: ["Creator stats", "Views, likes, comments and shares per day, best posts and best time to post."],
+  mentions: ["@mentions", "Name suggestions while typing @, tappable @names, and a notification to the person mentioned."],
+  trial_posts: ["Trial posts", "Creators can post without telling followers, then share it later."],
   milestones: ["Creator milestones", "Celebrations at follower and view milestones, tier badges (Rising, Star, Gold, Legend) next to names, achievements page."],
   tv_play: ["Play Wano TV films", "Films play inside the app. Needs Wano TV series. Turn on only after testing a film on a phone."],
 };
@@ -350,6 +355,41 @@ const RENDER = {
             if (!(await confirmBox(`End #${c.hashtag} now?`, "The leaderboard freezes as it is now.", "End now", true))) return;
             if (await act(e.target, () => api("POST", `/admin/challenges/${c.id}/end`), "Challenge ended")) RENDER.challenges(main);
           }}) : null))))) : el("div", { class: "empty", text: "No challenges yet." }))));
+  },
+
+  async picks(main) {
+    const rows = (await api("GET", "/admin/picks")).items;
+    const video = el("input", { type: "text", placeholder: "Post link or post ID", maxlength: 500 });
+    const note = el("input", { type: "text", placeholder: "Why we love it (optional, shown on Discover)", maxlength: 140 });
+    const add = el("button", { class: "btn", text: "Make it a Wano Pick", onclick: async (e) => {
+      if (!video.value.trim()) return toast("Paste a post link or ID", true);
+      const ok = await confirmBox("Feature this post?", "It shows on Discover for 7 days and the creator gets a Wano Pick badge and a notification.", "Feature");
+      if (!ok) return;
+      if (await act(e.target, () => api("POST", "/admin/picks", { video: video.value.trim(), note: note.value.trim() }), "Added to Wano Picks")) RENDER.picks(main);
+    }});
+    const who = el("input", { type: "text", placeholder: "@username or post link", maxlength: 200 });
+    const tv = el("button", { class: "btn secondary", text: "Mark as featured on Wano TV", onclick: async (e) => {
+      if (!who.value.trim()) return toast("Type a username", true);
+      const ok = await confirmBox("Mark as featured on Wano TV?", "They get the final step of the Road to Wano TV and a notification. This can't be undone.", "Mark");
+      if (!ok) return;
+      await act(e.target, () => api("POST", "/admin/wano-tv", { creator: who.value.trim() }), "Marked as featured on Wano TV");
+    }});
+    main.replaceChildren(...head("Wano Picks", "Posts the Wano team features on Discover. Each stays 7 days."),
+      el("div", { class: "two" },
+        el("div", { class: "card" }, el("h3", { text: "New pick" }),
+          el("label", { class: "field" }, el("span", { text: "Post" }), video),
+          el("label", { class: "field" }, el("span", { text: "Note" }), note), add,
+          el("h3", { text: "Road to Wano TV", style: "margin-top: 24px;" }),
+          el("p", { class: "small muted", text: "The last step on a creator's ladder: featured on Wano TV." }),
+          el("label", { class: "field" }, el("span", { text: "Creator" }), who), tv),
+        el("div", { class: "card" }, el("h3", { text: "Live picks" }), rows.length ? el("table", {}, el("tbody", {}, ...rows.map((p) => el("tr", {},
+          el("td", {}, el("div", { style: "font-weight: 600;", text: "@" + (p.creator.username || "") }),
+            el("div", { class: "small muted", text: p.note || p.title || "" }),
+            el("div", { class: "small muted", text: "until " + when(p.until) })),
+          el("td", { style: "text-align: right;" }, el("button", { class: "btn ghost-danger small", text: "Remove", onclick: async (e) => {
+            if (!(await confirmBox("Remove this pick?", "It leaves Discover now. The creator keeps the badge.", "Remove", true))) return;
+            if (await act(e.target, () => api("DELETE", `/admin/picks/${p.id}`), "Pick removed")) RENDER.picks(main);
+          }})))))) : el("div", { class: "empty", text: "No picks yet." }))));
   },
 
   async switches(main) {

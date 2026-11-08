@@ -194,6 +194,7 @@ class VideoDetail(BaseModel):
     media_type: Optional[str] = None
     images: List[str] = Field(default_factory=list)
     supports_landscape: bool = False
+    trial: bool = False
 
 class CompleteUserResponse(BaseModel):
     """Complete user response model with ALL fields"""
@@ -1417,8 +1418,11 @@ async def get_user_complete(
     
     # Include recent videos if requested
     if include_videos:
+        # Trial posts (app/services/creator_push.py) show only to their creator.
+        trial_filter = {} if str(user_id) == str(current_user) else {"trial": {"$ne": True}}
         videos_cursor = db.videos.find(
             {
+            **trial_filter,
             "creator_id": ObjectId(user_id),
             "is_active": True,
             "privacy": "public",
@@ -1446,6 +1450,7 @@ async def get_user_complete(
                 media_type=video.get("media_type"),
                 images=video.get("images") or [],
                 supports_landscape=bool(video.get("supports_landscape")),
+                trial=video.get("trial") is True,
             ))
         
         response_data["recent_videos"] = recent_videos

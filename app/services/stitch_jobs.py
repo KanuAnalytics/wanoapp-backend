@@ -418,7 +418,11 @@ async def _create_post(job: dict, stitched: dict) -> str:
         scheduled_timezone=post.get("scheduled_timezone"),
         reply_to=reply_to,
         points_category=post.get("points_category"),
+        trial=post.get("trial") is True,
     )
+    if not post.get("scheduled_at") and post.get("trial") is not True and (post.get("privacy") or "public") == "public":
+        from app.services import mentions
+        mentions.notify_later(get_database(), str(job["creator_id"]), post.get("description"), video_id)
     if reply_to:
         from app.services import replies
         await replies.after_create(get_database(), reply_to, str(video_id), str(job["creator_id"]),
