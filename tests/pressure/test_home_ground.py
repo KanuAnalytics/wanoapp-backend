@@ -289,3 +289,47 @@ async def test_R2_6_suggestion_from_old_free_text_spellings(client, db):
     assert hg.city_from_text("Yaoundé") == "yaounde"
     assert hg.city_from_text("Mbuji-Mayi") == "mbuji_mayi"
     assert hg.city_from_text("Atlantis") is None and hg.city_from_text(None) is None
+
+
+# ---------------------------------------------------------------- round 3: more cities, requests
+
+async def test_R3_1_diaspora_and_more_african_cities(client, db):
+    await _on(db)
+    _, h = await make_user(db)
+    groups = {g["country"]: [c["id"] for c in g["cities"]] for g in (await client.get(f"{HG}/cities", headers=h)).json()}
+    for cc, cid in [("us", "wichita"), ("us", "new_york"), ("gb", "london"), ("fr", "paris"), ("br", "salvador"),
+                    ("jm", "kingston"), ("ca", "toronto"), ("ug", "hoima"), ("cd", "goma"), ("ng", "enugu")]:
+        assert cid in groups[cc], cid
+    assert sum(len(v) for v in groups.values()) >= 350
+    assert (await client.put(f"{HG}/me", json={"city_id": "london"}, headers=h)).status_code == 200
+
+
+async def test_R3_2_request_a_missing_city_and_admin_adds_it(client, db):
+    await _on(db)
+    a, ah = await make_user(db, localization={"country": "ug"})
+    b, bh = await make_user(db, localization={"country": "ug"})
+    for h in (ah, ah, bh):
+        r = await client.post(f"{HG}/request-city", json={"name": "Nebbi"}, headers=h)
+        assert r.status_code == 200 and r.json()["exists"] is False
+    assert (await client.post(f"{HG}/request-city", json={"name": "Kampala"}, headers=ah)).json()["exists"] is True
+    for bad in ["", "123", "$where", "x" * 80]:
+        assert (await client.post(f"{HG}/request-city", json={"name": bad}, headers=ah)).status_code == 422
+    assert (await client.post(f"{HG}/request-city", json={"name": "Nebbi", "country": "zz"}, headers=ah)).status_code == 422
+    _, adm = await make_user(db, user_type="admin")
+    reqs = (await client.get("/api/v1/admin/home-ground/requests", headers=adm)).json()["items"]
+    assert reqs[0]["name"] == "Nebbi" and reqs[0]["count"] == 2 and reqs[0]["country_name"] == "Uganda"
+    r = await client.post("/api/v1/admin/home-ground/cities", json={"name": "Nebbi", "country": "ug"}, headers=adm)
+    assert r.status_code == 200 and r.json()["id"] == "nebbi"
+    assert (await client.get("/api/v1/admin/home-ground/requests", headers=adm)).json()["items"] == []
+    assert (await client.put(f"{HG}/me", json={"city_id": "nebbi"}, headers=ah)).status_code == 200
+    _, uh = await make_user(db)
+    assert (await client.get("/api/v1/admin/home-ground/requests", headers=uh)).status_code == 403
+
+
+async def test_R3_3_same_name_in_two_countries_gets_its_own_id(client, db):
+    await _on(db)
+    _, adm = await make_user(db, user_type="admin")
+    r = await client.post("/api/v1/admin/home-ground/cities", json={"name": "Kingston", "country": "ca"}, headers=adm)
+    assert r.json()["id"] == "kingston_ca"
+    from app.services import home_ground as hg
+    assert hg.CITY["kingston"]["country"] == "jm"

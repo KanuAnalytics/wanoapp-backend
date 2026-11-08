@@ -314,6 +314,31 @@ async def studio_reject(draft_id: str, body: RejectIn, admin: str = Depends(requ
     return {"rejected": True}
 
 
+# ---------------------------------------------------------------- Home Ground cities
+
+class CityIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    country: str
+
+
+@router.get("/home-ground/requests")
+async def hg_requests(admin: str = Depends(require_admin)):
+    from app.services import home_ground
+    db = get_database()
+    await home_ground.load_custom(db)
+    return {"items": await home_ground.city_requests(db), "cities": len(home_ground.CITY)}
+
+
+@router.post("/home-ground/cities")
+async def hg_add_city(body: CityIn, admin: str = Depends(require_admin)):
+    from app.services import home_ground
+    db = get_database()
+    out = await home_ground.add_city(db, admin, body.name[:60], body.country[:2])
+    await admin_log.record(db, admin, "city_added", {"city": out["id"]})
+    return out
+
+
 # ---------------------------------------------------------------- challenges
 
 @router.get("/challenges")

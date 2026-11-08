@@ -22,6 +22,12 @@ class HomeIn(BaseModel):
 async def _require_on(db):
     if not (await features.current(db)).get("home_ground"):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    await hg.load_custom(db)
+
+
+class CityRequestIn(BaseModel):
+    name: StrictStr
+    country: Optional[StrictStr] = None
 
 
 def _start(week: str) -> datetime:
@@ -115,3 +121,14 @@ async def board(city: Optional[str] = Query(None, max_length=40), country: Optio
     rows = hg.board_rows(w, city=city) if city else hg.board_rows(w, country=cc)
     return {"place": hg.CITY[city] if city else {"id": cc, "name": hg.COUNTRIES.get(cc, cc.upper())},
             "entries": rows[:50]}
+
+
+@router.post("/request-city")
+async def request_city(body: CityRequestIn, current_user: str = Depends(get_current_active_user)):
+    db = get_database()
+    await _require_on(db)
+    country = body.country
+    if not country:
+        u = await db.users.find_one({"_id": ObjectId(current_user)}, {"localization": 1}) or {}
+        country = hg.country_of(u)
+    return await hg.request_city(db, current_user, body.name, country)

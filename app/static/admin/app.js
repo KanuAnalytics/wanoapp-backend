@@ -128,7 +128,7 @@ $("logout").addEventListener("click", () => logout());
 
 const PAGES = [
   ["overview", "Overview"], ["payouts", "Payouts"], ["pool", "Cash pool"], ["creators", "Creators"],
-  ["moderation", "Reported posts"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["switches", "Feature switches"], ["log", "Activity log"],
+  ["moderation", "Reported posts"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["cities", "Cities"], ["switches", "Feature switches"], ["log", "Activity log"],
 ];
 let current = "overview";
 const counts = {};
@@ -468,6 +468,27 @@ const RENDER = {
           el("h3", { text: "Recent", style: "margin-top: 16px;" }),
           ...(history.length ? history.map((d) => el("div", { class: "small", style: "padding: 6px 0;",
             text: `${d.state === "approved" ? "✓" : "✕"} @${d.account.username} · ${d.title || "(no title)"}${d.note ? " — " + d.note : ""}` })) : [el("div", { class: "small muted", text: "No history yet." })]))));
+  },
+
+  async cities(main) {
+    const r = await api("GET", "/admin/home-ground/requests");
+    counts.cities = r.items.length; drawNav();
+    const name = el("input", { type: "text", placeholder: "City name", maxlength: 60 });
+    const cc = el("input", { type: "text", placeholder: "Country code, e.g. ug", maxlength: 2, style: "width: 120px;" });
+    const add = async (btn, n, c) => {
+      if (await act(btn, () => api("POST", "/admin/home-ground/cities", { name: n, country: c }), `Added ${n}`)) RENDER.cities(main);
+    };
+    main.replaceChildren(...head("Home Ground cities", `${num(r.cities)} cities people can pick. Requests from people who couldn't find theirs:`),
+      el("div", { class: "two" },
+        el("div", { class: "card" }, el("h3", { text: "Requested cities" }), r.items.length ? el("table", {}, el("tbody", {},
+          ...r.items.map((q) => el("tr", {}, el("td", {}, el("div", { style: "font-weight: 600;", text: q.name }),
+            el("div", { class: "small muted", text: `${q.country_name} · ${q.count} ${q.count === 1 ? "person" : "people"}` })),
+            el("td", { style: "text-align: right;" }, el("button", { class: "btn small", text: "Add", onclick: (e) => add(e.target, q.name, q.country) })))))) :
+          el("div", { class: "empty", text: "No requests yet." })),
+        el("div", { class: "card" }, el("h3", { text: "Add a city" }),
+          el("label", { class: "field" }, el("span", { text: "City" }), name),
+          el("label", { class: "field" }, el("span", { text: "Country (2 letters)" }), cc),
+          el("button", { class: "btn", text: "Add city", onclick: (e) => add(e.target, name.value.trim(), cc.value.trim().toLowerCase()) }))));
   },
 
   async switches(main) {

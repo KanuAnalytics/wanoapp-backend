@@ -33,41 +33,64 @@ CHANGE_DAYS = 30
 FIX_MINUTES = 60
 CACHE_SECONDS = 300
 
-COUNTRIES = {
-    "ug": "Uganda", "ke": "Kenya", "tz": "Tanzania", "rw": "Rwanda", "bi": "Burundi", "ss": "South Sudan",
-    "cd": "DR Congo", "cg": "Congo", "cm": "Cameroon", "ng": "Nigeria", "gh": "Ghana", "ci": "Côte d'Ivoire",
-    "sn": "Senegal", "za": "South Africa", "et": "Ethiopia", "zm": "Zambia", "zw": "Zimbabwe",
-    "ao": "Angola", "mz": "Mozambique", "mw": "Malawi", "so": "Somalia", "sd": "Sudan", "ml": "Mali",
-    "bf": "Burkina Faso", "bj": "Benin", "tg": "Togo", "ga": "Gabon", "ma": "Morocco", "eg": "Egypt",
-}
+from app.data.home_ground_cities import CITY_LIST, COUNTRY_NAMES
 
-# (id, name, country)
-CITIES = [
-    ("kampala", "Kampala", "ug"), ("gulu", "Gulu", "ug"), ("mbarara", "Mbarara", "ug"), ("jinja", "Jinja", "ug"),
-    ("entebbe", "Entebbe", "ug"), ("mbale", "Mbale", "ug"), ("lira", "Lira", "ug"), ("arua", "Arua", "ug"),
-    ("masaka", "Masaka", "ug"), ("fort_portal", "Fort Portal", "ug"), ("soroti", "Soroti", "ug"),
-    ("nairobi", "Nairobi", "ke"), ("mombasa", "Mombasa", "ke"), ("kisumu", "Kisumu", "ke"),
-    ("nakuru", "Nakuru", "ke"), ("eldoret", "Eldoret", "ke"),
-    ("dar_es_salaam", "Dar es Salaam", "tz"), ("dodoma", "Dodoma", "tz"), ("arusha", "Arusha", "tz"),
-    ("mwanza", "Mwanza", "tz"), ("zanzibar", "Zanzibar", "tz"),
-    ("kigali", "Kigali", "rw"), ("bujumbura", "Bujumbura", "bi"), ("juba", "Juba", "ss"),
-    ("kinshasa", "Kinshasa", "cd"), ("lubumbashi", "Lubumbashi", "cd"), ("goma", "Goma", "cd"),
-    ("bukavu", "Bukavu", "cd"), ("kisangani", "Kisangani", "cd"), ("mbuji_mayi", "Mbuji-Mayi", "cd"),
-    ("brazzaville", "Brazzaville", "cg"), ("pointe_noire", "Pointe-Noire", "cg"),
-    ("douala", "Douala", "cm"), ("yaounde", "Yaoundé", "cm"),
-    ("lagos", "Lagos", "ng"), ("abuja", "Abuja", "ng"), ("port_harcourt", "Port Harcourt", "ng"),
-    ("ibadan", "Ibadan", "ng"), ("kano", "Kano", "ng"),
-    ("accra", "Accra", "gh"), ("kumasi", "Kumasi", "gh"), ("abidjan", "Abidjan", "ci"), ("dakar", "Dakar", "sn"),
-    ("johannesburg", "Johannesburg", "za"), ("cape_town", "Cape Town", "za"), ("durban", "Durban", "za"),
-    ("addis_ababa", "Addis Ababa", "et"), ("lusaka", "Lusaka", "zm"), ("harare", "Harare", "zw"),
-    ("luanda", "Luanda", "ao"), ("maputo", "Maputo", "mz"), ("lilongwe", "Lilongwe", "mw"),
-]
-CITY = {cid: {"id": cid, "name": name, "country": cc} for cid, name, cc in CITIES}
+COUNTRIES = COUNTRY_NAMES
+
+
+def slug(name: str) -> str:
+    import re
+    return re.sub(r"[^a-z0-9]+", "_", _fold(name)).strip("_")
+
+
+def _build_cities():
+    out = {}
+    for name, cc in CITY_LIST:
+        cid = slug(name)
+        if cid in out:
+            cid = f"{cid}_{cc}"
+        out[cid] = {"id": cid, "name": name, "country": cc}
+    return out
+
+
+CITY: Dict[str, dict] = {}
+CITIES: List[tuple] = []
+
+
+def _set_cities(extra: Optional[List[dict]] = None):
+    """The built-in list plus cities admins added (hg_cities)."""
+    base = _build_cities()
+    for c in extra or []:
+        if isinstance(c.get("_id"), str) and isinstance(c.get("name"), str) and c.get("country") in COUNTRIES \
+                and c["_id"] not in base:
+            base[c["_id"]] = {"id": c["_id"], "name": c["name"], "country": c["country"]}
+    CITY.clear()
+    CITY.update(base)
+    CITIES[:] = [(c["id"], c["name"], c["country"]) for c in base.values()]
+    _BY_NAME.clear()
+    _BY_NAME.update({_fold(c["name"]): cid for cid, c in CITY.items()})
+
+
+_custom_loaded_at = [0.0]
+
+
+async def load_custom(db, force: bool = False) -> None:
+    if not force and time.monotonic() - _custom_loaded_at[0] < 60:
+        return
+    try:
+        extra = await db.hg_cities.find({}).to_list(2000)
+    except Exception:
+        extra = []
+    _set_cities(extra)
+    _custom_loaded_at[0] = time.monotonic()
+
+
 # Extra spellings people typed into the old free-text city setting.
 ALIASES = {"kla": "kampala", "kampala city": "kampala", "nbo": "nairobi", "dar": "dar_es_salaam",
-           "dsm": "dar_es_salaam", "kin": "kinshasa", "yaounde": "yaounde", "jozi": "johannesburg",
-           "joburg": "johannesburg", "addis": "addis_ababa", "pointe noire": "pointe_noire",
-           "mbuji mayi": "mbuji_mayi", "fortportal": "fort_portal"}
+           "dsm": "dar_es_salaam", "kin": "kinshasa", "jozi": "johannesburg", "joburg": "johannesburg",
+           "addis": "addis_ababa", "fortportal": "fort_portal", "nyc": "new_york", "new york city": "new_york",
+           "dc": "washington_dc", "washington": "washington_dc", "port elizabeth": "gqeberha", "la": "los_angeles",
+           "rio": "rio_de_janeiro", "sao paulo": "sao_paulo", "bruxelles": "brussels", "brussel": "brussels"}
 
 _cache: Dict[tuple, tuple] = {}
 
@@ -82,14 +105,72 @@ def _fold(s: str) -> str:
     return " ".join("".join(c for c in s if not unicodedata.combining(c)).casefold().replace("-", " ").split())
 
 
-_BY_NAME = {_fold(c["name"]): cid for cid, c in CITY.items()}
+_BY_NAME: Dict[str, str] = {}
+_set_cities()
 
 
 def city_from_text(text) -> Optional[str]:
     if not isinstance(text, str):
         return None
     f = _fold(text)
-    return _BY_NAME.get(f) or ALIASES.get(f) or (f.replace(" ", "_") if f.replace(" ", "_") in CITY else None)
+    return _BY_NAME.get(f) or ALIASES.get(f) or (slug(text) if slug(text) in CITY else None)
+
+
+async def request_city(db, user: str, name: str, country: Optional[str]) -> dict:
+    """Someone couldn't find their city: count it for the admin page."""
+    from fastapi import HTTPException
+    import re
+    clean = " ".join(str(name or "").split())
+    if len(clean) > 60 or not re.fullmatch(r"[^\W\d_][\w .'\-]{1,59}", clean or "", re.UNICODE) \
+            or any(ch.isdigit() for ch in clean):
+        raise HTTPException(status_code=422, detail="Type a city name")
+    cc = country.lower() if isinstance(country, str) else ""
+    if cc not in COUNTRIES:
+        raise HTTPException(status_code=422, detail="Pick a country")
+    existing = city_from_text(clean)
+    if existing and CITY[existing]["country"] == cc:
+        return {"exists": True, "city": CITY[existing]}
+    key = f"{slug(clean)}:{cc}"
+    await db.hg_city_requests.update_one(
+        {"_id": key},
+        {"$setOnInsert": {"name": clean, "country": cc, "first_at": datetime.utcnow()},
+         "$addToSet": {"users": ObjectId(user)}, "$set": {"last_at": datetime.utcnow()}},
+        upsert=True)
+    return {"exists": False}
+
+
+async def city_requests(db) -> List[dict]:
+    rows = await db.hg_city_requests.aggregate([
+        {"$project": {"name": 1, "country": 1, "last_at": 1, "count": {"$size": {"$ifNull": ["$users", []]}}}},
+        {"$sort": {"count": -1, "last_at": -1}}, {"$limit": 100}]).to_list(100)
+    return [{"id": r["_id"], "name": r["name"], "country": r["country"],
+             "country_name": COUNTRIES.get(r["country"], r["country"]), "count": r["count"]} for r in rows]
+
+
+async def add_city(db, admin: str, name: str, country: str) -> dict:
+    from fastapi import HTTPException
+    import re
+    clean = " ".join(str(name or "").split())[:60]
+    cc = (country or "").lower()
+    if not re.fullmatch(r"[^\W\d_][\w .'\-]{1,59}", clean or "", re.UNICODE) or cc not in COUNTRIES:
+        raise HTTPException(status_code=422, detail="Give a city name and a country")
+    await load_custom(db, force=True)
+    found = city_from_text(clean)
+    if found and CITY[found]["country"] == cc:
+        await db.hg_city_requests.delete_one({"_id": f"{slug(clean)}:{cc}"})
+        return CITY[found]
+    cid = slug(clean)
+    if cid in CITY:
+        cid = f"{cid}_{cc}"
+    try:
+        await db.hg_cities.insert_one({"_id": cid, "name": clean, "country": cc, "added_by": ObjectId(admin),
+                                       "at": datetime.utcnow()})
+    except Exception:
+        pass
+    await db.hg_city_requests.delete_one({"_id": f"{slug(clean)}:{cc}"})
+    await load_custom(db, force=True)
+    clear_cache()
+    return CITY[cid]
 
 
 def country_of(user: dict) -> Optional[str]:
