@@ -167,6 +167,7 @@ const FEATURES = {
   leaderboard: ["Leaderboards", "Top creators this week."],
   badges: ["Badges", "Badges on profiles."],
   tv_series: ["Wano TV series", "Series, seasons and episodes on Wano TV."],
+  hashtags: ["Hashtag suggestions", "Suggestions while typing a caption, popular hashtags and video ideas."],
   tv_play: ["Play Wano TV films", "Films play inside the app. Needs Wano TV series. Turn on only after testing a film on a phone."],
 };
 

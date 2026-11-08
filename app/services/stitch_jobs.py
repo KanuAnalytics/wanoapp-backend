@@ -394,7 +394,8 @@ def _requested_duration(job: dict) -> float:
 async def _create_post(job: dict, stitched: dict) -> str:
     post = job.get("post") or {}
     duration = float(stitched.get("duration") or _requested_duration(job))
-    return await create_video_post(
+    reply_to = post.get("reply_to") if isinstance(post.get("reply_to"), dict) else None
+    video_id = await create_video_post(
         job["creator_id"],
         remote_url=stitched["file_url"],
         remote_url_cf=stitched["file_url"],
@@ -415,4 +416,10 @@ async def _create_post(job: dict, stitched: dict) -> str:
         sound=post.get("sound"),
         scheduled_at=post.get("scheduled_at"),
         scheduled_timezone=post.get("scheduled_timezone"),
+        reply_to=reply_to,
     )
+    if reply_to:
+        from app.services import replies
+        await replies.after_create(get_database(), reply_to, str(video_id), str(job["creator_id"]),
+                                   bool(post.get("scheduled_at")))
+    return video_id

@@ -158,6 +158,9 @@ class VideoStitch(BaseModel):
     subcategoryId: Optional[str] = None
     scheduled_at: Optional[datetime] = None
     timezone: Optional[str] = None
+    # A reply or duet to another post (app/services/replies.py), as on /videos/post.
+    reply_to: Optional[str] = None
+    reply_type: Literal["reply", "duet"] = "reply"
 
 class VideoCreate(BaseModel):
     title: Optional[str] = None
@@ -333,8 +336,13 @@ async def stitch_video(
     scheduled_at, scheduled_timezone = normalize_schedule(
         input.scheduled_at, input.timezone, require_lead_time=False
     )
+    reply_to = None
+    if input.reply_to:
+        # Checked now, so a reply that isn't allowed fails before any work starts.
+        from app.services import replies
+        reply_to = await replies.target(get_database(), current_user, input.reply_to, input.reply_type)
     try:
-        job_id = await _create_stitch_job(input, current_user, sound, scheduled_at, scheduled_timezone)
+        job_id = await _create_stitch_job(input, current_user, sound, scheduled_at, scheduled_timezone, reply_to)
     except StitchValidationError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except HTTPException:
@@ -348,7 +356,8 @@ async def stitch_video(
     return {"message": "Video submitted successfully. Processing in background.", "job_id": job_id}
 
 
-async def _create_stitch_job(input: VideoStitch, current_user: str, sound, scheduled_at, scheduled_timezone) -> str:
+async def _create_stitch_job(input: VideoStitch, current_user: str, sound, scheduled_at, scheduled_timezone,
+                             reply_to: Optional[dict] = None) -> str:
     return await create_stitch_job(
         user_id=current_user,
         clips=[clip.model_dump() for clip in input.videoUrls],
@@ -367,6 +376,7 @@ async def _create_stitch_job(input: VideoStitch, current_user: str, sound, sched
             "comments_enabled": input.comments_enabled,
             "scheduled_at": scheduled_at,
             "scheduled_timezone": scheduled_timezone,
+            "reply_to": reply_to,
         },
     )
 

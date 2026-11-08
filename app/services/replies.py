@@ -56,7 +56,11 @@ async def target(db, viewer: str, video_id: str, kind: str) -> dict:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You can't reply to this post")
         if v.get("remix_enabled") is False:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This creator turned off replies")
-    return {"video_id": oid, "creator_id": creator, "type": kind}
+    who = await db.users.find_one({"_id": creator}, {"username": 1}) or {}
+    out = {"video_id": oid, "creator_id": creator, "type": kind}
+    if isinstance(who.get("username"), str):
+        out["username"] = who["username"]   # shown as "Reply to @username"
+    return out
 
 
 async def after_create(db, reply_to: dict, reply_id: str, replier: str, scheduled: bool) -> None:
@@ -133,3 +137,36 @@ async def list_replies(db, video_id: str, viewer: Optional[str], cursor: Optiona
                       "creator": {"id": str(u["_id"]), "username": u.get("username"),
                                   "display_name": u.get("display_name"), "profile_picture": u.get("profile_picture")}})
     return {"items": items, "next_cursor": _cursor(docs[-1]) if more and docs else None}
+
+
+async def feed_links(db, docs: list) -> dict:
+    """For a page of posts: {reply video id: {"video_id", "type", "username"}}
+    for replies whose original is still visible (one query for the page)."""
+    refs = {}
+    for d in docs:
+        rt = d.get("reply_to")
+        if isinstance(rt, dict) and isinstance(rt.get("video_id"), ObjectId):
+            refs[d["_id"]] = rt
+    if not refs:
+        return {}
+    ids = list({rt["video_id"] for rt in refs.values()})
+    alive = {v["_id"]: v async for v in db.videos.find({"_id": {"$in": ids}, **_visible()}, {"creator_id": 1})}
+    creators = list({v["creator_id"] for v in alive.values() if v.get("creator_id")})
+    # Originals by banned or closed accounts aren't linked either.
+    names = {u["_id"]: u.get("username") async for u in db.users.find(
+        {"_id": {"$in": creators}, "is_active": {"$ne": False}}, {"username": 1})} if creators else {}
+    out = {}
+    for vid, rt in refs.items():
+        orig = alive.get(rt["video_id"])
+        if not orig or orig.get("creator_id") not in names:
+            continue
+        name = rt.get("username") if isinstance(rt.get("username"), str) else names.get(orig.get("creator_id"))
+        out[vid] = {"video_id": str(rt["video_id"]),
+                    "type": rt.get("type") if rt.get("type") in ("reply", "duet") else "reply",
+                    "username": name}
+    return out
+
+
+def count_of(doc: dict) -> int:
+    n = doc.get("remix_count")
+    return n if isinstance(n, int) and not isinstance(n, bool) and n > 0 else 0

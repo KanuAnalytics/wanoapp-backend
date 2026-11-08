@@ -8,6 +8,8 @@ from app.services import for_you, new_feed, thumbnails, trending
 from app.services.recommendations import viewer_id
 from pydantic import BaseModel
 from bson import ObjectId
+import logging
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 #deploy
@@ -54,6 +56,10 @@ class FeedVideo(BaseModel):
     # top with "processing" or "live".
     pinned: bool = False
     status: Optional[str] = None
+    # Replies: how many this post has, and (when it is one) the post it answers,
+    # as {"video_id", "type", "username"}; null when that post is no longer visible.
+    replies_count: int = 0
+    reply_to: Optional[dict] = None
 
 
 def _count(value) -> int:
@@ -100,6 +106,29 @@ def _feed_video(video: dict, **fields) -> FeedVideo:
         sound=sound if isinstance(sound, dict) and sound.get("title") else None,
         **fields,
     )
+
+
+async def _with_replies(videos: List["FeedVideo"]) -> List["FeedVideo"]:
+    """Fills replies_count and reply_to for a page (one extra query). Never
+    breaks the feed: on any error the page goes out without them."""
+    try:
+        from app.services import replies
+        ids = [ObjectId(v.id) for v in videos if ObjectId.is_valid(v.id)]
+        if not ids:
+            return videos
+        db = get_database()
+        docs = await db.videos.find({"_id": {"$in": ids}}, {"remix_count": 1, "reply_to": 1}).to_list(len(ids))
+        by_id = {str(d["_id"]): d for d in docs}
+        links = await replies.feed_links(db, docs)
+        for v in videos:
+            d = by_id.get(v.id)
+            if not d:
+                continue
+            v.replies_count = replies.count_of(d)
+            v.reply_to = links.get(d["_id"])
+    except Exception:
+        logger.exception("Could not add reply info to a feed page")
+    return videos
 
 
 @router.get("/", response_model=List[FeedVideo])
@@ -508,7 +537,7 @@ async def get_feed(
     if next_cursor:
         response.headers["X-Next-Cursor"] = next_cursor
 
-    return videos
+    return await _with_replies(videos)
 
 
 class NewCountCreator(BaseModel):
@@ -641,7 +670,7 @@ async def get_feed_v2(
         db, viewer=viewer, current_user=current_user, variant=page.variant,
         recomm_id=page.recomm_id, items=served,
     )
-    return videos
+    return await _with_replies(videos)
 
 
 async def _viewer_if_signed_in(token: Optional[str] = Depends(oauth2_scheme_optional)) -> Optional[str]:
@@ -707,4 +736,4 @@ async def get_trending(
             has_liked=vid in liked, is_bookmarked=vid in saved,
             is_following=video["creator_id"] in following, source="trending",
         ))
-    return out
+    return await _with_replies(out)

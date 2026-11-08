@@ -35,7 +35,8 @@ async def test_RP1_reply_links_counts_lists_and_tells_the_creator(client, db, ca
     assert r.status_code == 201, r.text
     rid = r.json()["video_id"]
     doc = await db.videos.find_one({"_id": ObjectId(rid)})
-    assert doc["reply_to"] == {"video_id": ObjectId(target), "creator_id": ObjectId(c), "type": "duet"}
+    assert {k: doc["reply_to"][k] for k in ("video_id", "creator_id", "type")} == \
+        {"video_id": ObjectId(target), "creator_id": ObjectId(c), "type": "duet"}
     assert doc["is_remix"] is True
     assert (await db.videos.find_one({"_id": ObjectId(target)}))["remix_count"] == 1
     lst = (await client.get(f"/api/v1/videos/{target}/replies", params={"authenticated": "false"})).json()
