@@ -128,7 +128,7 @@ $("logout").addEventListener("click", () => logout());
 
 const PAGES = [
   ["overview", "Overview"], ["payouts", "Payouts"], ["pool", "Cash pool"], ["creators", "Creators"],
-  ["moderation", "Reported posts"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["cities", "Cities"], ["switches", "Feature switches"], ["log", "Activity log"],
+  ["moderation", "Reported posts"], ["messagereports", "Reported messages"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["cities", "Cities"], ["switches", "Feature switches"], ["log", "Activity log"],
 ];
 let current = "overview";
 const counts = {};
@@ -174,6 +174,7 @@ const FEATURES = {
   creator_stats: ["Creator stats", "Views, likes, comments and shares per day, best posts and best time to post."],
   mentions: ["@mentions", "Name suggestions while typing @, tappable @names, and a notification to the person mentioned."],
   ai_label: ["AI disclosure", "Creators mark a post Made with AI; the label shows in the feed and people can report undisclosed AI."],
+  messages: ["Messages", "In-house messaging: chats between people who follow each other, message requests from others, shared posts, reports to this page."],
   feed_fx: ["Livelier feeds", "Tap effects, drag-to-seek, sound disc, top comment, local reactions (+1 your city, Eish, Ayaa), Trending as a chart with ranks and country chips."],
   trial_posts: ["Trial posts", "Creators can post without telling followers, then share it later."],
   milestones: ["Creator milestones", "Celebrations at follower and view milestones, tier badges (Rising, Star, Gold, Legend) next to names, achievements page."],
@@ -315,6 +316,27 @@ const RENDER = {
             el("button", { class: "btn secondary small", text: "Restore", onclick: (e) => moderate(e.target, v, "restore", main) }), " ",
             el("button", { class: "btn ghost-danger small", text: "Remove", onclick: (e) => moderate(e.target, v, "remove", main) })));
       }))) : el("div", { class: "empty", text: "Nothing reported." })));
+  },
+
+  async messagereports(main) {
+    const r = await api("GET", "/admin/message-reports");
+    counts.messagereports = r.items.length; drawNav();
+    const decide = async (btn, rep, action) => {
+      if (await act(btn, () => api("POST", `/admin/message-reports/${encodeURIComponent(rep.id)}`, { action }),
+        action === "remove" ? "Message removed" : "Report dismissed")) RENDER.messagereports(main);
+    };
+    main.replaceChildren(...head("Reported messages", "Only the reported message and a few around it are shown, never the whole chat. Remove replaces it with \"Message removed by Wano\" for both people."),
+      el("div", { class: "card" }, r.items.length ? el("table", {}, el("tbody", {}, ...r.items.map((rep) => el("tr", {},
+        el("td", {},
+          el("div", { class: "row small", style: "margin-bottom: 6px;" },
+            el("span", { class: "pill amber", text: (rep.reason || "other").replace(/_/g, " ") }),
+            el("span", { class: "muted", text: `@${(rep.sender && rep.sender.username) || "?"} reported by @${(rep.reporter && rep.reporter.username) || "?"}` })),
+          ...(rep.context || []).map((m) => el("div", { class: "small", style: `padding: 3px 8px; border-radius: 6px; margin: 2px 0;${m.reported ? " background: #FFF4E5; font-weight: 600;" : ""}`,
+            text: `@${m.from || "?"}: ${m.kind === "post" && !m.text ? "[shared a post]" : (m.text || "[removed]")}` }))),
+        el("td", { style: "text-align: right; white-space: nowrap; vertical-align: top;" },
+          el("button", { class: "btn secondary small", text: "Dismiss", onclick: (e) => decide(e.target, rep, "dismiss") }), " ",
+          el("button", { class: "btn ghost-danger small", text: "Remove", onclick: (e) => decide(e.target, rep, "remove") })))))) :
+        el("div", { class: "empty", text: "No reported messages." })));
   },
 
   async challenges(main) {

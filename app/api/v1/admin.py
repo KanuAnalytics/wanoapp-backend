@@ -344,6 +344,27 @@ class CityIn(BaseModel):
     country: str
 
 
+class MessageReportIn(BaseModel):
+    action: Literal["remove", "dismiss"]
+
+
+@router.get("/message-reports")
+async def message_reports(admin: str = Depends(require_admin)):
+    """Open reports, newest first, each with only a few messages around the
+    reported one, never the whole chat."""
+    from app.services import messages
+    return {"items": await messages.admin_reports(get_database())}
+
+
+@router.post("/message-reports/{report_id}")
+async def act_on_message_report(report_id: str, body: MessageReportIn, admin: str = Depends(require_admin)):
+    from app.services import messages
+    db = get_database()
+    out = await messages.admin_act(db, report_id[:80], body.action)
+    await admin_log.record(db, admin, f"message_{body.action}", {"report": report_id[:80]})
+    return out
+
+
 @router.get("/home-ground/requests")
 async def hg_requests(admin: str = Depends(require_admin)):
     from app.services import home_ground

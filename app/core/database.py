@@ -156,6 +156,15 @@ async def create_indexes():
         (d.video_reactions, [("video_id", 1), ("user_id", 1)], {}),
         (d.reaction_daily, [("at", 1)], {"expireAfterSeconds": 2 * 24 * 3600}),
         (d.trending_snapshots, [("scope", 1), ("at", 1)], {}),
+        # Messaging: one conversation per pair, inbox order, a chat's messages
+        # newest first, retries by client id, daily/minute limits (TTL).
+        (d.conversations, [("key", 1)], {"unique": True}),
+        (d.conversations, [("members", 1), ("last_at", -1), ("_id", -1)], {}),
+        (d.messages, [("conversation_id", 1), ("created_at", -1), ("_id", -1)], {}),
+        (d.messages, [("sender_id", 1), ("client_id", 1)], {"unique": True, "name": "messages_client_id_unique",
+                                                            "partialFilterExpression": {"client_id": {"$type": "string"}}}),
+        (d.message_limits, [("at", 1)], {"expireAfterSeconds": 2 * 24 * 3600}),
+        (d.message_reports, [("status", 1), ("created_at", -1)], {}),
         (d.trending_snapshots, [("at", 1)], {"expireAfterSeconds": 3 * 24 * 3600, "name": "trending_snapshots_ttl"}),
 
         # User indexes

@@ -64,3 +64,5 @@ api_router.include_router(hashtags_router, prefix="/hashtags", tags=["hashtags"]
 api_router.include_router(milestones_router, prefix="/milestones", tags=["milestones"])
 api_router.include_router(home_ground_router, prefix="/home-ground", tags=["home-ground"])
 api_router.include_router(creator_push_router, prefix="/creator", tags=["creator"])
+from app.api.v1.messages import router as messages_router  # noqa: E402
+api_router.include_router(messages_router, prefix="/messages", tags=["messages"])

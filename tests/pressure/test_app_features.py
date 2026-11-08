@@ -10,7 +10,7 @@ from tests.pressure.test_for_you import rb  # noqa: F401
 pytestmark = pytest.mark.asyncio
 
 KEYS = {"points", "boost", "earnings", "replies", "challenges", "sounds", "city", "leaderboard", "badges",
-        "tv_series", "tv_play", "hashtags", "milestones", "home_ground", "picks", "missions", "creator_stats", "trial_posts", "mentions", "ai_label", "feed_fx"}
+        "tv_series", "tv_play", "hashtags", "milestones", "home_ground", "picks", "missions", "creator_stats", "trial_posts", "mentions", "ai_label", "feed_fx", "messages"}
 
 
 async def _features(client):
