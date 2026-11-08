@@ -168,6 +168,7 @@ const FEATURES = {
   badges: ["Badges", "Badges on profiles."],
   tv_series: ["Wano TV series", "Series, seasons and episodes on Wano TV."],
   hashtags: ["Hashtag suggestions", "Suggestions while typing a caption, popular hashtags and video ideas."],
+  home_ground: ["Home Ground", "Users represent a city and country: weekly country and city battles, local creator boards, weekly crowns."],
   milestones: ["Creator milestones", "Celebrations at follower and view milestones, tier badges (Rising, Star, Gold, Legend) next to names, achievements page."],
   tv_play: ["Play Wano TV films", "Films play inside the app. Needs Wano TV series. Turn on only after testing a film on a phone."],
 };

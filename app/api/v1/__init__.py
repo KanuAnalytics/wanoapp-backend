@@ -31,6 +31,7 @@ from app.api.v1.challenges import router as challenges_router
 from app.api.v1.admin import router as admin_router
 from app.api.v1.hashtags import router as hashtags_router
 from app.api.v1.milestones import router as milestones_router
+from app.api.v1.home_ground import router as home_ground_router
 
 
 
@@ -58,3 +59,4 @@ api_router.include_router(challenges_router, prefix="/challenges", tags=["challe
 api_router.include_router(admin_router, prefix="/admin", tags=["admin"])
 api_router.include_router(hashtags_router, prefix="/hashtags", tags=["hashtags"])
 api_router.include_router(milestones_router, prefix="/milestones", tags=["milestones"])
+api_router.include_router(home_ground_router, prefix="/home-ground", tags=["home-ground"])

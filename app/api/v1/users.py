@@ -265,6 +265,7 @@ class UserWithDetailsResponse(BaseModel):
     views: int = 0  # Number of mutual followers
     can_unblock: Optional[bool] = None  # If current user has blocked this user
     tier: Optional[str] = None  # Creator milestone tier (app/services/milestones.py)
+    home_ground: Optional[Dict[str, Any]] = None  # Representing (app/services/home_ground.py)
     blocked: Optional[bool] = None  # If this user has blocked current user
     
     
@@ -1449,6 +1450,8 @@ async def get_user_complete(
         
         response_data["recent_videos"] = recent_videos
     
+    from app.services import home_ground as _hg
+    response_data["home_ground"] = _hg.place_label(user) if user.get("home_ground") else None
     if user.get("tier") in ("rising", "star", "gold", "legend"):
         response_data["tier"] = user["tier"]
     return UserWithDetailsResponse(**response_data)

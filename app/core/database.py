@@ -119,6 +119,7 @@ async def create_indexes():
         # Badges (leaderboard.py): a creator's list, and ones still to announce.
         (d.user_badges, [("user_id", 1), ("at", -1)], {}),
         (d.users, [("followers_count", -1)], {"name": "users_followers_count"}),
+        (d.users, [("home_ground.city", 1)], {"name": "users_home_ground_city", "sparse": True}),
         (d.user_badges, [("at", 1)], {"name": "user_badges_unnotified",
                                        "partialFilterExpression": {"notified": False}}),
         # Replies/duets, challenges, sounds, local mix.

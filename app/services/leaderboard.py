@@ -126,6 +126,13 @@ def label(badge: dict) -> str:
         except ValueError:
             when = "this week"
         return f"#{badge.get('rank')} on Wano, {when}"
+    if kind in ("crown_city", "crown_country"):
+        try:
+            d = datetime.strptime(badge.get("week_start", ""), "%Y-%m-%d")
+            when = f"week of {d.day} {MONTHS[d.month - 1]} {d.year}"
+        except ValueError:
+            when = "this week"
+        return f"Top creator in {badge.get('place_name') or 'their home ground'}, {when}"
     if kind == "challenge_top3":
         return f"#{badge.get('rank')} in {badge.get('challenge') or 'a Wano challenge'}"
     if kind and kind.startswith("streak_"):
@@ -159,6 +166,9 @@ async def _tell(db, badge: dict, now: datetime) -> bool:
     from app.services import milestones
     if milestones.is_milestone(badge["kind"]):
         title, body = milestones.push_text(badge["kind"])
+    elif badge["kind"] in ("crown_city", "crown_country"):
+        title, body = f"You're the top creator in {badge.get('place_name') or 'your home ground'}", \
+            "You won the week for your home ground. Keep it!"
     elif badge["kind"] == "weekly_top10":
         title, body = "You made Wano's Top 10", f"You finished #{badge.get('rank')} last week. Keep posting!"
     else:

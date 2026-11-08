@@ -489,6 +489,11 @@ async def _award_milestones(db):
     return await milestones.award(db)
 
 
+async def _award_home_crowns(db):
+    from app.services import home_ground
+    return await home_ground.award_crowns(db)
+
+
 async def _settle_points(db):
     from app.services import points
     return await points.settle(db)
@@ -521,6 +526,7 @@ class GrowthLoop:
                        asyncio.create_task(self._every(1800, posting_recaps, "posting_recaps")),
                        asyncio.create_task(self._every(1800, _award_badges, "award_badges")),
                        asyncio.create_task(self._every(1800, _award_milestones, "award_milestones")),
+                       asyncio.create_task(self._every(1800, _award_home_crowns, "award_home_crowns")),
                        asyncio.create_task(self._every(900, _settle_points, "settle_points")),
                        asyncio.create_task(self._every(1800, _finish_challenges, "finish_challenges"))]
 
