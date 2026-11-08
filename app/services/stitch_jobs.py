@@ -417,6 +417,7 @@ async def _create_post(job: dict, stitched: dict) -> str:
         scheduled_at=post.get("scheduled_at"),
         scheduled_timezone=post.get("scheduled_timezone"),
         reply_to=reply_to,
+        points_category=post.get("points_category"),
     )
     if reply_to:
         from app.services import replies

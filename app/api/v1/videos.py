@@ -28,6 +28,9 @@ from app.services.video_deletion import soft_delete_video
 from app.services.stitch_jobs import MAX_CLIPS, StitchValidationError, create_stitch_job
 from app.services.video_posts import DEFAULT_THUMBNAIL, create_video_post, post_stream_uid, stream_uid_reference_query
 from app.services.songs import sound_for_post
+from app.services.points import CATEGORIES as _POINTS_CATEGORIES
+
+PointsCategory = Literal[tuple(_POINTS_CATEGORIES)]  # type: ignore[valid-type]
 from app.services.scheduled_publisher import normalize_schedule
 
 
@@ -125,6 +128,8 @@ class VideoPost(BaseModel):
     # A reply or duet to another post (app/services/replies.py).
     reply_to: Optional[str] = None
     reply_type: Literal["reply", "duet"] = "reply"
+    # The Wano points category (app/services/points.CATEGORIES), picked while posting.
+    points_category: Optional[PointsCategory] = None
 
 class StitchClip(BaseModel):
     url: str
@@ -161,6 +166,8 @@ class VideoStitch(BaseModel):
     # A reply or duet to another post (app/services/replies.py), as on /videos/post.
     reply_to: Optional[str] = None
     reply_type: Literal["reply", "duet"] = "reply"
+    # The Wano points category (app/services/points.CATEGORIES), picked while posting.
+    points_category: Optional[PointsCategory] = None
 
 class VideoCreate(BaseModel):
     title: Optional[str] = None
@@ -284,6 +291,7 @@ async def post_video(
         video_id = await create_video_post(
             current_user,
             reply_to=reply_to,
+            points_category=input.points_category,
             remix_enabled=input.remix_enabled is not False,
             media_type=input.media_type,
             images=input.images,
@@ -377,6 +385,7 @@ async def _create_stitch_job(input: VideoStitch, current_user: str, sound, sched
             "scheduled_at": scheduled_at,
             "scheduled_timezone": scheduled_timezone,
             "reply_to": reply_to,
+            "points_category": input.points_category,
         },
     )
 

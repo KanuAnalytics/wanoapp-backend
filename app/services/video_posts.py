@@ -99,6 +99,7 @@ async def create_video_post(
     scheduled_timezone: Optional[str] = None,
     reply_to: Optional[dict] = None,
     remix_enabled: bool = True,
+    points_category: Optional[str] = None,
 ) -> str:
     """
     Saves the post, counts it on the user, and syncs it to Recombee. Returns the new video's id.
@@ -178,6 +179,10 @@ async def create_video_post(
         video_doc["supports_landscape"] = supports_landscape
     if reply_to:
         video_doc["reply_to"] = reply_to
+    # Same field PUT /points/videos/{id}/category sets; only known categories.
+    from app.services.points import CATEGORIES as _POINTS_CATEGORIES
+    if isinstance(points_category, str) and points_category in _POINTS_CATEGORIES:
+        video_doc["category"] = points_category
 
     # A copy of the song ({id, title, uri, artist}), so the feed can show its
     # name -- and play it, for photo posts -- without looking the song up.
