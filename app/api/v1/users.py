@@ -264,6 +264,7 @@ class UserWithDetailsResponse(BaseModel):
     recent_videos: List[VideoDetail] = Field(default_factory=list)  # Last 5 videos with details
     views: int = 0  # Number of mutual followers
     can_unblock: Optional[bool] = None  # If current user has blocked this user
+    tier: Optional[str] = None  # Creator milestone tier (app/services/milestones.py)
     blocked: Optional[bool] = None  # If this user has blocked current user
     
     
@@ -1448,6 +1449,8 @@ async def get_user_complete(
         
         response_data["recent_videos"] = recent_videos
     
+    if user.get("tier") in ("rising", "star", "gold", "legend"):
+        response_data["tier"] = user["tier"]
     return UserWithDetailsResponse(**response_data)
 
 @router.get("/{user_id}/raw", response_model=Dict[str, Any])

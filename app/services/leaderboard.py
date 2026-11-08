@@ -116,6 +116,9 @@ async def ranking(db, start: datetime, country: Optional[str] = None) -> List[di
 
 def label(badge: dict) -> str:
     kind = badge.get("kind")
+    from app.services import milestones
+    if milestones.is_milestone(kind):
+        return milestones.label(kind)
     if kind == "weekly_top10":
         try:
             d = datetime.strptime(badge.get("week", ""), "%Y-%m-%d")
@@ -153,7 +156,10 @@ async def _tell(db, badge: dict, now: datetime) -> bool:
         return False
     if not await g._take_budget(db, user, now, "badges", 1):
         return False
-    if badge["kind"] == "weekly_top10":
+    from app.services import milestones
+    if milestones.is_milestone(badge["kind"]):
+        title, body = milestones.push_text(badge["kind"])
+    elif badge["kind"] == "weekly_top10":
         title, body = "You made Wano's Top 10", f"You finished #{badge.get('rank')} last week. Keep posting!"
     else:
         title, body = "New badge", f"You earned a {label(badge)} badge. Keep it going!"

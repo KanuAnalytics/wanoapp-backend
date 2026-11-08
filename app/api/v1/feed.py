@@ -256,7 +256,7 @@ async def get_feed(
                         "username": "$creator.username",
                         "display_name": "$creator.display_name",
                         "profile_picture": "$creator.profile_picture",
-                        "is_active": "$creator.is_active",
+                        "is_active": "$creator.is_active", "tier": "$creator.tier",
                     }
                 }
             },
@@ -346,7 +346,7 @@ async def get_feed(
                         "username": "$creator.username",
                         "display_name": "$creator.display_name",
                         "profile_picture": "$creator.profile_picture",
-                        "is_active": "$creator.is_active"
+                        "is_active": "$creator.is_active", "tier": "$creator.tier"
                     },
         }
 
@@ -495,7 +495,7 @@ async def get_feed(
                         "username": "$creator.username",
                         "display_name": "$creator.display_name",
                         "profile_picture": "$creator.profile_picture",
-                        "is_active": "$creator.is_active",
+                        "is_active": "$creator.is_active", "tier": "$creator.tier",
                     },
                 }
             },
@@ -637,7 +637,7 @@ async def get_feed_v2(
                 "username": "$creator.username",
                 "display_name": "$creator.display_name",
                 "profile_picture": "$creator.profile_picture",
-                "is_active": "$creator.is_active",
+                "is_active": "$creator.is_active", "tier": "$creator.tier",
             },
         }},
     ]
@@ -717,7 +717,7 @@ async def get_trending(
             "thumbnail": "$urls.thumbnail", "media_type": {"$ifNull": ["$media_type", "video"]},
             "images": {"$ifNull": ["$images", []]}, "sound": 1, "supports_landscape": 1, "created_at": 1,
             "user": {"username": "$creator.username", "display_name": "$creator.display_name",
-                     "profile_picture": "$creator.profile_picture", "is_active": "$creator.is_active"},
+                     "profile_picture": "$creator.profile_picture", "is_active": "$creator.is_active", "tier": "$creator.tier"},
         }},
     ]
     by_id = {d["_id"]: d for d in await db.videos.aggregate(pipeline).to_list(length=len(oids))}

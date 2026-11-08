@@ -484,6 +484,11 @@ async def _award_badges(db):
     return await leaderboard.award_badges(db)
 
 
+async def _award_milestones(db):
+    from app.services import milestones
+    return await milestones.award(db)
+
+
 async def _settle_points(db):
     from app.services import points
     return await points.settle(db)
@@ -515,6 +520,7 @@ class GrowthLoop:
                        asyncio.create_task(self._every(900, streak_reminders, "streak_reminders")),
                        asyncio.create_task(self._every(1800, posting_recaps, "posting_recaps")),
                        asyncio.create_task(self._every(1800, _award_badges, "award_badges")),
+                       asyncio.create_task(self._every(1800, _award_milestones, "award_milestones")),
                        asyncio.create_task(self._every(900, _settle_points, "settle_points")),
                        asyncio.create_task(self._every(1800, _finish_challenges, "finish_challenges"))]
 

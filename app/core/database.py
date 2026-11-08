@@ -118,6 +118,7 @@ async def create_indexes():
         (d.tv_watch_history, [("user_id", 1), ("watched_at", -1)], {}),
         # Badges (leaderboard.py): a creator's list, and ones still to announce.
         (d.user_badges, [("user_id", 1), ("at", -1)], {}),
+        (d.users, [("followers_count", -1)], {"name": "users_followers_count"}),
         (d.user_badges, [("at", 1)], {"name": "user_badges_unnotified",
                                        "partialFilterExpression": {"notified": False}}),
         # Replies/duets, challenges, sounds, local mix.
