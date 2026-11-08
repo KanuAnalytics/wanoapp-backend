@@ -66,7 +66,8 @@ async def suggest(db, q: str, viewer: Optional[str]) -> List[dict]:
     q = "".join(c for c in q if c.isalnum() or c in "_. ")[:30]
     me = None
     if viewer and ObjectId.is_valid(str(viewer)):
-        me = await db.users.find_one({"_id": ObjectId(str(viewer))}, {"following": 1, "blocked_users": 1, "blocked_by": 1})
+        me = await db.users.find_one({"_id": ObjectId(str(viewer))},
+                                     {"following": 1, "blocked_users": 1, "blocked_by": 1, "home_ground": 1})
     following = [f for f in (me or {}).get("following") or [] if isinstance(f, ObjectId)]
     hidden = set()
     for k in ("blocked_users", "blocked_by"):
@@ -87,6 +88,13 @@ async def suggest(db, q: str, viewer: Optional[str]) -> List[dict]:
     if following:
         async for u in db.users.find({**base, "_id": {"$in": following[:5000], "$nin": list(hidden)}}, proj) \
                 .sort("followers_count", -1).limit(SUGGEST_MAX):
+            rows.append(u)
+            seen.add(u["_id"])
+    # Then people from your Home Ground city: local creators before famous strangers.
+    city = (me or {}).get("home_ground", {}).get("city") if isinstance((me or {}).get("home_ground"), dict) else None
+    if len(rows) < SUGGEST_MAX and q and isinstance(city, str):
+        async for u in db.users.find({**base, "home_ground.city": city, "_id": {"$nin": list(hidden | seen)}}, proj) \
+                .sort("followers_count", -1).limit(SUGGEST_MAX - len(rows)):
             rows.append(u)
             seen.add(u["_id"])
     if len(rows) < SUGGEST_MAX and q:

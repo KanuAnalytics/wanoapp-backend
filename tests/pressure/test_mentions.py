@@ -151,3 +151,12 @@ async def test_MN9_switch_off_no_pushes_and_posting_never_breaks(client, db, cal
         raise RuntimeError("db down")
     monkeypatch.setattr(mentions, "by_username", boom)
     assert (await _post(client, h, description="@kofi")).status_code == 201
+
+
+async def test_MN10_home_ground_neighbours_before_famous_strangers(client, db):
+    await _on(db)
+    me, h = await make_user(db, username="me_kla", home_ground={"city": "kampala"})
+    await make_user(db, username="kofi_famous", followers_count=99999, home_ground={"city": "lagos"})
+    await make_user(db, username="kofi_local", followers_count=5, home_ground={"city": "kampala"})
+    names = [r["username"] for r in (await client.get(f"{M}/suggest", params={"q": "kofi"}, headers=h)).json()["items"]]
+    assert names == ["kofi_local", "kofi_famous"]
