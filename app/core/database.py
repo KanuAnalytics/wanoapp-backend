@@ -151,6 +151,13 @@ async def create_indexes():
         (d.tv_play_once, [("at", 1)], {"expireAfterSeconds": 2 * 24 * 3600}),
         (d.tv_play_ip, [("at", 1)], {"expireAfterSeconds": 2 * 24 * 3600}),
 
+        # Livelier feeds (feed_fx): who reacted to what, the daily cap, and
+        # hourly trending ranks (kept 3 days, enough to show a day's movement).
+        (d.video_reactions, [("video_id", 1), ("user_id", 1)], {}),
+        (d.reaction_daily, [("at", 1)], {"expireAfterSeconds": 2 * 24 * 3600}),
+        (d.trending_snapshots, [("scope", 1), ("at", 1)], {}),
+        (d.trending_snapshots, [("at", 1)], {"expireAfterSeconds": 3 * 24 * 3600, "name": "trending_snapshots_ttl"}),
+
         # User indexes
         (d.users, [("username", 1)], {"unique": True}),
         # Partial so phone-only accounts (no email key, or a legacy null) don't

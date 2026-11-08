@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import Union, List, Optional
 from datetime import datetime
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 from app.core.database import get_database
@@ -62,6 +62,11 @@ class FeedVideo(BaseModel):
     reply_to: Optional[dict] = None
     # The creator (or an admin) says this post was made with AI (ai_label switch).
     ai_generated: bool = False
+    # Trending board only (feed_fx): place on the chart, places moved since about
+    # a day ago ("new" if it wasn't on it), views in roughly the last hour.
+    rank: Optional[int] = None
+    rank_change: Optional[Union[int, str]] = None
+    views_last_hour: Optional[int] = None
 
 
 def _count(value) -> int:
@@ -711,7 +716,11 @@ async def get_trending(
     docs = await trending.top(db, country=country, limit=limit)
     if not docs:
         return []
-    oids = [d["_id"] for d in docs]
+    return await _hydrate_trending(db, [d["_id"] for d in docs], user_doc)
+
+
+async def _hydrate_trending(db, oids: list, user_doc: dict, extra: Optional[dict] = None) -> list:
+    """Feed items for these posts, in this order. `extra` adds fields per id."""
     pipeline = [
         {"$match": {"_id": {"$in": oids}}},
         {"$lookup": {"from": "users", "localField": "creator_id", "foreignField": "_id", "as": "creator"}},
@@ -731,15 +740,51 @@ async def get_trending(
     saved = {str(v) for v in user_doc.get("bookmarked_videos", [])}
     following = {str(v) for v in user_doc.get("following", [])}
     out = []
-    for d in docs:
-        vid = str(d["_id"])
+    for oid in oids:
+        vid = str(oid)
         video = by_id.get(vid)
         if not video:
             continue
         buffered = await metrics_buffer.get_buffered_counts(vid)
-        out.append(_feed_video(
+        item = _feed_video(
             video, id=vid, buffered_views=buffered["views"], buffered_likes=buffered["likes"],
             has_liked=vid in liked, is_bookmarked=vid in saved,
             is_following=video["creator_id"] in following, source="trending",
-        ))
+        )
+        for k, val in (extra or {}).get(vid, {}).items():
+            setattr(item, k, val)
+        out.append(item)
     return await _with_replies(out)
+
+
+@router.get("/trending-board", response_model=List[FeedVideo])
+async def get_trending_board(
+    country: Optional[str] = Query(None, min_length=2, max_length=2),
+    skip: int = Query(0, ge=0, le=200),
+    limit: int = Query(12, ge=1, le=30),
+    current_user: Optional[str] = Depends(_viewer_if_signed_in),
+):
+    """Trending as a chart (feed_fx): strict per country or all of Wano, with rank,
+    movement and recent views. See app/services/feed_fx.py."""
+    from app.services import creator_push as feature_gate, feed_fx
+    db = get_database()
+    await feature_gate.require(db, "feed_fx")
+    rows = await feed_fx.board(db, country=country, skip=skip, limit=limit)
+    if not rows:
+        return []
+    user_doc = {}
+    if current_user and ObjectId.is_valid(current_user):
+        user_doc = await db.users.find_one({"_id": ObjectId(current_user)},
+                                           {"liked_videos": 1, "bookmarked_videos": 1, "following": 1}) or {}
+    extra = {r["id"]: {"rank": r["rank"], "rank_change": r["change"], "views_last_hour": r["views_last_hour"]}
+             for r in rows}
+    return await _hydrate_trending(db, [ObjectId(r["id"]) for r in rows], user_doc, extra)
+
+
+@router.get("/trending-countries")
+async def get_trending_countries():
+    """Countries with posts trending now, for the chips above the chart (feed_fx)."""
+    from app.services import creator_push as feature_gate, feed_fx
+    db = get_database()
+    await feature_gate.require(db, "feed_fx")
+    return {"items": await feed_fx.countries(db)}

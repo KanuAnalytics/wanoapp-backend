@@ -57,7 +57,7 @@ async def get_app_version():
 # true is off, so an app release can ship the screens before they're turned on.
 APP_FEATURES = ("points", "boost", "earnings", "replies", "challenges", "sounds", "city", "leaderboard",
                 "badges", "tv_series", "tv_play", "hashtags", "milestones", "home_ground",
-                "picks", "missions", "creator_stats", "trial_posts", "mentions", "ai_label")
+                "picks", "missions", "creator_stats", "trial_posts", "mentions", "ai_label", "feed_fx")
 
 
 @router.get("/features")

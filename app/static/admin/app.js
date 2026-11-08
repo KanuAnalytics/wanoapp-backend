@@ -174,6 +174,7 @@ const FEATURES = {
   creator_stats: ["Creator stats", "Views, likes, comments and shares per day, best posts and best time to post."],
   mentions: ["@mentions", "Name suggestions while typing @, tappable @names, and a notification to the person mentioned."],
   ai_label: ["AI disclosure", "Creators mark a post Made with AI; the label shows in the feed and people can report undisclosed AI."],
+  feed_fx: ["Livelier feeds", "Tap effects, drag-to-seek, sound disc, top comment, local reactions (+1 your city, Eish, Ayaa), Trending as a chart with ranks and country chips."],
   trial_posts: ["Trial posts", "Creators can post without telling followers, then share it later."],
   milestones: ["Creator milestones", "Celebrations at follower and view milestones, tier badges (Rising, Star, Gold, Legend) next to names, achievements page."],
   tv_play: ["Play Wano TV films", "Films play inside the app. Needs Wano TV series. Turn on only after testing a film on a phone."],

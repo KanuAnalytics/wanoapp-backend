@@ -41,6 +41,8 @@ api_router.include_router(auth_router, prefix="/auth", tags=["authentication"])
 api_router.include_router(users_router, prefix="/users", tags=["users"])
 # Before videos_router, so "/videos/scheduled" isn't matched by "/videos/{video_id}".
 api_router.include_router(scheduled_posts_router, prefix="/videos", tags=["scheduled posts"])
+from app.api.v1.feed_fx import router as feed_fx_router  # noqa: E402
+api_router.include_router(feed_fx_router, prefix="/videos", tags=["feed-fx"])
 api_router.include_router(videos_router, prefix="/videos", tags=["videos"])
 api_router.include_router(comments_router, prefix="", tags=["comments"])
 api_router.include_router(feed_router, prefix="/feed", tags=["feed"])
