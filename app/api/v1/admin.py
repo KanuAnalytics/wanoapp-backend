@@ -314,6 +314,28 @@ async def studio_reject(draft_id: str, body: RejectIn, admin: str = Depends(requ
     return {"rejected": True}
 
 
+# ---------------------------------------------------------------- AI label
+
+class AiLabelAdminIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    on: StrictBool
+
+
+@router.post("/videos/{video_id}/ai-label")
+async def admin_ai_label(video_id: str, body: AiLabelAdminIn, admin: str = Depends(require_admin)):
+    """Mark a post that didn't disclose it as made with AI (or take that off)."""
+    db = get_database()
+    if not ObjectId.is_valid(video_id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Post not found")
+    sets = ({"$set": {"ai_generated": True, "ai_label_by_admin": True}} if body.on
+            else {"$unset": {"ai_generated": "", "ai_label_by_admin": ""}})
+    r = await db.videos.update_one({"_id": ObjectId(video_id), "is_active": True}, sets)
+    if not r.matched_count:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Post not found")
+    await admin_log.record(db, admin, "ai_label_on" if body.on else "ai_label_off", {"video": video_id})
+    return {"ai_generated": body.on}
+
+
 # ---------------------------------------------------------------- Home Ground cities
 
 class CityIn(BaseModel):

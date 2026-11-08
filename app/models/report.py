@@ -24,6 +24,7 @@ class ReportCategory(str, Enum):
     REGULATED_GOODS = "regulated_goods"
     INTELLECTUAL_PROPERTY = "intellectual_property"
     SPAM = "spam"
+    UNDISCLOSED_AI = "undisclosed_ai"
     OTHER = "other"
 
 class VideoReport(BaseDocument):

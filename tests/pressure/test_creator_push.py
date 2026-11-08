@@ -192,9 +192,10 @@ async def test_CP11_stats_are_only_mine(client, db):
 
 # ---------------------------------------------------------------- trial posts
 
-async def test_CP12_trial_post_isnt_announced_or_on_profile_for_others(client, db, calls):
+async def test_CP12_trial_post_isnt_announced_or_on_profile_for_others(client, db, calls, monkeypatch):
     await _on(db, trial_posts=True)
     from app.services import growth_notifications as g
+    monkeypatch.setattr(g, "_quiet", lambda u, now: False)     # not clock-dependent
     c, ch = await make_user(db, username="tester")
     f, fh = await make_user(db, expo_push_tokens=["ExponentPushToken[f]"], notification_prefs={"new_posts": True})
     await db.users.update_one({"_id": ObjectId(c)}, {"$set": {"followers": [ObjectId(f)]}})

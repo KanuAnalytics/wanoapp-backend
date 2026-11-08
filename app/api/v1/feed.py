@@ -60,6 +60,8 @@ class FeedVideo(BaseModel):
     # as {"video_id", "type", "username"}; null when that post is no longer visible.
     replies_count: int = 0
     reply_to: Optional[dict] = None
+    # The creator (or an admin) says this post was made with AI (ai_label switch).
+    ai_generated: bool = False
 
 
 def _count(value) -> int:
@@ -109,7 +111,7 @@ def _feed_video(video: dict, **fields) -> FeedVideo:
 
 
 async def _with_replies(videos: List["FeedVideo"]) -> List["FeedVideo"]:
-    """Fills replies_count and reply_to for a page (one extra query). Never
+    """Fills replies_count, reply_to and ai_generated for a page (one extra query). Never
     breaks the feed: on any error the page goes out without them."""
     try:
         from app.services import replies
@@ -117,15 +119,19 @@ async def _with_replies(videos: List["FeedVideo"]) -> List["FeedVideo"]:
         if not ids:
             return videos
         db = get_database()
-        docs = await db.videos.find({"_id": {"$in": ids}}, {"remix_count": 1, "reply_to": 1}).to_list(len(ids))
+        docs = await db.videos.find({"_id": {"$in": ids}},
+                                    {"remix_count": 1, "reply_to": 1, "ai_generated": 1}).to_list(len(ids))
         by_id = {str(d["_id"]): d for d in docs}
         links = await replies.feed_links(db, docs)
+        from app.services import features
+        ai_on = (await features.current(db)).get("ai_label") is True
         for v in videos:
             d = by_id.get(v.id)
             if not d:
                 continue
             v.replies_count = replies.count_of(d)
             v.reply_to = links.get(d["_id"])
+            v.ai_generated = ai_on and d.get("ai_generated") is True
     except Exception:
         logger.exception("Could not add reply info to a feed page")
     return videos

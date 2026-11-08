@@ -14,7 +14,7 @@ from app.core.config import settings
 from app.api.deps import get_current_active_user, get_optional_active_user, get_verified_user
 from app.services.expo import send_push_message
 from app.services.metrics_service import metrics_buffer
-from pydantic import BaseModel,HttpUrl, Field, model_validator
+from pydantic import BaseModel, ConfigDict, HttpUrl, Field, StrictBool, model_validator
 import re
 import json
 import logging
@@ -36,6 +36,11 @@ PointsCategory = Literal[tuple(_POINTS_CATEGORIES)]  # type: ignore[valid-type]
 async def _trial_on() -> bool:
     from app.services import features
     return (await features.current(get_database())).get("trial_posts") is True
+
+
+async def _ai_label_on() -> bool:
+    from app.services import features
+    return (await features.current(get_database())).get("ai_label") is True
 from app.services.scheduled_publisher import normalize_schedule
 
 
@@ -137,6 +142,8 @@ class VideoPost(BaseModel):
     points_category: Optional[PointsCategory] = None
     # Trial post: not announced to followers, not on the profile for others (trial_posts switch).
     trial: bool = False
+    # The creator says this was made with AI (ai_label switch).
+    ai_generated: StrictBool = False
 
 class StitchClip(BaseModel):
     url: str
@@ -177,6 +184,8 @@ class VideoStitch(BaseModel):
     points_category: Optional[PointsCategory] = None
     # Trial post: not announced to followers, not on the profile for others (trial_posts switch).
     trial: bool = False
+    # The creator says this was made with AI (ai_label switch).
+    ai_generated: StrictBool = False
 
 class VideoCreate(BaseModel):
     title: Optional[str] = None
@@ -302,6 +311,7 @@ async def post_video(
             reply_to=reply_to,
             points_category=input.points_category,
             trial=input.trial and await _trial_on(),
+            ai_generated=input.ai_generated and await _ai_label_on(),
             remix_enabled=input.remix_enabled is not False,
             media_type=input.media_type,
             images=input.images,
@@ -400,6 +410,7 @@ async def _create_stitch_job(input: VideoStitch, current_user: str, sound, sched
             "reply_to": reply_to,
             "points_category": input.points_category,
             "trial": bool(input.trial and await _trial_on()),
+            "ai_generated": bool(input.ai_generated and await _ai_label_on()),
         },
     )
 
@@ -1189,3 +1200,29 @@ async def unbookmark_video(
             pass
 
     return {"message": "Bookmark removed successfully"}
+
+
+class AiLabelIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    on: StrictBool
+
+
+@router.put("/{video_id}/ai-label")
+async def set_ai_label(video_id: str, body: AiLabelIn, current_user: str = Depends(get_current_active_user)):
+    """The creator adds or removes "Made with AI" on their own post. A label an
+    admin added can only be taken off by an admin."""
+    if not await _ai_label_on():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    db = get_database()
+    if not ObjectId.is_valid(video_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Post not found")
+    v = await db.videos.find_one({"_id": ObjectId(video_id), "creator_id": ObjectId(current_user), "is_active": True},
+                                 {"ai_label_by_admin": 1})
+    if not v:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your post")
+    if not body.on and v.get("ai_label_by_admin") is True:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="The Wano team marked this post as made with AI. Contact support to change it.")
+    await db.videos.update_one({"_id": ObjectId(video_id)},
+                               {"$set": {"ai_generated": True}} if body.on else {"$unset": {"ai_generated": ""}})
+    return {"ai_generated": body.on}

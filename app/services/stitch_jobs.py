@@ -419,6 +419,7 @@ async def _create_post(job: dict, stitched: dict) -> str:
         reply_to=reply_to,
         points_category=post.get("points_category"),
         trial=post.get("trial") is True,
+        ai_generated=post.get("ai_generated") is True,
     )
     if not post.get("scheduled_at") and post.get("trial") is not True and (post.get("privacy") or "public") == "public":
         from app.services import mentions

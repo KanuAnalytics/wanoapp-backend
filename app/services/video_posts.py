@@ -101,6 +101,7 @@ async def create_video_post(
     remix_enabled: bool = True,
     points_category: Optional[str] = None,
     trial: bool = False,
+    ai_generated: bool = False,
 ) -> str:
     """
     Saves the post, counts it on the user, and syncs it to Recombee. Returns the new video's id.
@@ -184,6 +185,8 @@ async def create_video_post(
     from app.services.points import CATEGORIES as _POINTS_CATEGORIES
     if trial is True:
         video_doc["trial"] = True
+    if ai_generated is True:
+        video_doc["ai_generated"] = True
     if isinstance(points_category, str) and points_category in _POINTS_CATEGORIES:
         video_doc["category"] = points_category
 
