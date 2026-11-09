@@ -132,3 +132,67 @@ async def request_city(body: CityRequestIn, current_user: str = Depends(get_curr
         u = await db.users.find_one({"_id": ObjectId(current_user)}, {"localization": 1}) or {}
         country = hg.country_of(u)
     return await hg.request_city(db, current_user, body.name, country)
+
+
+PULSE_DAYS = 14
+PULSE_POSTS = 12
+
+
+@router.get("/pulse")
+async def pulse(city: Optional[str] = Query(None, max_length=40), country: Optional[str] = Query(None, max_length=2),
+                current_user: Optional[str] = Depends(get_optional_active_user)):
+    """What's happening in a place: how many people represent it, who joined this
+    week, and its most-watched recent posts. Makes a city page feel alive even
+    before it has many creators on the board. Under-18s are never listed by city."""
+    from app.services import thumbnails
+    from app.services.creators import _showable
+    db = get_database()
+    await _require_on(db)
+    if not city and not country:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Give a city or a country")
+    if city and city not in hg.CITY:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown city")
+    cc = country.lower() if country and country.isalpha() and len(country) == 2 else None
+    if country and not cc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Country must be a 2-letter code")
+    now = datetime.utcnow()
+    week_ago = now - timedelta(days=7)
+    since = now - timedelta(days=PULSE_DAYS)
+    adult = {"$or": [{"date_of_birth": {"$exists": False}},
+                     {"date_of_birth": {"$not": {"$type": "date"}}},
+                     {"date_of_birth": {"$lte": now - timedelta(days=365 * 18 + 5)}}]}
+    if city:
+        who = {"home_ground.city": city, "is_active": {"$ne": False}, **adult}
+        members = await db.users.count_documents(who)
+        new = await db.users.count_documents({**who, "home_ground.set_at": {"$gte": week_ago}})
+        ids = [u["_id"] async for u in db.users.find(who, {"_id": 1}).limit(3000)]
+        post_q = {**_showable(), "creator_id": {"$in": ids}, "created_at": {"$gte": since}}
+        place = hg.CITY[city]
+        faces_q = who
+    else:
+        members = await db.users.count_documents({"localization.country": {"$in": [cc, cc.upper()]},
+                                                  "is_active": {"$ne": False}})
+        new = await db.users.count_documents({"localization.country": {"$in": [cc, cc.upper()]},
+                                              "is_active": {"$ne": False}, "created_at": {"$gte": week_ago}})
+        post_q = {**_showable(), "country": {"$in": [cc, cc.upper()]}, "created_at": {"$gte": since}}
+        place = {"id": cc, "name": hg.COUNTRIES.get(cc, cc.upper())}
+        faces_q = {"localization.country": {"$in": [cc, cc.upper()]}, "is_active": {"$ne": False}}
+    post_q["moderation.state"] = {"$nin": ["held", "removed"]}
+    docs = await db.videos.find(post_q).sort([("views_count", -1), ("_id", -1)]).limit(PULSE_POSTS).to_list(PULSE_POSTS)
+    users = {u["_id"]: u async for u in db.users.find(
+        {"_id": {"$in": list({d.get("creator_id") for d in docs})}, "is_active": {"$ne": False}},
+        {"username": 1, "display_name": 1, "profile_picture": 1})}
+    posts = []
+    for d in docs:
+        u = users.get(d.get("creator_id"))
+        if not u:
+            continue
+        posts.append({"id": str(d["_id"]), "thumbnail": thumbnails.best_thumbnail(d),
+                      "views_count": d.get("views_count", 0) if isinstance(d.get("views_count"), int) else 0,
+                      "creator": {"id": str(u["_id"]), "username": u.get("username"),
+                                  "profile_picture": u.get("profile_picture")}})
+    # A few faces from the place, people with a photo first, newest first.
+    faces = [{"id": str(u["_id"]), "username": u.get("username"), "profile_picture": u.get("profile_picture")}
+             async for u in db.users.find({**faces_q, "profile_picture": {"$type": "string", "$ne": ""}},
+                                          {"username": 1, "profile_picture": 1}).sort("_id", -1).limit(8)]
+    return {"place": place, "members": members, "new_this_week": new, "posts": posts, "faces": faces}

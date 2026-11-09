@@ -115,8 +115,27 @@ async def trending_sounds(
         {"$sort": {"creators": -1, "views": -1, "_id": 1}},
         {"$limit": limit},
     ], maxTimeMS=5000).to_list(limit)
+    # A cover (the most-watched post using it) and a few creator faces, so the
+    # list has pictures rather than the same music note on every row.
+    from app.services import thumbnails
+    sids = [r["_id"] for r in rows]
+    covers, faces = {}, {}
+    if sids:
+        tops = await db.videos.aggregate([
+            {"$match": {**q, "sound.id": {"$in": sids}}},
+            {"$sort": {"views_count": -1, "_id": -1}},
+            {"$group": {"_id": "$sound.id", "top": {"$first": "$$ROOT"}, "creators": {"$addToSet": "$creator_id"}}},
+        ], maxTimeMS=5000).to_list(len(sids))
+        people = {c for t in tops for c in t["creators"][:3]}
+        users = {u["_id"]: u async for u in db.users.find(
+            {"_id": {"$in": list(people)}, "is_active": {"$ne": False}}, {"profile_picture": 1, "username": 1})}
+        for t in tops:
+            covers[t["_id"]] = {"post_id": str(t["top"]["_id"]), "thumbnail": thumbnails.best_thumbnail(t["top"])}
+            faces[t["_id"]] = [{"id": str(c), "profile_picture": users[c].get("profile_picture"),
+                                "username": users[c].get("username")} for c in t["creators"][:3] if c in users]
     return [{"sound": {k: (r.get("sound") or {}).get(k) for k in ("id", "title", "artist", "uri")},
-             "creators": r["creators"], "posts": r["posts"], "views": r["views"]} for r in rows]
+             "creators": r["creators"], "posts": r["posts"], "views": r["views"],
+             "cover": covers.get(r["_id"]), "faces": faces.get(r["_id"], [])} for r in rows]
 
 
 @router.get("/sounds/{sound_id}/posts")
