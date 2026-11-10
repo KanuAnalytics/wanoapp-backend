@@ -500,6 +500,7 @@ const RENDER = {
     counts.cities = r.items.length; drawNav();
     const name = el("input", { type: "text", placeholder: "City name", maxlength: 60 });
     const cc = el("input", { type: "text", placeholder: "Country code, e.g. ug", maxlength: 2, style: "width: 120px;" });
+    const resetName = el("input", { type: "text", placeholder: "@username", maxlength: 40 });
     const add = async (btn, n, c) => {
       if (await act(btn, () => api("POST", "/admin/home-ground/cities", { name: n, country: c }), `Added ${n}`)) RENDER.cities(main);
     };
@@ -513,7 +514,14 @@ const RENDER = {
         el("div", { class: "card" }, el("h3", { text: "Add a city" }),
           el("label", { class: "field" }, el("span", { text: "City" }), name),
           el("label", { class: "field" }, el("span", { text: "Country (2 letters)" }), cc),
-          el("button", { class: "btn", text: "Add city", onclick: (e) => add(e.target, name.value.trim(), cc.value.trim().toLowerCase()) }))));
+          el("button", { class: "btn", text: "Add city", onclick: (e) => add(e.target, name.value.trim(), cc.value.trim().toLowerCase()) }))),
+      el("div", { class: "card" }, el("h3", { text: "Reset someone's Home Ground" }),
+        el("div", { class: "small muted", text: "Clears their city so they can pick again now, without the 30-day wait." }),
+        el("label", { class: "field" }, el("span", { text: "Username" }), resetName),
+        el("button", { class: "btn", text: "Reset", onclick: async (e) => {
+          const u = resetName.value.trim().replace(/^@/, "");
+          if (u && await act(e.target, () => api("POST", "/admin/home-ground/reset", { username: u }), `Reset @${u}`)) resetName.value = "";
+        } })));
   },
 
   async switches(main) {

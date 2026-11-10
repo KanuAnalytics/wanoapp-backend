@@ -274,3 +274,58 @@ async def test_FX12_top_comment_is_pinned_or_most_liked_and_safe(client, db):
     await db.videos.update_one({"_id": ObjectId(vid)}, {"$set": {"privacy": "private"}})
     assert (await client.get(T)).status_code == 404
     assert (await client.get("/api/v1/videos/junk/top-comment")).status_code == 404
+
+
+# ------------------------------------------------------------------ whose city
+
+async def test_FX13_post_shows_the_creators_city_and_the_city_that_reacted_most(client, db):
+    """A viewer whose own Home Ground is Accra sees where the post is FROM
+    (the creator's Kampala) and which city reacted most, not just Accra."""
+    await _on(db)
+    c, _ = await _local(db, city="kampala")
+    vid = await make_video(db, c)
+    _, accra = await _local(db, city="accra")
+    for _ in range(2):
+        _, k = await _local(db, city="kampala")
+        await client.post(R.format(vid), json={"kind": "fire"}, headers=k)
+    for _ in range(3):
+        _, n = await _local(db, city="nairobi")
+        await client.post(R.format(vid), json={"kind": "eish"}, headers=n)
+    r = (await client.get(R.format(vid), headers=accra)).json()
+    assert r["creator_city"] == {"id": "kampala", "name": "Kampala", "count": 2}
+    assert r["top_city"] == {"id": "nairobi", "name": "Nairobi", "count": 3}
+    assert r["city"] == {"id": "accra", "name": "Accra", "count": 0}
+    anon = (await client.get(R.format(vid))).json()   # same for signed-out viewers
+    assert anon["creator_city"]["name"] == "Kampala" and anon["top_city"]["name"] == "Nairobi" and anon["city"] is None
+
+
+async def test_FX14_no_city_for_minor_creators_creators_without_one_or_junk_counts(client, db):
+    await _on(db)
+    kid, _ = await make_user(db, date_of_birth=datetime.utcnow() - timedelta(days=365 * 15),
+                             home_ground={"city": "kampala"})
+    none_, _ = await make_user(db)
+    for creator in (kid, none_):
+        vid = await make_video(db, creator)
+        await db.videos.update_one({"_id": ObjectId(vid)}, {"$set": {"city_reactions": {
+            "atlantis": 50, "kampala": "9", "lagos": True, "nairobi": -2}}})
+        r = (await client.get(R.format(vid))).json()
+        assert r["creator_city"] is None and r["top_city"] is None
+
+
+async def test_FX15_admin_resets_someones_home_ground(client, db):
+    _, adh = await make_user(db, user_type="admin")
+    uid, uh = await _local(db, city="accra", username="eilmer")
+    _, plain = await make_user(db)
+    assert (await client.post("/api/v1/admin/home-ground/reset", json={"username": "eilmer"},
+                              headers=plain)).status_code in (401, 403)
+    assert (await client.post("/api/v1/admin/home-ground/reset", json={"username": "nobody"},
+                              headers=adh)).status_code == 404
+    assert (await client.post("/api/v1/admin/home-ground/reset", json={"username": {"$ne": 1}},
+                              headers=adh)).status_code == 422
+    r = await client.post("/api/v1/admin/home-ground/reset", json={"username": "@eilmer"}, headers=adh)
+    assert r.status_code == 200 and r.json() == {"reset": True, "was": "accra"}
+    assert "home_ground" not in await db.users.find_one({"_id": ObjectId(uid)})
+    # Free to pick again straight away.
+    await db.config.insert_one({"features": {"home_ground": True}})
+    r = await client.put("/api/v1/home-ground/me", json={"city_id": "kampala"}, headers=uh)
+    assert r.status_code == 200, r.text

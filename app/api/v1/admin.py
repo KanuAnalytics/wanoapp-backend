@@ -10,7 +10,7 @@ from typing import Literal, Optional
 
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from pydantic import BaseModel, ConfigDict, StrictBool
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from app.api.deps import require_admin
 from app.api.v1 import auth as auth_api
@@ -380,6 +380,28 @@ async def hg_add_city(body: CityIn, admin: str = Depends(require_admin)):
     out = await home_ground.add_city(db, admin, body.name[:60], body.country[:2])
     await admin_log.record(db, admin, "city_added", {"city": out["id"]})
     return out
+
+
+class HgResetIn(BaseModel):
+    username: str = Field(min_length=1, max_length=40)
+
+
+@router.post("/home-ground/reset")
+async def hg_reset(body: HgResetIn, admin: str = Depends(require_admin)):
+    """Clear someone's Home Ground so they can pick again right away (the
+    30-day lock only stops people hopping between cities on their own)."""
+    from app.services import home_ground
+    db = get_database()
+    name = body.username.strip().lstrip("@")
+    u = await db.users.find_one({"username": name}, {"home_ground": 1}) \
+        or await db.users.find_one({"username": name.lower()}, {"home_ground": 1})
+    if not u:
+        raise HTTPException(status_code=404, detail="No such user")
+    before = (u.get("home_ground") or {}).get("city") if isinstance(u.get("home_ground"), dict) else None
+    await db.users.update_one({"_id": u["_id"]}, {"$unset": {"home_ground": ""}})
+    home_ground.clear_cache()
+    await admin_log.record(db, admin, "home_ground_reset", {"user": str(u["_id"]), "was": before})
+    return {"reset": True, "was": before}
 
 
 # ---------------------------------------------------------------- challenges

@@ -76,7 +76,21 @@ async def summary(db, video_id: str, me: Optional[str]) -> dict:
     vid = _oid(video_id)
     my_oid = ObjectId(me) if me and ObjectId.is_valid(me) else None
     v = await _visible_post(db, vid, my_oid)
-    out = {"counts": _counts(v), "mine": [], "city": None}
+    out = {"counts": _counts(v), "mine": [], "city": None, "creator_city": None, "top_city": None}
+    # Where the post is from: the creator's Home Ground city (adults only),
+    # with how many people from that city reacted. Same for everyone.
+    creator = await db.users.find_one({"_id": v.get("creator_id")},
+                                      {"home_ground": 1, "date_of_birth": 1}) if v.get("creator_id") else None
+    cc = hg.city_of(creator or {})
+    if cc and not hg.is_minor(creator):
+        out["creator_city"] = {"id": cc, "name": hg.CITY[cc]["name"], "count": _city_count(v, cc)}
+    # The city that reacted most, so a post shows real local pull.
+    raw = v.get("city_reactions") if isinstance(v.get("city_reactions"), dict) else {}
+    ranked = sorted(((n, c) for c, n in raw.items() if isinstance(n, int) and not isinstance(n, bool)
+                     and n > 0 and c in hg.CITY), key=lambda x: (-x[0], x[1]))
+    if ranked:
+        n, c = ranked[0]
+        out["top_city"] = {"id": c, "name": hg.CITY[c]["name"], "count": n}
     if my_oid:
         user = await db.users.find_one({"_id": my_oid}, {"home_ground": 1, "date_of_birth": 1, "localization": 1}) or {}
         out["mine"] = [d["kind"] async for d in db.video_reactions.find({"video_id": vid, "user_id": my_oid},
