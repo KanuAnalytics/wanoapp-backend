@@ -250,9 +250,38 @@ async def stats(db, me: ObjectId, days: int) -> dict:
     if sum(len(x) for x in hours.values()) >= 5:
         h = max(hours, key=lambda k: (sum(hours[k]) / len(hours[k]), len(hours[k])))
         best_hours = {"from": h, "to": (h + 3) % 24}
+    posts_month = await _posts_month(db, me, offset)
     return {"days": days, "totals": totals, "series": series, "best_posts": best, "best_hours": best_hours,
+            "posts_month": posts_month,
             "followers": int((await db.users.find_one({"_id": me}, {"followers_count": 1}) or {})
                              .get("followers_count") or 0)}
+
+
+async def _posts_month(db, me: ObjectId, offset: timedelta) -> dict:
+    """Posts you put up this calendar month (your local time), on how many
+    different days, and last month's count to compare. Only posts people can
+    see count: private, removed, held and still-processing ones don't."""
+    local_now = datetime.now(timezone.utc).replace(tzinfo=None) + offset
+    this_start = local_now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    last_start = (this_start - timedelta(days=1)).replace(day=1)
+    # Back to UTC for the query (created_at is stored in UTC).
+    q_from = last_start - offset
+    count = last = 0
+    days = set()
+    async for p in db.videos.find({"creator_id": me, **_visible(), "created_at": {"$gte": q_from}},
+                                  {"created_at": 1}):
+        c = p.get("created_at")
+        if not isinstance(c, datetime):
+            continue
+        local = c.replace(tzinfo=None) + offset
+        if local >= this_start:
+            if local <= local_now + timedelta(minutes=5):
+                count += 1
+                days.add(local.date())
+        elif local >= last_start:
+            last += 1
+    return {"month": this_start.strftime("%Y-%m"), "count": count, "days_posted": len(days),
+            "last_month": last}
 
 
 # ---------------------------------------------------------------- trial posts

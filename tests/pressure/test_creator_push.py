@@ -190,6 +190,44 @@ async def test_CP11_stats_are_only_mine(client, db):
     assert (await client.get(f"{C}/stats")).status_code == 401
 
 
+async def test_CP11b_stats_show_posts_this_month_in_local_time(client, db):
+    """This calendar month in the creator's own time zone: count, days posted,
+    last month's count. Private, removed and other people's posts don't count."""
+    await _on(db, creator_stats=True)
+    from app.services import growth_notifications as g
+    uid, h = await make_user(db, localization={"country": "ug"})
+    other, _ = await make_user(db)
+    off = g._offset(await db.users.find_one({"_id": ObjectId(uid)}))
+    now = datetime.now(timezone.utc)
+    local_now = now.replace(tzinfo=None) + off
+    start = local_now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    utc = lambda local: local - off  # noqa: E731
+    await make_video(db, uid, created_at=now - timedelta(minutes=1))
+    await make_video(db, uid, created_at=now - timedelta(minutes=2))
+    await make_video(db, uid, created_at=utc(start) + timedelta(minutes=1))   # first minute of the month, local
+    await make_video(db, uid, created_at=utc(start) - timedelta(minutes=1))   # last minute of last month, local
+    await make_video(db, uid, created_at=utc(start) - timedelta(days=40))     # two months back
+    await make_video(db, uid, created_at=now, privacy="private")
+    await make_video(db, uid, created_at=now, is_active=False)
+    await make_video(db, uid, created_at=now, moderation={"state": "removed"})
+    await make_video(db, other, created_at=now)
+    pm = (await client.get(f"{C}/stats", params={"days": 7}, headers=h)).json()["posts_month"]
+    assert pm["month"] == start.strftime("%Y-%m")
+    assert pm["count"] == 3
+    same_day = (local_now.date() == start.date())
+    assert pm["days_posted"] == (1 if same_day else 2)
+    assert pm["last_month"] == 1
+    # Same answer whatever range the screen shows.
+    assert (await client.get(f"{C}/stats", params={"days": 28}, headers=h)).json()["posts_month"] == pm
+
+
+async def test_CP11c_new_creator_month_is_zero(client, db):
+    await _on(db, creator_stats=True)
+    _, h = await make_user(db)
+    pm = (await client.get(f"{C}/stats", headers=h)).json()["posts_month"]
+    assert pm["count"] == 0 and pm["days_posted"] == 0 and pm["last_month"] == 0
+
+
 # ---------------------------------------------------------------- trial posts
 
 async def test_CP12_trial_post_isnt_announced_or_on_profile_for_others(client, db, calls, monkeypatch):
