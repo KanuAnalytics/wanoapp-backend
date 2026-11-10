@@ -807,10 +807,35 @@ async def summary(db, user: ObjectId) -> dict:
         "boost": {"min_points": MIN_BOOST, "viewers_per_point": VIEWERS_PER_POINT, "days": BOOST_DAYS},
         "earnings": await _earnings(db, user),
         "creator_status": await creator_status(db, user, _utcnow()),
+        "progress": await _progress(db, user, now, month),
         "history": [{"kind": h.get("kind"), "state": h.get("state"), "amount": h.get("amount"),
                      "month": h.get("month"), "video_id": str(h["video_id"]) if h.get("video_id") else None,
                      "at": h.get("at")} for h in hist],
     }
+
+
+async def _progress(db, user: ObjectId, now: datetime, month: str) -> dict:
+    """What the points screen needs so a creator never just sees 0: points
+    earned this month (pending, not yet spendable), today's earning views, and
+    what's stopping them from earning (posts with no category, no post today)."""
+    this_month = 0
+    async for r in db.points_ledger.find({"user_id": user, "kind": "earned", "month": month}, {"amount": 1}):
+        this_month += _num(r.get("amount"))
+    live = {"creator_id": user, "is_active": True, "privacy": "public"}
+    with_cat = await db.videos.count_documents({**live, "category": {"$in": list(CATEGORIES)}})
+    without_cat = await db.videos.count_documents({**live, "category": {"$nin": list(CATEGORIES)}})
+    day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    posted_today = await db.videos.count_documents({**qualifying(), "creator_id": user, "created_at": {"$gte": day}}) > 0
+    today_views = 0
+    async for r in db.post_daily.find({"creator_id": user, "day": day}, {"pviews": 1, "pfinished": 1}):
+        today_views += _num(r.get("pviews")) * PER_VIEW + _num(r.get("pfinished")) * PER_FINISH
+    # The month's end in UTC, when pending points lock in (or expire).
+    y, m = int(month[:4]), int(month[5:7])
+    unlocks = datetime(y + (m == 12), 1 if m == 12 else m + 1, 1)
+    return {"earned_this_month": this_month, "today_estimate": min(today_views, DAILY_CAP) if posted_today else 0,
+            "today_views_waiting": 0 if posted_today else today_views,
+            "posts_with_category": with_cat, "posts_without_category": without_cat,
+            "posted_today": posted_today, "unlocks_at": unlocks}
 
 
 async def _earnings(db, user: ObjectId) -> dict:
