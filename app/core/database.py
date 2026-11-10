@@ -116,6 +116,10 @@ async def create_indexes():
         (d.tv_genres, [("name", 1)], {"unique": True}),
         (d.tv_watch_history, [("user_id", 1), ("title_id", 1)], {"unique": True}),
         (d.tv_watch_history, [("user_id", 1), ("watched_at", -1)], {}),
+        (d.tv_progress, [("user_id", 1), ("title_id", 1)], {"unique": True}),
+        (d.tv_progress, [("user_id", 1), ("updated_at", -1)], {}),
+        (d.tv_list, [("user_id", 1), ("title_id", 1)], {"unique": True}),
+        (d.tv_list, [("user_id", 1), ("added_at", -1)], {}),
         # Badges (leaderboard.py): a creator's list, and ones still to announce.
         (d.user_badges, [("user_id", 1), ("at", -1)], {}),
         (d.users, [("followers_count", -1)], {"name": "users_followers_count"}),

@@ -56,6 +56,8 @@ api_router.include_router(categories_router, prefix="/categories", tags=["catego
 api_router.include_router(config_router, prefix="/config", tags=["config"])
 api_router.include_router(recombee_router, prefix="/recombee", tags=["recombee"])
 api_router.include_router(notifications_router, prefix="/notifications", tags=["notifications"])
+from app.api.v1.tv_plus import router as tv_plus_router  # noqa: E402
+api_router.include_router(tv_plus_router, prefix="/tv/plus", tags=["wano-tv"])
 api_router.include_router(tv_router, prefix="/tv", tags=["wano-tv"])
 api_router.include_router(creators_router, prefix="/creators", tags=["creators"])
 api_router.include_router(leaderboard_router, prefix="/leaderboard", tags=["leaderboard"])

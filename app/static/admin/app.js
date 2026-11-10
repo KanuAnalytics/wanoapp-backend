@@ -177,6 +177,7 @@ const FEATURES = {
   messages: ["Messages", "In-house messaging: chats between people who follow each other, message requests from others, shared posts, reports to this page."],
   feed_fx: ["Livelier feeds", "Tap effects, drag-to-seek, sound disc, top comment, local reactions (+1 your city, Eish, Ayaa), Trending as a chart with ranks and country chips."],
   profile_plus: ["Profile extras", "Wano passport chips (city, rank, points, tier), compact buttons, \"Followed by\" faces and Play all on profiles."],
+  tv_plus: ["Wano TV extras", "Poster rows, Top 10, Continue watching with resume, next episode, My List and share on Wano TV."],
   trial_posts: ["Trial posts", "Creators can post without telling followers, then share it later."],
   milestones: ["Creator milestones", "Celebrations at follower and view milestones, tier badges (Rising, Star, Gold, Legend) next to names, achievements page."],
   tv_play: ["Play Wano TV films", "Films play inside the app. Needs Wano TV series. Turn on only after testing a film on a phone."],
