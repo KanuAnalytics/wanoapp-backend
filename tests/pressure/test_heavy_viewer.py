@@ -64,3 +64,23 @@ async def test_HV4_light_viewer_still_never_sees_watched_posts_while_unseen_ones
     await _watched(db, uid, ids[:3])
     got = [v["id"] for v in (await _feed(client, h, limit=8)).json()]
     assert len(got) == 8 and not set(got) & set(ids[:3])
+
+
+async def test_HV5_discover_isnt_empty_for_someone_who_follows_nearly_everyone(client, db, monkeypatch):
+    from app.api.v1 import feed
+    monkeypatch.setattr(feed, "DISCOVER_MIN", 10)
+    cs, ids = await _catalog(db, n=12, creators=6)
+    stranger, _ = await make_user(db)
+    from tests.pressure.conftest import make_video
+    lone = await make_video(db, stranger, isReadyToStream=True)
+    uid, h = await make_user(db, following=[ObjectId(c) for c in cs])
+    params = {"limit": 4, "skip": 0, "exclude_following": "true", "privacy": "public"}
+    got = [v["id"] for v in (await client.get("/api/v1/feed/", params=params, headers=h)).json()]
+    assert len(got) == 4                         # followed creators kept: only 1 post exists outside them
+    # someone following just one creator still has them hidden
+    uid2, h2 = await make_user(db, following=[ObjectId(cs[0])])
+    pages = []
+    for skip in (0, 4, 8, 12):
+        pages += [v["id"] for v in (await client.get("/api/v1/feed/", params={**params, "skip": skip}, headers=h2)).json()]
+    mine = {str(d["_id"]) async for d in db.videos.find({"creator_id": ObjectId(cs[0])}, {"_id": 1})}
+    assert lone in pages and not (set(pages) & mine)

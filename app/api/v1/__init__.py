@@ -43,6 +43,8 @@ api_router.include_router(users_router, prefix="/users", tags=["users"])
 api_router.include_router(scheduled_posts_router, prefix="/videos", tags=["scheduled posts"])
 from app.api.v1.feed_fx import router as feed_fx_router  # noqa: E402
 api_router.include_router(feed_fx_router, prefix="/videos", tags=["feed-fx"])
+from app.api.v1.profile_plus import router as profile_plus_router  # noqa: E402
+api_router.include_router(profile_plus_router, prefix="/users", tags=["profile"])
 api_router.include_router(videos_router, prefix="/videos", tags=["videos"])
 api_router.include_router(comments_router, prefix="", tags=["comments"])
 api_router.include_router(feed_router, prefix="/feed", tags=["feed"])

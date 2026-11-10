@@ -12,6 +12,9 @@ import logging
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Discover keeps followed creators in when fewer posts than this exist without them.
+DISCOVER_MIN = 200
 #deploy
 
 # Fields the client may sort the v1 feed by; anything else falls back to created_at.
@@ -296,7 +299,19 @@ async def get_feed(
             exclude_creator_ids.add(ObjectId(current_user))
             if exclude_following:
                 user_following_ids = user_doc.get("following", []) if user_doc else []
-                exclude_creator_ids.update(ObjectId(uid) for uid in user_following_ids)
+                following_oids = {ObjectId(uid) for uid in user_following_ids if ObjectId.is_valid(str(uid))}
+                # Discover hides people you already follow. Someone who follows
+                # nearly everyone (the founder's account follows thousands) was
+                # left with an empty Discover. When fewer than DISCOVER_MIN posts
+                # exist outside the people they follow, followed creators stay in.
+                # The check stops counting at DISCOVER_MIN, so it stays cheap.
+                if following_oids:
+                    outside = await db.videos.count_documents(
+                        {"is_active": True, "privacy": "public",
+                         "creator_id": {"$nin": list(exclude_creator_ids | following_oids)}},
+                        limit=DISCOVER_MIN)
+                    if outside >= DISCOVER_MIN:
+                        exclude_creator_ids.update(following_oids)
 
             match_conditions.update({"privacy": "public"})
             if exclude_creator_ids:
