@@ -117,6 +117,11 @@ async def create_indexes():
         (d.tv_watch_history, [("user_id", 1), ("title_id", 1)], {"unique": True}),
         (d.tv_watch_history, [("user_id", 1), ("watched_at", -1)], {}),
         (d.tv_progress, [("user_id", 1), ("title_id", 1)], {"unique": True}),
+        # Small picture copies: which pictures are done (app/services/small_images.py).
+        (d.image_variants, [("state", 1), ("at", -1)], {}),
+        # Speed timings, daily histograms (app/services/perf.py); 90 days.
+        (d.perf_daily, [("day", 1)], {"expireAfterSeconds": 90 * 24 * 3600}),
+        (d.users, [("updated_at", -1)], {"name": "users_updated_at"}),
         (d.tv_progress, [("user_id", 1), ("updated_at", -1)], {}),
         (d.tv_list, [("user_id", 1), ("title_id", 1)], {"unique": True}),
         (d.tv_list, [("user_id", 1), ("added_at", -1)], {}),

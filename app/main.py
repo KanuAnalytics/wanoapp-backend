@@ -101,8 +101,11 @@ async def lifespan(app: FastAPI):
     await rescue_loop.start()  # Asks Cloudflare about uploads whose "ready" message was missed
     from app.services.growth_notifications import growth_loop
     growth_loop.start()  # Followers told about new posts; creator tips (app/services/growth_notifications.py)
+    from app.services.small_images import small_images_loop
+    small_images_loop.start()  # Small WebP copies of pictures for slow connections
     yield
     # Shutdown
+    await small_images_loop.stop()
     await growth_loop.stop()
     await rescue_loop.stop()
     await recommendations.stats_sync.stop()

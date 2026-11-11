@@ -126,6 +126,25 @@ def _spaces_client():
     )
 
 
+def _shrink_soon(key: str) -> None:
+    """Make the small copies of a just-uploaded picture now, not on the next
+    sweep, so someone who changes their profile photo sees it straight away."""
+    async def run():
+        try:
+            from app.core.database import get_database
+            from app.services import small_images
+            db = get_database()
+            if small_images.source_key(f"{settings.DO_SPACES_CDN_URL}/{settings.DO_SPACES_BUCKET_NAME}/{key}") \
+                    and await small_images.claim(db, key):
+                await small_images.process(db, key)
+        except Exception:
+            pass
+    try:
+        asyncio.get_running_loop().create_task(run())
+    except RuntimeError:
+        pass
+
+
 def _upload_folder(isAudio: bool, isImage: bool) -> str:
     if isImage:
         return "profile-pictures"
@@ -151,6 +170,8 @@ async def upload_path_to_spaces(tmp_path: str, filename: str, isAudio: bool = Fa
             }
         )
         public_url = f"{settings.DO_SPACES_CDN_URL}/{settings.DO_SPACES_BUCKET_NAME}/{unique_filename}"
+        if isImage:
+            _shrink_soon(unique_filename)
         return True, public_url, unique_filename
     except ClientError as e:
         return False, str(e), None

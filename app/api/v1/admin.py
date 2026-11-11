@@ -404,6 +404,20 @@ async def hg_reset(body: HgResetIn, admin: str = Depends(require_admin)):
     return {"reset": True, "was": before}
 
 
+@router.get("/perf")
+async def speed_report(days: int = Query(7, ge=1, le=90), admin: str = Depends(require_admin)):
+    """How fast the app is on real phones, by country and connection."""
+    from app.services import perf
+    return {"days": days, "rows": await perf.report(get_database(), days)}
+
+
+@router.get("/small-images")
+async def small_images_status(admin: str = Depends(require_admin)):
+    """Progress making small picture copies (app/services/small_images.py)."""
+    from app.services import small_images
+    return await small_images.status(get_database())
+
+
 # ---------------------------------------------------------------- challenges
 
 @router.get("/challenges")

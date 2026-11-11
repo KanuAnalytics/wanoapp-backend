@@ -128,7 +128,7 @@ $("logout").addEventListener("click", () => logout());
 
 const PAGES = [
   ["overview", "Overview"], ["payouts", "Payouts"], ["pool", "Cash pool"], ["creators", "Creators"],
-  ["moderation", "Reported posts"], ["messagereports", "Reported messages"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["cities", "Cities"], ["switches", "Feature switches"], ["log", "Activity log"],
+  ["moderation", "Reported posts"], ["messagereports", "Reported messages"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["cities", "Cities"], ["switches", "Feature switches"], ["speed", "Speed"], ["log", "Activity log"],
 ];
 let current = "overview";
 const counts = {};
@@ -178,6 +178,8 @@ const FEATURES = {
   feed_fx: ["Livelier feeds", "Tap effects, drag-to-seek, sound disc, top comment, local reactions (+1 your city, Eish, Ayaa), Trending as a chart with ranks and country chips."],
   profile_plus: ["Profile extras", "Wano passport chips (city, rank, points, tier), compact buttons, \"Followed by\" faces and Play all on profiles."],
   tv_plus: ["Wano TV extras", "Poster rows, Top 10, Continue watching with resume, next episode, My List and share on Wano TV."],
+  perf: ["Speed measurement", "The app reports how long the first video, each video and each feed page take, and buffering, by country and Wi-Fi/mobile. Nothing personal is kept. See the Speed page."],
+  small_images: ["Small pictures", "The app loads small copies of pictures (avatars ~10 KB instead of up to 2 MB). Turn on once the Speed page shows the copies are done."],
   trial_posts: ["Trial posts", "Creators can post without telling followers, then share it later."],
   milestones: ["Creator milestones", "Celebrations at follower and view milestones, tier badges (Rising, Star, Gold, Legend) next to names, achievements page."],
   tv_play: ["Play Wano TV films", "Films play inside the app. Needs Wano TV series. Turn on only after testing a film on a phone."],
@@ -552,6 +554,26 @@ const RENDER = {
     }});
     main.replaceChildren(...head("Feature switches", "New features stay hidden until you switch them on here. Changes reach people the next time they open the app."),
       list, el("div", { class: "row space" }, el("span", { class: "small muted", text: "Emergency" }), kill));
+  },
+
+  async speed(main) {
+    const days = 7;
+    const [p, si] = await Promise.all([api("GET", `/admin/perf?days=${days}`), api("GET", "/admin/small-images")]);
+    const MET = { first_video: "App open → first video", video_start: "Video on screen → playing", stall: "Buffering pause", feed_load: "Feed page load" };
+    const s = (ms) => ms == null ? "–" : (ms >= 1000 ? `${(ms / 1000).toFixed(1)} s` : `${ms} ms`);
+    const t = si.totals || {};
+    const mb = (b) => `${((b || 0) / 1048576).toFixed(1)} MB`;
+    const walked = Object.entries(si.backlog_walked || {}).map(([k, v]) => `${k}: ${v ? "all done" : "in progress"}`).join(" · ") || "not started";
+    const table = p.rows.length ? el("table", {}, el("thead", {}, el("tr", {}, ...["Country", "Connection", "What", "Count", "Typical (p50)", "Slow (p90)"].map((h) => el("th", { text: h })))),
+      el("tbody", {}, ...p.rows.map((r) => el("tr", {}, el("td", { text: r.country }), el("td", { text: r.net }), el("td", { text: MET[r.metric] || r.metric }),
+        el("td", { text: num(r.count) }), el("td", { text: s(r.p50) }), el("td", { text: s(r.p90) })))))
+      : el("div", { class: "empty", text: "No timings yet. Turn on \"Speed measurement\" in Feature switches; phones on the new app start sending within a minute." });
+    main.replaceChildren(...head("Speed", `How fast Wano is on real phones over the last ${days} days, by country.`),
+      el("div", { class: "card" }, el("h3", { text: "Small picture copies" }),
+        el("div", { text: `${num(si.done || 0)} pictures done · ${num(si.failed || 0)} failed · ${num(si.working || 0)} in progress` }),
+        el("div", { class: "small muted", text: `Backlog: ${walked}` }),
+        t.n ? el("div", { class: "small muted", text: `Originals ${mb(t.orig)} → avatars ${mb(t.w320)}, previews ${mb(t.w480)}` }) : null),
+      el("div", { class: "card" }, el("h3", { text: "Timings" }), table));
   },
 
   async log(main) {
