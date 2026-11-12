@@ -212,6 +212,13 @@ app.add_middleware(
     expose_headers=["X-Has-More", "X-Next-Cursor"],
 )
 
+# Compressed replies for the app, behind the gzip_api switch (app/core/gzip_switch.py).
+# Innermost (next to the routes), so it sees each reply whole and can leave
+# small ones alone; the timeout and CORS layers pass the bytes through.
+from starlette.middleware import Middleware  # noqa: E402
+from app.core.gzip_switch import SwitchedGZip  # noqa: E402
+app.user_middleware.append(Middleware(SwitchedGZip))
+
 # Include the API router - THIS IS WHAT'S MISSING!
 app.include_router(api_router, prefix="/api/v1")
 

@@ -63,8 +63,9 @@ async def unread(me: str = Depends(get_current_active_user)):
 
 @router.get("/conversations/{cid}/messages")
 async def get_messages(cid: str, limit: int = Query(30, ge=1, le=100), before: Optional[str] = Query(None, max_length=40),
+                       after: Optional[str] = Query(None, max_length=40),
                        me: str = Depends(get_current_active_user)):
-    return await svc.page(await _db(), me, cid, limit, before)
+    return await svc.page(await _db(), me, cid, limit, before, after)
 
 
 @router.post("/conversations/{cid}/messages", status_code=201)

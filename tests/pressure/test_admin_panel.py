@@ -400,3 +400,20 @@ async def test_R10_admin_session_really_ends(client, db):
     old = jwt.encode({**claims, "exp": int((_dt.now(_tz.utc) - _td(minutes=1)).timestamp())},
                      settings.SECRET_KEY, algorithm=settings.ALGORITHM)
     assert (await client.get(f"{A}/me", headers={"Authorization": f"Bearer {old}"})).status_code == 401
+
+
+async def test_AS10_instant_feed_switch_on_off_and_in_all_off(client, db):
+    """instant_feed (app 2.3.23): off until switched on, only a real boolean
+    turns it on, and the emergency all-off covers it."""
+    _, ah = await _admin(db)
+    assert (await _features(client))["instant_feed"] is False
+    for bad in ({"key": "instant_feed", "on": "true"}, {"key": "instant_feed", "on": 1},
+                {"key": "instant-feed", "on": True}, {"key": "Instant_Feed", "on": True}):
+        assert (await client.put(f"{A}/features", headers=ah, json=bad)).status_code == 422, bad
+    assert (await _features(client))["instant_feed"] is False
+    r = await client.put(f"{A}/features", headers=ah, json={"key": "instant_feed", "on": True})
+    assert r.status_code == 200
+    f = await _features(client)
+    assert f["instant_feed"] is True and sum(f.values()) == 1
+    assert (await client.post(f"{A}/features/all-off", headers=ah)).status_code == 200
+    assert (await _features(client))["instant_feed"] is False

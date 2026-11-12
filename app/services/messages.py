@@ -469,8 +469,16 @@ async def _push(db, conv_id, sender: dict, to: dict, text: str, is_post: bool, r
         logger.exception("message push failed")
 
 
-async def page(db, me_id: str, cid: str, limit: int, before: Optional[str]) -> dict:
+async def page(db, me_id: str, cid: str, limit: int, before: Optional[str],
+               after: Optional[str] = None) -> dict:
+    """A page of a chat, newest first. With `after` (msg_lite): only the
+    messages newer than that one, and none of the parts that don't change
+    (the other person), so an open chat's check for news is a few hundred
+    bytes instead of the whole last page. `gap` says more arrived than fit,
+    and the app then reloads the chat in full."""
     me_oid = ObjectId(me_id)
+    if before and after:
+        raise HTTPException(status_code=400, detail="Bad cursor")
     conv = await _conv_for(db, cid, me_oid)
     other_oid = _other_id(conv, me_oid)
     ms = _mstate(conv, me_oid)
@@ -486,6 +494,14 @@ async def page(db, me_id: str, cid: str, limit: int, before: Optional[str]) -> d
             raise HTTPException(status_code=400, detail="Bad cursor")
         q["$or"] = [{"created_at": {"$lt": ref["created_at"]}},
                     {"created_at": ref["created_at"], "_id": {"$lt": ref["_id"]}}]
+    if after:
+        if not ObjectId.is_valid(after):
+            raise HTTPException(status_code=400, detail="Bad cursor")
+        ref = await db.messages.find_one({"_id": ObjectId(after), "conversation_id": conv["_id"]}, {"created_at": 1})
+        if not ref:
+            raise HTTPException(status_code=400, detail="Bad cursor")
+        q["$or"] = [{"created_at": {"$gt": ref["created_at"]}},
+                    {"created_at": ref["created_at"], "_id": {"$gt": ref["_id"]}}]
     rows = await db.messages.find(q).sort([("created_at", -1), ("_id", -1)]).limit(limit + 1).to_list(limit + 1)
     more = len(rows) > limit
     rows = rows[:limit]
@@ -493,6 +509,10 @@ async def page(db, me_id: str, cid: str, limit: int, before: Optional[str]) -> d
     om = _mstate(conv, other_oid)
     typing_at = (conv.get("typing") or {}).get(str(other_oid))
     typing = isinstance(typing_at, datetime) and typing_at > _now() - timedelta(seconds=TYPING_SECONDS)
+    seen = om.get("seen_id")
+    if after:
+        return {"items": [_msg_out(r, me_oid, posts) for r in rows], "after": after, "gap": more,
+                "seen_up_to": str(seen) if seen else None, "typing": typing, "status": _status(conv, me_oid)}
     other = await db.users.find_one({"_id": other_oid}, {"username": 1, "display_name": 1, "profile_picture": 1})
     seen = om.get("seen_id")
     return {"items": [_msg_out(r, me_oid, posts) for r in rows],

@@ -64,11 +64,21 @@ async def set_feature(db, key: str, on: bool) -> Dict[str, bool]:
                 if needed == key and now[k]:
                     changes[k] = False
         await _write(db, changes)
+        _forget_cached()
         return await current(db)
+
+
+def _forget_cached():
+    try:
+        from app.core import gzip_switch
+        gzip_switch.forget()
+    except Exception:
+        pass
 
 
 async def all_off(db) -> Dict[str, bool]:
     async with _lock:
         await db.config.update_many({"features": {"$type": "object"}},
                                     {"$set": {"features": {k: False for k in APP_FEATURES}}})
+        _forget_cached()
         return await current(db)
