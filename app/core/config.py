@@ -71,7 +71,7 @@ class Settings(BaseSettings):
 
     # Share links (/v/{id}), link previews and app deep links.
     # SHARE_BASE_URL is the public origin the share pages are served from.
-    SHARE_BASE_URL: str = "https://wanoafrica.com"
+    SHARE_BASE_URL: str = "https://devbe.wanoafrica.com"
 
     # For You feed A/B test: percent of viewers who get the mixed feed
     # (personal + fresh + trending + following); the rest get Recombee only.
@@ -81,12 +81,12 @@ class Settings(BaseSettings):
     # X-Forwarded-For. The client's real IP is that many entries from the right.
     TRUSTED_PROXY_HOPS: int = 1
     APP_SCHEME: str = "wano"                  # custom scheme, e.g. wano://v/{id}
-    IOS_APP_IDS: str = ""                     # comma-separated "TEAMID.bundle.id"
-    IOS_APP_STORE_ID: str = ""                # numeric App Store id (Smart App Banner)
-    IOS_APP_STORE_URL: str = ""
-    ANDROID_PACKAGE: str = ""                 # e.g. com.wanoafrica.app
-    ANDROID_SHA256_FINGERPRINTS: str = ""     # comma-separated signing cert fingerprints
-    ANDROID_PLAY_STORE_URL: str = ""
+    IOS_APP_IDS: str = "8BY222TD3Q.com.wano.app"                     # comma-separated "TEAMID.bundle.id"
+    IOS_APP_STORE_ID: str = "6753104927"                # numeric App Store id (Smart App Banner)
+    IOS_APP_STORE_URL: str = "https://apps.apple.com/app/id6753104927"
+    ANDROID_PACKAGE: str = "com.wano.app"                 # e.g. com.wanoafrica.app
+    ANDROID_SHA256_FINGERPRINTS: str = "03:25:27:8D:05:1F:4D:DA:46:75:1C:76:9F:15:15:B9:25:AA:33:3B:E7:91:A3:4A:7A:D5:B8:F4:1A:4D:62:39"     # comma-separated signing cert fingerprints
+    ANDROID_PLAY_STORE_URL: str = "https://play.google.com/store/apps/details?id=com.wano.app"
     FRONTEND_URL: str = "http://localhost:3000"
     
     # Redis (optional)

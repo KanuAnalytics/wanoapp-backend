@@ -4,6 +4,11 @@
                                (WhatsApp, iMessage, Facebook, X), Google video
                                data, and "Open in Wano" / store buttons
     GET /embed/{video_id}      bare player, for X's player card and embeds
+    GET /u/{user_id}           profile link: name, photo, "Open in Wano" (no photo
+                               or name for under-18s; never indexed)
+    GET /tv/{title_id}         Wano TV title link: poster, title, "Open in Wano"
+    GET /app                   plain "Get Wano" page (Home Ground, milestones)
+    GET /pages/feed?videoId=…  links older apps sent: sent on to the pages above
     GET /sitemap.xml           sitemap index
     GET /sitemaps/videos-{n}.xml   Google video sitemap pages (public posts only)
     GET /robots.txt
@@ -31,7 +36,8 @@ from urllib.parse import urlparse
 
 from bson import ObjectId
 from fastapi import APIRouter
-from fastapi.responses import JSONResponse, PlainTextResponse, Response
+from fastapi import Request
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse, Response
 
 from app.core.config import settings
 from app.core.database import get_database
@@ -229,9 +235,10 @@ text-decoration:none;font-weight:600;font-size:15px;background:#26262b;color:#ff
 """
 
 
-def _cta(video_id: Optional[str]) -> str:
+def _cta(video_id: Optional[str], path: Optional[str] = None) -> str:
     links = []
-    path = f"v/{video_id}" if video_id else ""
+    if path is None:
+        path = f"v/{video_id}" if video_id else ""
     scheme = re.sub(r"[^a-z0-9+.-]", "", (settings.APP_SCHEME or "").lower())
     if scheme:
         links.append(f'<a class="primary" href="{_e(f"{scheme}://{path}")}">Open in Wano</a>')
@@ -440,6 +447,10 @@ async def sitemap_videos(page: int):
 
 # ------------------------------------------------------------------ app links
 
+# Paths the app opens itself when it's installed (the rest stay web pages).
+APP_PATHS = ("/v/*", "/u/*", "/tv/*", "/pages/feed", "/pages/feed/*", "/pages/v2/wano-tv/details")
+
+
 def _csv(value: str) -> list:
     return [x.strip() for x in (value or "").split(",") if x.strip()]
 
@@ -454,8 +465,8 @@ async def apple_app_site_association():
         {"applinks": {
             "apps": [],
             "details": [
-                {"appIDs": app_ids, "components": [{"/": "/v/*"}]},
-                *({"appID": a, "paths": ["/v/*"]} for a in app_ids),
+                {"appIDs": app_ids, "components": [{"/": p} for p in APP_PATHS]},
+                *({"appID": a, "paths": list(APP_PATHS)} for a in app_ids),
             ],
         }},
         headers={"Cache-Control": "public, max-age=3600"},
@@ -475,3 +486,116 @@ async def android_asset_links():
                      "sha256_cert_fingerprints": prints}}],
         headers={"Cache-Control": "public, max-age=3600"},
     )
+
+
+# ------------------------------------------------------------------ profiles, Wano TV, app
+
+def _simple_page(*, title: str, description: str, image: Optional[str], url: str, path: str,
+                 heading: str, sub: str, round_image: bool = False, noindex: bool = True,
+                 cache: str = "public, max-age=300") -> Response:
+    og = [("og:site_name", "Wano"), ("og:url", url), ("og:title", title), ("og:description", description),
+          ("og:type", "website"), ("og:image", image), ("og:image:secure_url", image)]
+    tags = "\n".join(f'<meta property="{k}" content="{_e(v)}">' for k, v in og if v)
+    tags += "\n" + "\n".join(f'<meta name="{k}" content="{_e(v)}">' for k, v in (
+        ("twitter:card", "summary_large_image" if image and not round_image else "summary"),
+        ("twitter:title", title), ("twitter:description", description), ("twitter:image", image)) if v)
+    robots = '<meta name="robots" content="noindex, nofollow">' if noindex else ""
+    pic = ""
+    if image:
+        style = ("width:120px;height:120px;border-radius:60px;object-fit:cover;display:block;margin:24px auto 0"
+                 if round_image else "width:100%;max-width:320px;border-radius:12px;display:block;margin:16px auto 0")
+        pic = f'<img src="{_e(image)}" alt="" style="{style}">'
+    body = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{_e(title)}</title>
+<meta name="description" content="{_e(description)}">
+<link rel="canonical" href="{_e(url)}">
+{robots}
+{tags}
+{_smart_banner(url)}
+<style>{_STYLE}</style></head>
+<body><main style="text-align:center">{pic}
+<h1>{_e(heading)}</h1>
+<p>{_e(sub)}</p>
+{_cta(None, path)}</main></body></html>"""
+    return Response(body, media_type="text/html; charset=utf-8",
+                    headers=_headers(cache=cache, noindex=noindex, frameable=False))
+
+
+def _gone(what: str) -> Response:
+    r = _not_available()
+    r.body = r.body.replace(b"This post isn't available", f"This {what} isn't available".encode())
+    r.headers["content-length"] = str(len(r.body))
+    return r
+
+
+@router.api_route("/u/{user_id}", methods=["GET", "HEAD"], include_in_schema=False)
+async def profile_page(user_id: str):
+    from app.services.home_ground import is_minor
+    if not ObjectId.is_valid(user_id):
+        return _gone("profile")
+    db = get_database()
+    u = await db.users.find_one({"_id": ObjectId(user_id)},
+                                {"display_name": 1, "username": 1, "profile_picture": 1, "is_active": 1,
+                                 "date_of_birth": 1, "is_banned": 1, "deleted_at": 1})
+    if not u or u.get("is_active") is False or u.get("is_banned") is True or u.get("deleted_at"):
+        return _gone("profile")
+    uid = str(u["_id"])
+    url = f"{_base()}/u/{uid}"
+    if is_minor(u):
+        # Never put a young person's name or face on an open web page.
+        return _simple_page(title="Wano", description="Watch on Wano", image=None, url=url, path=f"u/{uid}",
+                            heading="Open this profile in Wano", sub="Watch and follow on the Wano app.")
+    name = _clean(u.get("display_name") or u.get("username"), 60) or "Wano"
+    handle = _clean(u.get("username"), 40)
+    return _simple_page(
+        title=f"{name} on Wano", description=f"Watch {name}" + (f" (@{handle})" if handle else "") + " on Wano",
+        image=_safe_https(u.get("profile_picture")), url=url, path=f"u/{uid}", round_image=True,
+        heading=name, sub=(f"@{handle} · " if handle else "") + "Watch and follow on Wano")
+
+
+@router.api_route("/tv/{title_id}", methods=["GET", "HEAD"], include_in_schema=False)
+async def tv_page(title_id: str):
+    if not ObjectId.is_valid(title_id):
+        return _gone("title")
+    db = get_database()
+    t = await db.tv_titles.find_one({"_id": ObjectId(title_id), "is_active": True},
+                                    {"title": 1, "description": 1, "poster": 1, "backdrop": 1, "year": 1})
+    if not t:
+        return _gone("title")
+    tid = str(t["_id"])
+    name = _clean(t.get("title"), _TITLE_MAX) or "Wano TV"
+    desc = _clean(t.get("description"), _DESC_MAX) or f"Watch {name} on Wano TV"
+    return _simple_page(title=f"{name} · Wano TV", description=desc,
+                        image=_safe_https(t.get("poster")) or _safe_https(t.get("backdrop")),
+                        url=f"{_base()}/tv/{tid}", path=f"tv/{tid}", heading=name, sub=desc, noindex=False)
+
+
+@router.api_route("/app", methods=["GET", "HEAD"], include_in_schema=False)
+async def app_page():
+    return _simple_page(title="Wano", description="Watch, post and share African videos on Wano.",
+                        image=None, url=f"{_base()}/app", path="", heading="Wano",
+                        sub="Watch, post and share African videos.", noindex=False,
+                        cache="public, max-age=3600")
+
+
+@router.api_route("/pages/feed", methods=["GET", "HEAD"], include_in_schema=False)
+@router.api_route("/pages/feed/", methods=["GET", "HEAD"], include_in_schema=False)
+async def legacy_feed_link(request: Request):
+    """Links shared by app versions up to 2.3.27."""
+    q = request.query_params
+    vid, uid = q.get("videoId") or "", q.get("userId") or ""
+    if ObjectId.is_valid(vid):
+        to = f"/v/{vid}"
+    elif ObjectId.is_valid(uid):
+        to = f"/u/{uid}"
+    else:
+        to = "/app"
+    return RedirectResponse(to, status_code=301, headers={"Cache-Control": "public, max-age=86400"})
+
+
+@router.api_route("/pages/v2/wano-tv/details", methods=["GET", "HEAD"], include_in_schema=False)
+async def legacy_tv_link(request: Request):
+    tid = request.query_params.get("id") or ""
+    return RedirectResponse(f"/tv/{tid}" if ObjectId.is_valid(tid) else "/app", status_code=301,
+                            headers={"Cache-Control": "public, max-age=86400"})

@@ -282,7 +282,9 @@ async def test_robots_txt(client, db):
 
 # ------------------------------------------------------------ app-link files
 
-async def test_app_link_files_absent_until_configured(client, db):
+async def test_app_link_files_absent_until_configured(client, db, monkeypatch):
+    monkeypatch.setattr(settings, "IOS_APP_IDS", "")
+    monkeypatch.setattr(settings, "ANDROID_SHA256_FINGERPRINTS", "")
     assert (await client.get("/.well-known/apple-app-site-association")).status_code == 404
     assert (await client.get("/.well-known/assetlinks.json")).status_code == 404
 
@@ -295,7 +297,8 @@ async def test_app_link_files_when_configured(client, db, monkeypatch):
     r = await client.get("/.well-known/apple-app-site-association")
     assert r.status_code == 200 and r.headers["content-type"] == "application/json"
     d = r.json()["applinks"]["details"]
-    assert d[0]["appIDs"] == ["ABCDE12345.com.wanoafrica.app"] and d[0]["components"] == [{"/": "/v/*"}]
+    assert d[0]["appIDs"] == ["ABCDE12345.com.wanoafrica.app"] and d[0]["components"][0] == {"/": "/v/*"}
+    assert {"/": "/u/*"} in d[0]["components"] and {"/": "/tv/*"} in d[0]["components"]
     a = await client.get("/.well-known/assetlinks.json")
     t = a.json()[0]["target"]
     assert t["package_name"] == "com.wanoafrica.app" and t["sha256_cert_fingerprints"] == [fp]
