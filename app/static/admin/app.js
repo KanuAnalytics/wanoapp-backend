@@ -128,7 +128,7 @@ $("logout").addEventListener("click", () => logout());
 
 const PAGES = [
   ["overview", "Overview"], ["payouts", "Payouts"], ["pool", "Cash pool"], ["creators", "Creators"],
-  ["moderation", "Reported posts"], ["messagereports", "Reported messages"], ["quickreports", "Reported quick posts"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["cities", "Cities"], ["categories", "Categories"], ["tvstrip", "Wano TV strip"], ["switches", "Feature switches"], ["speed", "Speed"], ["log", "Activity log"],
+  ["moderation", "Reported posts"], ["messagereports", "Reported messages"], ["quickreports", "Reported quick posts"], ["whatsnew", "What's new"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["cities", "Cities"], ["categories", "Categories"], ["tvstrip", "Wano TV strip"], ["switches", "Feature switches"], ["speed", "Speed"], ["log", "Activity log"],
 ];
 let current = "overview";
 const counts = {};
@@ -156,6 +156,8 @@ function head(title, sub) {
 
 // ------------------------------------------------------------ pages
 
+const ACTION_TEXT = { none: "Nothing (just the message)", quick_post: "Make a quick post", wano_tv: "Wano TV",
+  my_profile: "Their profile", settings: "Settings", categories: "Points categories", points: "Wano points" };
 const FEATURES = {
   points: ["Wano points", "Creators earn points for real views on their posts."],
   boost: ["Boost", "Creators spend points to show a post to more people. Needs Wano points."],
@@ -182,6 +184,7 @@ const FEATURES = {
   instant_feed: ["Instant feed", "On opening the app, the New feed starts with the videos the person had loaded but not reached last time (saved on their phone, up to 8, for 12 hours), then the newest posts. Needs app 2.3.23 or later."],
   gzip_api: ["Compressed replies", "The server sends app data compressed: a feed page is about 7 KB instead of 34 KB. Works for every app version already installed. Turn off at once if anything looks wrong."],
   msg_lite: ["Light messages", "Messages use far less data: chats only fetch new messages, checks slow down and pause when the app is in the background, and a push brings a new message in at once. Needs app 2.3.24 or later."],
+  whats_new: ["What's new", "In-app announcements you write on the What's new page: one a day at most, each once per person, never to accounts under 3 days old, only when its feature is on and the app is new enough. A small card over the feed that never pauses a video, with a button that opens the feature. Needs app 2.3.28."],
   age_check: ["Birthday check", "People whose saved birthday makes them under 18 get a gentle \"Is your birthday right?\" (Fix / It's right / Later), and are asked again when they try to message. A birthday can be corrected once (13 to 110). Needs app 2.3.28."],
   quick_posts: ["Quick posts", "The ring around a creator's photo: Wano Voice notes (up to 30 s, about 30 KB) and Status cards (text on colour). Gone after 24 hours, 3 at a time. Under-18s: cards only, seen by their followers only. 3 reports hide one until you look (Reported quick posts). Needs app 2.3.26."],
   tv_strip: ["Wano TV strip", "A small dark ticket (poster, title, Watch) slides in above the caption on some videos, pointing at Wano TV (any video from app 2.3.27, Wano's house accounts on 2.3.26): after half the video has played, never in the first 5 posts, at most twice a session, gone after 6 seconds. Counts on the Wano TV strip page. Needs app 2.3.25."],
@@ -374,6 +377,69 @@ const RENDER = {
             q.deleted ? null : el("button", { class: "btn secondary small", text: "Restore", onclick: (e) => decide(e.target, q, "restore") }), " ",
             q.deleted ? null : el("button", { class: "btn ghost-danger small", text: "Remove", onclick: (e) => decide(e.target, q, "remove") })));
       }))) : el("div", { class: "empty", text: "No reported quick posts." })));
+  },
+
+  async whatsnew(main) {
+    const r = await api("GET", "/admin/announcements");
+    const keys = Object.keys(FEATURES);
+    let editing = null;
+    const f = {
+      title: el("input", { type: "text", maxlength: 60, placeholder: "New: quick posts on your photo" }),
+      body: el("textarea", { rows: 3, maxlength: 180, placeholder: "One or two short sentences." }),
+      button: el("input", { type: "text", maxlength: 24, placeholder: "Make one (optional)" }),
+      action: el("select", {}, ...r.actions.map((a) => el("option", { value: a, text: ACTION_TEXT[a] || a }))),
+      feature: el("select", {}, el("option", { value: "", text: "Always (no switch)" }),
+        ...keys.map((k) => el("option", { value: k, text: (FEATURES[k] || [k])[0] }))),
+      min_app: el("input", { type: "text", maxlength: 10, placeholder: "2.3.28" }),
+      priority: el("input", { type: "number", min: 0, max: 100, value: 0 }),
+      active: el("input", { type: "checkbox" }),
+    };
+    const fill = (a) => {
+      editing = a ? a.id : null;
+      f.title.value = a ? a.title : ""; f.body.value = a ? a.body : ""; f.button.value = a ? a.button : "";
+      f.action.value = a ? a.action : "none"; f.feature.value = a && a.feature ? a.feature : "";
+      f.min_app.value = a && a.min_app ? a.min_app : ""; f.priority.value = a ? a.priority : 0; f.active.checked = !!(a && a.active);
+      save.textContent = a ? "Save changes" : "Add announcement";
+    };
+    const save = el("button", { class: "btn", text: "Add announcement", onclick: async (e) => {
+      const body = { title: f.title.value.trim(), body: f.body.value.trim(), button: f.button.value.trim(), action: f.action.value,
+        feature: f.feature.value || null, min_app: f.min_app.value.trim() || null, priority: Number(f.priority.value) || 0,
+        active: f.active.checked };
+      if (body.active && !(await confirmBox("Send this out?", `"${body.title}"\nPeople see it the next time they open the app (one a day at most, once each)${body.feature ? ", while " + ((FEATURES[body.feature] || [body.feature])[0]) + " is on" : ""}.`, "Send"))) return;
+      const call = editing ? api("PUT", `/admin/announcements/${encodeURIComponent(editing)}`, body) : api("POST", "/admin/announcements", body);
+      if (await act(e.target, () => call, editing ? "Saved" : "Added")) RENDER.whatsnew(main);
+    }});
+    const pct = (x) => (x === null || x === undefined ? "–" : `${Math.round(x * 100)}%`);
+    main.replaceChildren(...head("What's new", "Short announcements in the app. One a day at most, each once per person, never to brand-new accounts, only while its switch is on and on apps new enough. Turn on the What's new switch for any of them to go out."),
+      el("div", { class: "two" },
+        el("div", { class: "card" }, el("h3", { text: "Write one" }),
+          el("label", { class: "field" }, el("span", { text: "Title (60)" }), f.title),
+          el("label", { class: "field" }, el("span", { text: "Message (180)" }), f.body),
+          el("div", { class: "two", style: "gap: 10px;" },
+            el("label", { class: "field" }, el("span", { text: "Button text" }), f.button),
+            el("label", { class: "field" }, el("span", { text: "Button opens" }), f.action)),
+          el("div", { class: "two", style: "gap: 10px;" },
+            el("label", { class: "field" }, el("span", { text: "Only while this is on" }), f.feature),
+            el("label", { class: "field" }, el("span", { text: "From app version" }), f.min_app)),
+          el("label", { class: "field" }, el("span", { text: "Priority (higher goes first)" }), f.priority),
+          el("label", { class: "row", style: "gap: 8px; margin: 8px 0;" }, f.active, el("span", { text: "On (sends it out)" })),
+          el("div", { class: "row", style: "gap: 8px;" }, save,
+            el("button", { class: "btn secondary", text: "Clear", onclick: () => fill(null) }),
+            el("button", { class: "btn secondary", text: "Add Claude's 3 drafts", onclick: async (e) => {
+              if (await act(e.target, () => api("POST", "/admin/announcements/suggested"), "Drafts added (all off)")) RENDER.whatsnew(main);
+            } }))),
+        el("div", { class: "card" }, el("h3", { text: "All announcements" }), r.items.length ? el("table", {}, el("thead", {}, el("tr", {},
+            ...["", "Shown", "Tapped", "Closed", "Tap rate", ""].map((h) => el("th", { text: h })))),
+          el("tbody", {}, ...r.items.map((a) => el("tr", {},
+            el("td", {}, el("div", { style: "font-weight: 600;", text: a.title }), el("div", { class: "small muted", text: a.body }),
+              el("div", { class: "row small", style: "margin-top: 4px; gap: 6px;" },
+                el("span", { class: "pill " + (a.active ? "green" : "grey"), text: a.active ? "On" : "Off" }),
+                a.feature ? el("span", { class: "muted", text: "while " + ((FEATURES[a.feature] || [a.feature])[0]) }) : null,
+                a.min_app ? el("span", { class: "muted", text: "app " + a.min_app + "+" }) : null)),
+            el("td", { text: num(a.shown) }), el("td", { text: num(a.tap) }), el("td", { text: num(a.close) }),
+            el("td", { text: pct(a.tap_rate) }),
+            el("td", { style: "text-align: right;" }, el("button", { class: "btn small secondary", text: "Edit", onclick: () => { fill(a); f.title.focus(); } }))))))
+          : el("div", { class: "empty", text: "None yet. \"Add Claude's 3 drafts\" gives you three to edit." }))));
   },
 
   async challenges(main) {

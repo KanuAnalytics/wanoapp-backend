@@ -76,3 +76,5 @@ from app.api.v1.quick_posts import router as quick_posts_router  # noqa: E402
 api_router.include_router(quick_posts_router, prefix="/quick", tags=["quick posts"])
 from app.api.v1.age import router as age_router  # noqa: E402
 api_router.include_router(age_router, prefix="/age", tags=["age"])
+from app.api.v1.whats_new import router as whats_new_router  # noqa: E402
+api_router.include_router(whats_new_router, prefix="/whats-new", tags=["whats new"])

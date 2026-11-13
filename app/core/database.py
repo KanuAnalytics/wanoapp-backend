@@ -186,6 +186,10 @@ async def create_indexes():
         (d.quick_limits, [("at", 1)], {"expireAfterSeconds": 2 * 24 * 3600}),
         (d.quick_reports, [("status", 1), ("created_at", -1)], {}),
         (d.quick_reports, [("created_at", 1)], {"expireAfterSeconds": 30 * 24 * 3600}),
+        # What's new: who has seen which (kept a year), and when each person last saw one.
+        (d.announce_seen, [("at", 1)], {"expireAfterSeconds": 365 * 24 * 3600}),
+        (d.announce_last, [("at", 1)], {"expireAfterSeconds": 3 * 24 * 3600}),
+        (d.announcements, [("active", 1), ("starts_at", 1)], {}),
         (d.trending_snapshots, [("at", 1)], {"expireAfterSeconds": 3 * 24 * 3600, "name": "trending_snapshots_ttl"}),
 
         # User indexes

@@ -426,6 +426,51 @@ async def act_on_quick_report(qid: str, body: QuickReportIn, admin: str = Depend
     return out
 
 
+class AnnouncementIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title: str = Field(max_length=200)
+    body: str = Field(max_length=1000)
+    button: str = Field("", max_length=100)
+    action: str = Field("none", max_length=40)
+    feature: Optional[str] = Field(None, max_length=40)
+    min_app: Optional[str] = Field(None, max_length=20)
+    image: Optional[str] = Field(None, max_length=1024)
+    priority: int = 0
+    active: StrictBool = False
+
+
+@router.get("/announcements")
+async def announcements(admin: str = Depends(require_admin)):
+    """What's new: every announcement with shown / tapped / closed."""
+    from app.services import whats_new
+    return {"items": await whats_new.admin_list(get_database()), "actions": list(whats_new.ACTIONS)}
+
+
+@router.post("/announcements")
+async def add_announcement(body: AnnouncementIn, admin: str = Depends(require_admin)):
+    from app.services import whats_new
+    db = get_database()
+    out = await whats_new.admin_save(db, admin, body.model_dump())
+    await admin_log.record(db, admin, "announcement_added", {"id": out["id"], "active": body.active})
+    return out
+
+
+@router.put("/announcements/{aid}")
+async def edit_announcement(aid: str, body: AnnouncementIn, admin: str = Depends(require_admin)):
+    from app.services import whats_new
+    db = get_database()
+    out = await whats_new.admin_save(db, admin, body.model_dump(), aid[:40])
+    await admin_log.record(db, admin, "announcement_saved", {"id": out["id"], "active": body.active})
+    return out
+
+
+@router.post("/announcements/suggested")
+async def suggested_announcements(admin: str = Depends(require_admin)):
+    """Adds Claude's three drafts (less data, Wano TV strip, quick posts), all off."""
+    from app.services import whats_new
+    return {"added": await whats_new.add_suggested(get_database(), admin)}
+
+
 @router.get("/home-ground/requests")
 async def hg_requests(admin: str = Depends(require_admin)):
     from app.services import home_ground
