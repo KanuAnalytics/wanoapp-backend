@@ -56,6 +56,8 @@ async def test_TS2_config_titles_creators_rules(client, db):
     assert t0["id"] == new and t1["id"] == old
     assert d["creators"] == [house]
     assert d["rules"]["min_posts"] == 5 and d["rules"]["max_per_session"] == 2 and d["rules"]["show_seconds"] == 6
+    # Any video for apps that know the rule (2.3.27+), from half-way through.
+    assert d["rules"]["any_post"] is True and d["rules"]["after_portion"] == 0.5
 
 
 async def test_TS3_at_most_four_titles_featured_first_then_newest(client, db):

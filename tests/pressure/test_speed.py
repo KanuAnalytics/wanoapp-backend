@@ -164,3 +164,15 @@ def test_PF5_percentile_helper():
     assert perf.percentile({}, 0.5) is None
     assert perf.bucket(0) == 0 and perf.bucket(100) == 0 and perf.bucket(101) == 1 and perf.bucket(10 ** 6) == len(perf.EDGES)
     assert perf.country_of("Africa/Kampala") == "UG" and perf.country_of(None) == "other"
+
+
+async def test_PF6_swipe_freezes_are_counted(client, db):
+    """App 2.3.27 reports the longest freeze in each feed swipe (swipe_lag)."""
+    await _on(db)
+    r = await client.post(P, json={"events": [{"name": "swipe_lag", "ms": 180}, {"name": "swipe_lag", "ms": 40}],
+                                   "tz": "Africa/Kampala", "net": "cellular"})
+    assert r.json() == {"recorded": 2}
+    _, adh = await make_user(db, user_type="admin")
+    rows = (await client.get("/api/v1/admin/perf", headers=adh)).json()["rows"]
+    ug = next(x for x in rows if x["country"] == "UG" and x["metric"] == "swipe_lag")
+    assert ug["count"] == 2

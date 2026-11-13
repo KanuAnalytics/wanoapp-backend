@@ -4,8 +4,8 @@ A small dark "ticket" (poster, WANO TV · NEW SERIES, title, Watch) slides in
 above the caption of some feed videos, to point people at Wano TV.
 
 The app asks GET /tv/strip once a session: which titles to show (newest and
-featured first, at most MAX_TITLES), on whose posts (Wano's house accounts for
-now), and the rules below, so they can be tuned here without an app release.
+featured first, at most MAX_TITLES), on whose posts (any video for app 2.3.27 and
+later; Wano's house accounts for older apps), and the rules below, so they can be tuned here without an app release.
 It reports what happened (shown / tap / close) to POST /tv/strip/event; the
 admin page shows the counts per film.
 
@@ -23,7 +23,8 @@ from pymongo import ReturnDocument
 logger = logging.getLogger(__name__)
 
 RULES = {
-    "after_portion": 0.7,      # shown once this much of the video has played
+    "after_portion": 0.5,      # shown once this much of the video has played (most people swipe before 70%)
+    "any_post": True,          # on any video, not only Wano's house accounts (app 2.3.27+; older apps keep house-only)
     "min_posts": 5,            # never in the first 5 posts of a session
     "gap_posts": 8,            # at least this many posts between two strips
     "max_per_session": 2,

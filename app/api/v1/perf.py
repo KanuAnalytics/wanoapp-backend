@@ -18,7 +18,7 @@ _hits: dict = {}
 
 class Event(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    name: Literal["first_video", "video_start", "stall", "feed_load"]
+    name: Literal["first_video", "video_start", "stall", "feed_load", "swipe_lag"]
     ms: Union[StrictInt, StrictFloat] = Field(ge=0, le=perf.MAX_MS)
 
 

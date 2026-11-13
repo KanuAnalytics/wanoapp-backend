@@ -7,6 +7,7 @@ background):
     video_start   a video came on screen -> it plays
     stall         a playing video stopped to buffer, how long
     feed_load     a feed page request, start to finish
+    swipe_lag     the longest freeze of the screen during one swipe in the feed
 
 with the connection type (wifi / cellular / unknown) and the phone's time
 zone ("Africa/Lagos"), which gives the country without asking for location.
@@ -21,7 +22,7 @@ from typing import Dict, List, Optional
 
 from pymongo import UpdateOne
 
-METRICS = ("first_video", "video_start", "stall", "feed_load")
+METRICS = ("first_video", "video_start", "stall", "feed_load", "swipe_lag")
 NETS = ("wifi", "cellular", "unknown")
 # Bucket upper edges in ms; the last bucket is everything above.
 EDGES = (100, 250, 500, 750, 1000, 1500, 2000, 3000, 5000, 8000, 13000, 20000, 40000)
