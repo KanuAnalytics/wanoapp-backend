@@ -264,15 +264,45 @@ async def stream_playlist(token: str, path: str):
                     headers={"Cache-Control": "private, max-age=60"})
 
 
+# Words people put in a title's genres that are really its format.
+_NOT_GENRES = {"series", "movie", "movies", "film", "films", "tv show", "show"}
+
+
+def _placeholder_image(url) -> bool:
+    return not isinstance(url, str) or not url or "picsum.photos" in url or "placeholder" in url.lower()
+
+
 @router.get("/genres", response_model=List[TvGenreResponse])
 async def get_genres(current_user: Optional[str] = Depends(get_optional_active_user)):
-    """Every genre in display order, including ones with no titles yet."""
+    """Genres that have at least one title, in display order. "Series" and other
+    format words are left out, and a genre still on placeholder artwork shows
+    a picture from its most popular title instead of a blank tile."""
     db = get_database()
     docs = await db.tv_genres.find({"is_active": True}).sort("order", 1).to_list(
         length=None
     )
-    genres = (_genre_response(doc) for doc in docs)
-    return [g for g in genres if g is not None]
+    titles = await db.tv_titles.find(
+        {"is_active": True}, {"genres": 1, "popularity": 1, "trailer.thumbnail": 1, "backdrop": 1, "poster": 1}
+    ).to_list(length=None)
+    art: dict = {}
+    for t in sorted(titles, key=lambda t: -(t.get("popularity") if isinstance(t.get("popularity"), (int, float)) else 0)):
+        trailer = t.get("trailer") if isinstance(t.get("trailer"), dict) else {}
+        pic = next((u for u in (trailer.get("thumbnail"), t.get("backdrop"), t.get("poster"))
+                    if isinstance(u, str) and u.startswith("https://")), None)
+        for g in t.get("genres") or []:
+            if isinstance(g, str) and g not in art:
+                art[g] = pic
+    out = []
+    for doc in docs:
+        name = doc.get("name")
+        if not isinstance(name, str) or name.strip().lower() in _NOT_GENRES or name not in art:
+            continue
+        if _placeholder_image(doc.get("image")) and art.get(name):
+            doc = {**doc, "image": art[name]}
+        g = _genre_response(doc)
+        if g is not None:
+            out.append(g)
+    return out
 
 
 @router.get("/history", response_model=List[TvTitleResponse])

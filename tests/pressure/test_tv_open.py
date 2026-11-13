@@ -45,3 +45,15 @@ async def test_T4_logged_in_unchanged_and_bad_tokens_refused(client, db, rb, spa
 async def test_T5_no_flag_and_no_token_keeps_the_app_contract(client, db, rb, spaces):
     await _title(db, "middleton")
     assert (await client.get("/api/v1/tv/titles")).status_code == 401
+
+
+async def test_T9_genres_only_with_titles_no_series_and_real_pictures(client, db, rb, spaces):
+    await _title(db, "middleton", genres=["Documentary", "Series"], popularity=5)
+    await _title(db, "one-field", genres=["Documentary", "Sport"], popularity=9)
+    for i, (name, img) in enumerate([("Documentary", "https://picsum.photos/seed/x/322/200"), ("Series", "https://x/s.jpg"),
+                                     ("Comedy", "https://picsum.photos/a"), ("Sport", "https://cdn.example/sport.jpg")]):
+        await db.tv_genres.insert_one({"name": name, "image": img, "is_active": True, "order": i})
+    g = (await client.get("/api/v1/tv/genres?authenticated=false")).json()
+    assert [x["name"] for x in g] == ["Documentary", "Sport"]
+    assert "picsum" not in g[0]["image"] and "one-field" in g[0]["image"]     # most popular title's picture
+    assert g[1]["image"] == "https://cdn.example/sport.jpg"                     # real artwork kept
