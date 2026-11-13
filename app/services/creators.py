@@ -301,6 +301,12 @@ async def first_viewers(db, excluded_oids: List[ObjectId], own: Optional[ObjectI
     docs = await db.videos.find(q, {"creator_id": 1, "created_at": 1}).sort(
         [("created_at", -1), ("_id", -1)]).limit(CANDIDATE_LIMIT).to_list(length=CANDIDATE_LIMIT)
 
+    # Posts boosted with Wano points are always "paid" (so their viewers don't
+    # earn the creator points back), even while they are new enough to test.
+    paid = await _paid(db, excluded_oids, own)
+    paid_ids = {d["_id"] for d in paid}
+    docs = [d for d in docs if d["_id"] not in paid_ids]
+
     # At most PER_CREATOR_TESTS posts per creator per day (newest first).
     kept, per = [], {}
     for d in docs:
@@ -314,7 +320,7 @@ async def first_viewers(db, excluded_oids: List[ObjectId], own: Optional[ObjectI
         per[key] = per.get(key, 0) + 1
         kept.append(d)
     if not kept:
-        return await _paid(db, excluded_oids, own, [])
+        return paid
 
     reach = {r["_id"]: r async for r in db.video_reach.find({"_id": {"$in": [d["_id"] for d in kept]}})}
     # A week of history is all the ranking uses (For You calls this on every page).
@@ -342,15 +348,14 @@ async def first_viewers(db, excluded_oids: List[ObjectId], own: Optional[ObjectI
             boosted.append((score, d))
     testing.sort(key=lambda t: (t[0], t[1]))
     boosted.sort(key=lambda t: -t[0])
-    return [t[2] for t in testing] + await _paid(db, excluded_oids, own, kept) + [b[1] for b in boosted]
+    return [t[2] for t in testing] + paid + [b[1] for b in boosted]
 
 
-async def _paid(db, excluded_oids, own, kept) -> List[dict]:
+async def _paid(db, excluded_oids, own) -> List[dict]:
     """Posts their creators boosted with Wano points (points.py)."""
     from app.services import points
     try:
-        seen = {d["_id"] for d in kept}
-        return [d for d in await points.boosted_candidates(db, excluded_oids, own) if d["_id"] not in seen][:20]
+        return (await points.boosted_candidates(db, excluded_oids, own))[:20]
     except Exception:
         logger.exception("Could not load points boosts")
         return []

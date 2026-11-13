@@ -20,6 +20,7 @@ If Recombee is down, its share is filled from popular recent posts, so the
 feed never goes empty.
 """
 
+import asyncio
 import hashlib
 import logging
 import math
@@ -257,39 +258,47 @@ async def build_page(db, *, viewer: str, current_user: Optional[str], scenario: 
     following = [f for f in (user.get("following") or []) if isinstance(f, ObjectId)]
     own = ObjectId(current_user) if current_user and ObjectId.is_valid(current_user) else None
 
-    # What this viewer has already seen.
-    watched = set()
-    never = set()   # "Not interested": never shown again, however empty the feed gets
-    if own:
+    slots = limit - (1 if featured else 0)
+    # Over-fetch from Recombee: some picks get dropped by the rules below.
+    want = min(100, max(slots * 5, 20))
+
+    # What this viewer has already seen. These lookups and Recombee don't
+    # depend on each other, so they run at the same time (one after another
+    # they were most of the feed's ~1 s on the server).
+    async def _watched() -> set:
+        if not own:
+            return set()
         # The most recent watches only: a heavy viewer can have tens of thousands.
         since = _now() - timedelta(days=WATCHED_LOOKBACK_DAYS)
         cursor = (db.watch_history.find({"user_id": own, "watched_at": {"$gte": since}}, {"video_id": 1})
                   .sort("watched_at", -1).limit(WATCHED_MAX))
-        async for w in cursor:
-            watched.add(str(w["video_id"]))
-        # "Not interested" always stays excluded, however old.
-        async for w in db.watch_history.find({"user_id": own, "not_interested": True}, {"video_id": 1}).limit(5000):
-            never.add(str(w["video_id"]))
-    shown = set()
-    # Everyone on a build that sends no device id shares one viewer id, so
-    # those impressions say nothing about the person asking: excluding them
-    # would hide more and more of the catalogue from every logged-out
-    # viewer as the day's traffic piles up, until the feed came back empty.
-    if viewer != LEGACY_ANON_USER:
+        return {str(w["video_id"]) async for w in cursor}
+
+    async def _never() -> set:
+        # "Not interested": never shown again, however old, however empty the feed gets.
+        if not own:
+            return set()
+        return {str(w["video_id"]) async for w in
+                db.watch_history.find({"user_id": own, "not_interested": True}, {"video_id": 1}).limit(5000)}
+
+    async def _shown() -> set:
+        # Everyone on a build that sends no device id shares one viewer id, so
+        # those impressions say nothing about the person asking: excluding them
+        # would hide more and more of the catalogue from every logged-out
+        # viewer as the day's traffic piles up, until the feed came back empty.
+        if viewer == LEGACY_ANON_USER:
+            return set()
         since = _now() - timedelta(hours=IMPRESSION_LOOKBACK_HOURS)
         cursor = (db.feed_impressions.find({"viewer": viewer, "at": {"$gte": since}}, {"video_id": 1})
                   .sort("at", -1).limit(IMPRESSION_MAX))
-        async for imp in cursor:
-            shown.add(str(imp["video_id"]))
+        return {str(imp["video_id"]) async for imp in cursor}
+
+    watched, never, shown, (ids, page.recomm_id) = await asyncio.gather(
+        _watched(), _never(), _shown(),
+        _personal(viewer, scenario, want, next_recomm_id, user.get("tags") or []))
     featured_id = str(featured["_id"]) if featured else None
     if featured_id:
         never.add(featured_id)
-
-    slots = limit - (1 if featured else 0)
-
-    # Over-fetch from Recombee: some picks get dropped by the rules above.
-    want = min(100, max(slots * 5, 20))
-    ids, page.recomm_id = await _personal(viewer, scenario, want, next_recomm_id, user.get("tags") or [])
 
     # A heavy viewer can have seen nearly everything. Rather than an empty
     # feed, loosen step by step: first allow posts they watched (but weren't
@@ -317,18 +326,15 @@ async def _assemble(db, page, ids, excluded: set, own, user: dict, following: li
     city_key = (user.get("localization") or {}).get("city_key")
     city_key = city_key if isinstance(city_key, str) and city_key else None
     quotas = _quotas(slots, page.variant, bool(following), bool(city_key))
-    personal = await _docs_for(db, ids, excluded)
-    if not ids:
-        personal = await _popular_backup(db, excluded_oids, own)
-
-    queues = {"personal": personal}
+    # Every source at the same time: they don't depend on each other.
+    jobs = {"personal": _docs_for(db, ids, excluded) if ids else _popular_backup(db, excluded_oids, own)}
     if page.variant == "mix":
-        queues["fresh"] = await _fresh(db, excluded_oids, own)
-        queues["trending"] = await _trending(db, excluded_oids, own,
-                                             ((user.get("localization") or {}).get("country")))
-        queues["following"] = await _following(db, following, excluded_oids)
+        jobs["fresh"] = _fresh(db, excluded_oids, own)
+        jobs["trending"] = _trending(db, excluded_oids, own, ((user.get("localization") or {}).get("country")))
+        jobs["following"] = _following(db, following, excluded_oids)
         if city_key:
-            queues["local"] = await _local(db, city_key, excluded_oids, own)
+            jobs["local"] = _local(db, city_key, excluded_oids, own)
+    queues = dict(zip(jobs.keys(), await asyncio.gather(*jobs.values())))
 
     # Each post counts for its most specific source only.
     claimed = set()
@@ -340,8 +346,10 @@ async def _assemble(db, page, ids, excluded: set, own, user: dict, following: li
     # Drop posts whose creator is banned or deleted.
     creator_ids = {d.get("creator_id") for q in queues.values() for d in q if d.get("creator_id")}
     if creator_ids:
-        inactive = {u["_id"] async for u in db.users.find({"_id": {"$in": list(creator_ids)}, "is_active": False}, {"_id": 1})}
-        known = {u["_id"] async for u in db.users.find({"_id": {"$in": list(creator_ids)}}, {"_id": 1})}
+        # One read for both: who exists, and who of them is switched off.
+        found = [u async for u in db.users.find({"_id": {"$in": list(creator_ids)}}, {"_id": 1, "is_active": 1})]
+        known = {u["_id"] for u in found}
+        inactive = {u["_id"] for u in found if u.get("is_active") is False}
         for k in queues:
             queues[k] = [d for d in queues[k] if d.get("creator_id") in known and d.get("creator_id") not in inactive]
 

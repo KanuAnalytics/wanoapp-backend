@@ -624,8 +624,12 @@ async def get_feed_v2(
     next_recomm_id: Optional[str] = None,
     video_id: Optional[str] = None,
     x_device_id: Optional[str] = Header(None, alias="X-Device-Id"),
+    response: Response = None,
 ):
     """For You feed. See app/services/for_you.py for how a page is put together."""
+    import asyncio
+    import time as _time
+    t0 = _time.perf_counter()
     db = get_database()
     viewer = viewer_id(current_user, x_device_id)
 
@@ -637,18 +641,26 @@ async def get_feed_v2(
                   or (current_user and str(f.get("creator_id")) == current_user)):
             featured = f
 
-    page = await for_you.build_page(
-        db, viewer=viewer, current_user=current_user, scenario=scenario, limit=limit,
-        next_recomm_id=next_recomm_id, featured=featured,
+    async def _user_doc():
+        if not current_user:
+            return {}
+        return await db.users.find_one(
+            {"_id": ObjectId(current_user)},
+            {"liked_videos": 1, "bookmarked_videos": 1, "following": 1},
+        ) or {}
+
+    # The page and the viewer's likes/follows at the same time.
+    page, user_doc = await asyncio.gather(
+        for_you.build_page(
+            db, viewer=viewer, current_user=current_user, scenario=scenario, limit=limit,
+            next_recomm_id=next_recomm_id, featured=featured,
+        ),
+        _user_doc(),
     )
+    t_build = _time.perf_counter()
     items = ([{"id": str(featured["_id"]), "source": "featured"}] if featured else []) + page.items
     if not items:
         return []
-
-    user_doc = (await db.users.find_one(
-        {"_id": ObjectId(current_user)},
-        {"liked_videos": 1, "bookmarked_videos": 1, "following": 1},
-    ) or {}) if current_user else {}
     liked_video_ids = set(str(v) for v in user_doc.get("liked_videos", []))
     bookmarked_video_ids = set(str(v) for v in user_doc.get("bookmarked_videos", []))
     following_ids = set(str(v) for v in user_doc.get("following", []))
@@ -700,11 +712,19 @@ async def get_feed_v2(
         if len(videos) >= limit:
             break
 
-    await for_you.record_impressions(
-        db, viewer=viewer, current_user=current_user, variant=page.variant,
-        recomm_id=page.recomm_id, items=served,
+    _, out = await asyncio.gather(
+        for_you.record_impressions(
+            db, viewer=viewer, current_user=current_user, variant=page.variant,
+            recomm_id=page.recomm_id, items=served,
+        ),
+        _with_replies(videos),
     )
-    return await _with_replies(videos)
+    if response is not None:
+        # Where the time goes, readable in any browser's network panel.
+        t_end = _time.perf_counter()
+        response.headers["Server-Timing"] = (
+            f"build;dur={(t_build - t0) * 1000:.0f}, total;dur={(t_end - t0) * 1000:.0f}")
+    return out
 
 
 async def _viewer_if_signed_in(token: Optional[str] = Depends(oauth2_scheme_optional)) -> Optional[str]:
