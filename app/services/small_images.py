@@ -43,6 +43,10 @@ RECENT = timedelta(hours=6)
 RETRY_FAILED_AFTER = timedelta(days=3)
 WORKING_STALE = timedelta(minutes=10)
 PREFIX = "small"
+# Bumped when the server learns to read more pictures; anything that failed
+# under an older one is tried again straight away (2: iPhone HEIC photos,
+# which failed before pillow-heif was installed, so posts showed black).
+DECODER = 2
 IMAGE_EXT = (".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".gif", ".bmp")
 
 
@@ -101,10 +105,10 @@ def make_variants(data: bytes, widths: Iterable[int] = WIDTHS) -> List[Tuple[int
     from PIL import Image, ImageOps
     Image.MAX_IMAGE_PIXELS = MAX_PIXELS
     try:
-        import pillow_heif  # noqa: F401  (optional: HEIC uploads from iPhones)
+        import pillow_heif  # noqa: F401  (HEIC photos from iPhones, often saved with a .jpg name)
         pillow_heif.register_heif_opener()
     except Exception:
-        pass
+        logger.warning("pillow-heif missing: iPhone HEIC photos can't be shrunk")
     with Image.open(io.BytesIO(data)) as im:
         if im.format == "JPEG":
             im.draft("RGB", (2 * max(widths), 2 * max(widths)))   # decode big JPEGs at reduced size: far less memory
@@ -138,7 +142,7 @@ async def process(db, key: str) -> bool:
         return True
     except Exception as e:                            # noqa: BLE001 — one bad file never stops the loop
         await db.image_variants.update_one({"_id": key}, {"$set": {
-            "state": "failed", "at": now, "error": str(e)[:300]}})
+            "state": "failed", "at": now, "error": str(e)[:300], "decoder": DECODER}})
         return False
 
 
@@ -152,6 +156,7 @@ async def claim(db, key: str) -> bool:
     # Take back a failed one after a while, or one a crashed process left half done.
     r = await db.image_variants.update_one(
         {"_id": key, "$or": [{"state": "failed", "at": {"$lt": now - RETRY_FAILED_AFTER}},
+                             {"state": "failed", "decoder": {"$not": {"$gte": DECODER}}},
                              {"state": "working", "at": {"$lt": now - WORKING_STALE}}]},
         {"$set": {"state": "working", "at": now}})
     return r.modified_count == 1
@@ -177,7 +182,8 @@ async def _todo(db, urls: Iterable[str]) -> List[str]:
         return []
     done = {d["_id"] async for d in db.image_variants.find(
         {"_id": {"$in": keys}, "$or": [{"state": "done"}, {"state": "working"},
-                                       {"state": "failed", "at": {"$gte": datetime.utcnow() - RETRY_FAILED_AFTER}}]},
+                                       {"state": "failed", "decoder": {"$gte": DECODER},
+                                        "at": {"$gte": datetime.utcnow() - RETRY_FAILED_AFTER}}]},
         {"_id": 1})}
     return [k for k in keys if k not in done]
 
@@ -220,6 +226,11 @@ async def _backfill_urls(db, coll: str, want: int) -> List[str]:
 async def sweep(db, batch: int = BATCH) -> dict:
     """One round: recent pictures first, then a slice of the backlog."""
     keys = await _todo(db, await _recent_urls(db, datetime.utcnow() - RECENT))
+    # Pictures that failed before the server could read them (e.g. HEIC) come next.
+    if len(keys) < batch:
+        keys += [d["_id"] async for d in db.image_variants.find(
+            {"state": "failed", "decoder": {"$not": {"$gte": DECODER}}}, {"_id": 1}).limit(batch)
+            if d["_id"] not in keys]
     for coll in ("users", "videos", "tv_titles"):
         if len(keys) >= batch:
             break

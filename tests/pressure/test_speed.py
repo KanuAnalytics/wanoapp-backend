@@ -89,6 +89,37 @@ async def test_SI3_sweep_does_recent_then_backlog_once_and_records_failures(db, 
     assert st["done"] == 3 and st["failed"] == 1 and st["totals"]["orig"] > st["totals"]["w160"]
 
 
+def test_SI6_iphone_heic_saved_as_jpg_is_shrunk():
+    """iPhone photos arrive as HEIC with a .jpg name; they failed, and posts showed black."""
+    from app.services import small_images as si
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (3024, 4032), (200, 120, 40)).save(buf, "HEIF", quality=60)
+    assert buf.getvalue()[4:12] == b"ftypheic"
+    out = dict(si.make_variants(buf.getvalue()))
+    assert set(out) == set(si.WIDTHS)
+    assert Image.open(io.BytesIO(out[1080])).size == (1080, 1440)
+
+
+async def test_SI7_pictures_that_failed_before_heic_are_redone_at_once(db, store):
+    from app.services import small_images as si
+    objects, puts = store
+    objects["profile-pictures/old-heic.jpg"] = _jpeg(1200, 1600)    # readable now
+    await db.image_variants.insert_one({"_id": "profile-pictures/old-heic.jpg", "state": "failed",
+                                        "at": datetime.utcnow(), "error": "cannot identify image file"})
+    # A failure under the current reader waits the usual 3 days.
+    await db.image_variants.insert_one({"_id": "profile-pictures/broken.jpg", "state": "failed",
+                                        "at": datetime.utcnow(), "error": "x", "decoder": si.DECODER})
+    r = await si.sweep(db)
+    assert r["done"] == 1
+    assert "small/w1080/profile-pictures/old-heic.webp" in puts
+    assert (await db.image_variants.find_one({"_id": "profile-pictures/old-heic.jpg"}))["state"] == "done"
+    assert (await db.image_variants.find_one({"_id": "profile-pictures/broken.jpg"}))["state"] == "failed"
+    assert await si.claim(db, "profile-pictures/broken.jpg") is False
+
+
 async def test_SI4_two_processes_never_do_the_same_picture(db, store):
     from app.services import small_images as si
     assert await si.claim(db, "profile-pictures/a.jpg") is True

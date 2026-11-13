@@ -34,6 +34,7 @@ twilio==9.0.4
 
 # Image processing
 pillow==10.1.0
+pillow-heif==0.18.0
 
 # HTTP client
 httpx==0.25.2

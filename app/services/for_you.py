@@ -233,6 +233,7 @@ class Page:
         self.items: List[dict] = []      # {"id", "creator_id", "source"}
         self.recomm_id: Optional[str] = None
         self.variant: str = "control"
+        self.timing: Dict[str, float] = {}   # ms per step, for the Server-Timing header
 
 
 def _pick(queue: List[dict], used: set, counts: Dict[str, int], prev: Optional[str], strict: bool):
@@ -293,9 +294,19 @@ async def build_page(db, *, viewer: str, current_user: Optional[str], scenario: 
                   .sort("at", -1).limit(IMPRESSION_MAX))
         return {str(imp["video_id"]) async for imp in cursor}
 
+    import time as _time
+
+    async def _timed(name, coro):
+        t = _time.perf_counter()
+        try:
+            return await coro
+        finally:
+            page.timing[name] = (_time.perf_counter() - t) * 1000
+
     watched, never, shown, (ids, page.recomm_id) = await asyncio.gather(
-        _watched(), _never(), _shown(),
-        _personal(viewer, scenario, want, next_recomm_id, user.get("tags") or []))
+        _timed("watched", _watched()), _never(), _timed("shown", _shown()),
+        _timed("recombee", _personal(viewer, scenario, want, next_recomm_id, user.get("tags") or [])))
+    t_assemble = _time.perf_counter()
     featured_id = str(featured["_id"]) if featured else None
     if featured_id:
         never.add(featured_id)
@@ -313,6 +324,7 @@ async def build_page(db, *, viewer: str, current_user: Optional[str], scenario: 
         if len(picked) >= max(1, (slots + 1) // 2):
             break
     page.items = picked
+    page.timing["assemble"] = (_time.perf_counter() - t_assemble) * 1000
     return page
 
 

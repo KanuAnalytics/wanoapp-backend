@@ -722,8 +722,9 @@ async def get_feed_v2(
     if response is not None:
         # Where the time goes, readable in any browser's network panel.
         t_end = _time.perf_counter()
-        response.headers["Server-Timing"] = (
-            f"build;dur={(t_build - t0) * 1000:.0f}, total;dur={(t_end - t0) * 1000:.0f}")
+        parts = [f"{k};dur={v:.0f}" for k, v in (getattr(page, "timing", None) or {}).items()]
+        response.headers["Server-Timing"] = ", ".join(
+            parts + [f"build;dur={(t_build - t0) * 1000:.0f}", f"total;dur={(t_end - t0) * 1000:.0f}"])
     return out
 
 
