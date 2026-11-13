@@ -175,7 +175,17 @@ async def create_indexes():
         (d.message_limits, [("at", 1)], {"expireAfterSeconds": 2 * 24 * 3600}),
         # "Suggest a category": a per-person daily limit (TTL).
         (d.category_suggest_daily, [("at", 1)], {"expireAfterSeconds": 2 * 24 * 3600}),
+        # Wano TV strip: per-person event cap (TTL) and daily counts per film (kept 90 days).
+        (d.tv_strip_limits, [("at", 1)], {"expireAfterSeconds": 2 * 24 * 3600}),
+        (d.tv_strip_daily, [("day", 1)], {"expireAfterSeconds": 90 * 24 * 3600}),
         (d.message_reports, [("status", 1), ("created_at", -1)], {}),
+        # Quick posts: records kept 3 days past their 24 h (for reports); seen marks and limits 2 days.
+        (d.quick_posts, [("expires_at", 1)], {"expireAfterSeconds": 3 * 24 * 3600}),
+        (d.quick_posts, [("user_id", 1), ("expires_at", -1)], {}),
+        (d.quick_post_seen, [("at", 1)], {"expireAfterSeconds": 2 * 24 * 3600}),
+        (d.quick_limits, [("at", 1)], {"expireAfterSeconds": 2 * 24 * 3600}),
+        (d.quick_reports, [("status", 1), ("created_at", -1)], {}),
+        (d.quick_reports, [("created_at", 1)], {"expireAfterSeconds": 30 * 24 * 3600}),
         (d.trending_snapshots, [("at", 1)], {"expireAfterSeconds": 3 * 24 * 3600, "name": "trending_snapshots_ttl"}),
 
         # User indexes

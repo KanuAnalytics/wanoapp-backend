@@ -228,6 +228,13 @@ async def admin_wano_tv(body: WanoTvIn, admin: str = Depends(require_admin)):
     return out
 
 
+@router.get("/tv-strip")
+async def admin_tv_strip(days: int = Query(7, ge=1, le=90), admin: str = Depends(require_admin)):
+    """Wano TV strip: shown, taps and closes per film over the last days."""
+    from app.services import tv_strip
+    return {"items": await tv_strip.stats(get_database(), days), "rules": tv_strip.RULES}
+
+
 @router.get("/category-requests")
 async def admin_category_requests(admin: str = Depends(require_admin)):
     from app.services import points
@@ -394,6 +401,28 @@ async def act_on_message_report(report_id: str, body: MessageReportIn, admin: st
     db = get_database()
     out = await messages.admin_act(db, report_id[:80], body.action)
     await admin_log.record(db, admin, f"message_{body.action}", {"report": report_id[:80]})
+    return out
+
+
+class QuickReportIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: Literal["remove", "restore"]
+
+
+@router.get("/quick-reports")
+async def quick_reports(admin: str = Depends(require_admin)):
+    """Reported quick posts, most recent first. Three reports from established
+    accounts already hid it; remove deletes it, restore puts it back."""
+    from app.services import quick_posts
+    return {"items": await quick_posts.admin_reports(get_database())}
+
+
+@router.post("/quick-reports/{qid}")
+async def act_on_quick_report(qid: str, body: QuickReportIn, admin: str = Depends(require_admin)):
+    from app.services import quick_posts
+    db = get_database()
+    out = await quick_posts.admin_act(db, qid[:40], body.action)
+    await admin_log.record(db, admin, f"quick_{body.action}", {"quick": qid[:40]})
     return out
 
 

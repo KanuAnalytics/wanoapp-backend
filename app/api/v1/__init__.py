@@ -72,3 +72,5 @@ api_router.include_router(home_ground_router, prefix="/home-ground", tags=["home
 api_router.include_router(creator_push_router, prefix="/creator", tags=["creator"])
 from app.api.v1.messages import router as messages_router  # noqa: E402
 api_router.include_router(messages_router, prefix="/messages", tags=["messages"])
+from app.api.v1.quick_posts import router as quick_posts_router  # noqa: E402
+api_router.include_router(quick_posts_router, prefix="/quick", tags=["quick posts"])

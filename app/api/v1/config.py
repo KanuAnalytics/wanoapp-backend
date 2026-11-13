@@ -61,7 +61,8 @@ APP_FEATURES = ("points", "boost", "earnings", "replies", "challenges", "sounds"
                 "profile_plus", "tv_plus",
                 "perf", "small_images", "instant_feed",
                 "gzip_api", "msg_lite", "clear_icons",
-                "more_categories", "content_guide")
+                "more_categories", "content_guide", "tv_strip",
+                "quick_posts")
 
 
 @router.get("/features")

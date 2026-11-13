@@ -18,7 +18,7 @@ _FILES = {"": ("index.html", "text/html; charset=utf-8"),
 
 HEADERS = {
     "Content-Security-Policy": ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-                                "img-src 'self' https: data:; connect-src 'self' https://upload.cloudflarestream.com https://upload.videodelivery.net; base-uri 'none'; "
+                                "img-src 'self' https: data:; media-src https:; connect-src 'self' https://upload.cloudflarestream.com https://upload.videodelivery.net; base-uri 'none'; "
                                 "form-action 'none'; frame-ancestors 'none'"),
     "X-Frame-Options": "DENY",
     "X-Content-Type-Options": "nosniff",

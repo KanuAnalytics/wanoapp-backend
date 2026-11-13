@@ -128,7 +128,7 @@ $("logout").addEventListener("click", () => logout());
 
 const PAGES = [
   ["overview", "Overview"], ["payouts", "Payouts"], ["pool", "Cash pool"], ["creators", "Creators"],
-  ["moderation", "Reported posts"], ["messagereports", "Reported messages"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["cities", "Cities"], ["categories", "Categories"], ["switches", "Feature switches"], ["speed", "Speed"], ["log", "Activity log"],
+  ["moderation", "Reported posts"], ["messagereports", "Reported messages"], ["quickreports", "Reported quick posts"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["cities", "Cities"], ["categories", "Categories"], ["tvstrip", "Wano TV strip"], ["switches", "Feature switches"], ["speed", "Speed"], ["log", "Activity log"],
 ];
 let current = "overview";
 const counts = {};
@@ -182,6 +182,8 @@ const FEATURES = {
   instant_feed: ["Instant feed", "On opening the app, the New feed starts with the videos the person had loaded but not reached last time (saved on their phone, up to 8, for 12 hours), then the newest posts. Needs app 2.3.23 or later."],
   gzip_api: ["Compressed replies", "The server sends app data compressed: a feed page is about 7 KB instead of 34 KB. Works for every app version already installed. Turn off at once if anything looks wrong."],
   msg_lite: ["Light messages", "Messages use far less data: chats only fetch new messages, checks slow down and pause when the app is in the background, and a push brings a new message in at once. Needs app 2.3.24 or later."],
+  quick_posts: ["Quick posts", "The ring around a creator's photo: Wano Voice notes (up to 30 s, about 30 KB) and Status cards (text on colour). Gone after 24 hours, 3 at a time. Under-18s: cards only, seen by their followers only. 3 reports hide one until you look (Reported quick posts). Needs app 2.3.26."],
+  tv_strip: ["Wano TV strip", "A small dark ticket (poster, title, Watch) slides in above the caption on some of Wano's house-account videos, pointing at Wano TV: after most of the video has played, never in the first 5 posts, at most twice a session, gone after 6 seconds. Counts on the Wano TV strip page. Needs app 2.3.25."],
   more_categories: ["More categories", "16 points categories instead of 6 (Fashion & beauty, Health, Faith, Tech & gaming...), a Suggest a category button, and posts reported as false information by 2 people stop earning. See the Categories page. Works for every app version; the Suggest button needs app 2.3.25."],
   content_guide: ["What we look for", "Shows creators the standard for a Wano Pick and Wano TV under the Road to Wano TV, with a Submit your film link. Needs app 2.3.25."],
   clear_icons: ["Clearer icons", "Icons and tab names stay readable on bright videos (a thin dark edge and a soft top fade, measured at 3:1 or better on pure white), and Messages becomes two chat bubbles instead of a paper plane. Needs app 2.3.24 or later."],
@@ -347,6 +349,30 @@ const RENDER = {
           el("button", { class: "btn secondary small", text: "Dismiss", onclick: (e) => decide(e.target, rep, "dismiss") }), " ",
           el("button", { class: "btn ghost-danger small", text: "Remove", onclick: (e) => decide(e.target, rep, "remove") })))))) :
         el("div", { class: "empty", text: "No reported messages." })));
+  },
+
+  async quickreports(main) {
+    const r = await api("GET", "/admin/quick-reports");
+    counts.quickreports = r.items.filter((q) => !q.deleted).length; drawNav();
+    const decide = async (btn, q, action) => {
+      if (await act(btn, () => api("POST", `/admin/quick-reports/${encodeURIComponent(q.id)}`, { action }),
+        action === "remove" ? "Quick post removed" : "Quick post restored")) RENDER.quickreports(main);
+    };
+    main.replaceChildren(...head("Reported quick posts", "Voice notes and Status cards people reported. Three reports from established accounts hide one at once. Restore puts it back; Remove deletes it."),
+      el("div", { class: "card" }, r.items.length ? el("table", {}, el("tbody", {}, ...r.items.map((q) => {
+        const audio = q.kind === "voice" ? safeUrl(q.audio_url) : null;
+        return el("tr", {},
+          el("td", {},
+            el("div", { class: "row small", style: "margin-bottom: 6px;" },
+              el("span", { class: "pill amber", text: (q.reasons || []).join(", ").replace(/_/g, " ") || "other" }),
+              q.deleted ? el("span", { class: "pill grey", text: "Removed" }) : q.hidden ? el("span", { class: "pill amber", text: "Hidden" }) : null,
+              el("span", { class: "muted", text: `@${(q.owner && q.owner.username) || "?"} · ${q.reports} reports` })),
+            q.kind === "card" ? el("div", { style: "font-weight: 600;", text: q.text || "[removed]" })
+              : audio && !q.deleted ? el("audio", { controls: true, preload: "none", src: audio }) : el("div", { class: "muted", text: "[voice note removed]" })),
+          el("td", { style: "text-align: right; white-space: nowrap; vertical-align: top;" },
+            q.deleted ? null : el("button", { class: "btn secondary small", text: "Restore", onclick: (e) => decide(e.target, q, "restore") }), " ",
+            q.deleted ? null : el("button", { class: "btn ghost-danger small", text: "Remove", onclick: (e) => decide(e.target, q, "remove") })));
+      }))) : el("div", { class: "empty", text: "No reported quick posts." })));
   },
 
   async challenges(main) {
@@ -521,6 +547,18 @@ const RENDER = {
           el("h3", { text: "Recent", style: "margin-top: 16px;" }),
           ...(history.length ? history.map((d) => el("div", { class: "small", style: "padding: 6px 0;",
             text: `${d.state === "approved" ? "✓" : "✕"} @${d.account.username} · ${d.title || "(no title)"}${d.note ? " — " + d.note : ""}` })) : [el("div", { class: "small muted", text: "No history yet." })]))));
+  },
+
+  async tvstrip(main) {
+    const r = await api("GET", "/admin/tv-strip?days=7");
+    const pct = (x) => (x === null || x === undefined ? "–" : `${Math.round(x * 100)}%`);
+    main.replaceChildren(...head("Wano TV strip", "The last 7 days: how often each film's ticket was shown, tapped (opened the film) and closed. Turn on with the Wano TV strip switch."),
+      el("div", { class: "card" }, r.items.length ? el("table", {}, el("thead", {}, el("tr", {},
+          ...["Film", "Shown", "Tapped", "Closed", "Tap rate", "Close rate"].map((h) => el("th", { text: h })))),
+        el("tbody", {}, ...r.items.map((x) => el("tr", {}, el("td", { text: x.title }), el("td", { text: num(x.shown) }),
+          el("td", { text: num(x.tap) }), el("td", { text: num(x.close) }), el("td", { text: pct(x.tap_rate) }),
+          el("td", { text: pct(x.close_rate) }))))) : el("div", { class: "empty", text: "Nothing shown yet." }),
+        el("div", { class: "small muted", style: "margin-top: 10px;", text: `Rules: after ${Math.round(r.rules.after_portion * 100)}% of a video, never in the first ${r.rules.min_posts} posts, ${r.rules.gap_posts}+ posts apart, at most ${r.rules.max_per_session} a session, ${r.rules.show_seconds} s on screen, none for a week after ${r.rules.closes_per_week} closes.` })));
   },
 
   async categories(main) {

@@ -363,3 +363,39 @@ async def record_play(
     counted = await tv_popularity.record_play(db, object_id, viewer, logged_in=bool(current_user),
                                               ip=_client_ip(request))
     return {"counted": counted}
+
+
+# ---------------------------------------------------------------- Wano TV strip
+
+from pydantic import BaseModel as _BM, ConfigDict as _CD  # noqa: E402
+from typing import Literal as _Lit  # noqa: E402
+
+
+class StripEventIn(_BM):
+    model_config = _CD(extra="forbid")
+    title_id: str
+    kind: _Lit["shown", "tap", "close"]
+
+
+async def _strip_on(db) -> None:
+    from app.services import creator_push
+    await creator_push.require(db, "tv_strip")
+
+
+@router.get("/strip")
+async def strip_config(current_user: Optional[str] = Depends(get_optional_active_user)):
+    """What the Wano TV strip shows, on whose posts, and its rules (tv_strip)."""
+    from app.services import tv_strip
+    db = get_database()
+    await _strip_on(db)
+    return await tv_strip.config(db, current_user)
+
+
+@router.post("/strip/event")
+async def strip_event(body: StripEventIn, request: Request,
+                      current_user: Optional[str] = Depends(get_optional_active_user)):
+    from app.services import tv_strip
+    db = get_database()
+    await _strip_on(db)
+    who = current_user or ("ip:" + (request.client.host if request.client else "?"))
+    return {"counted": await tv_strip.record(db, who, body.title_id[:40], body.kind)}

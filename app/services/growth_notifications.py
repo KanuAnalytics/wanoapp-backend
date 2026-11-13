@@ -506,6 +506,11 @@ async def _finish_challenges(db):
     return await challenges.finish(db)
 
 
+async def _purge_quick(db):
+    from app.services import quick_posts
+    return await quick_posts.purge(db)
+
+
 class GrowthLoop:
     def __init__(self):
         self._tasks: List[asyncio.Task] = []
@@ -530,7 +535,8 @@ class GrowthLoop:
                        asyncio.create_task(self._every(1800, _award_milestones, "award_milestones")),
                        asyncio.create_task(self._every(1800, _award_home_crowns, "award_home_crowns")),
                        asyncio.create_task(self._every(900, _settle_points, "settle_points")),
-                       asyncio.create_task(self._every(1800, _finish_challenges, "finish_challenges"))]
+                       asyncio.create_task(self._every(1800, _finish_challenges, "finish_challenges")),
+                       asyncio.create_task(self._every(1800, _purge_quick, "purge_quick"))]
 
     async def stop(self):
         for t in self._tasks:
