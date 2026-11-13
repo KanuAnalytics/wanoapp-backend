@@ -173,6 +173,8 @@ async def create_indexes():
         (d.messages, [("sender_id", 1), ("client_id", 1)], {"unique": True, "name": "messages_client_id_unique",
                                                             "partialFilterExpression": {"client_id": {"$type": "string"}}}),
         (d.message_limits, [("at", 1)], {"expireAfterSeconds": 2 * 24 * 3600}),
+        # "Suggest a category": a per-person daily limit (TTL).
+        (d.category_suggest_daily, [("at", 1)], {"expireAfterSeconds": 2 * 24 * 3600}),
         (d.message_reports, [("status", 1), ("created_at", -1)], {}),
         (d.trending_snapshots, [("at", 1)], {"expireAfterSeconds": 3 * 24 * 3600, "name": "trending_snapshots_ttl"}),
 

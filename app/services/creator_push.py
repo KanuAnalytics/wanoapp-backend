@@ -126,28 +126,149 @@ async def current_picks(db, admin: bool = False) -> List[dict]:
     return out
 
 
+SUBMIT_FILM_URL = "https://wanoafrica.com/tv#submit-film"
+
+# "What we look for" (content_guide switch): the standard behind a Wano Pick and
+# Wano TV, shown under the Road to Wano TV. Served from here so the Wano team
+# can change the words without an app release.
+GUIDE = {
+    "title": "What we look for",
+    "sections": [
+        {"key": "pick", "title": "Wano Pick",
+         "intro": "Posts the Wano team features on Discover for a week.",
+         "must": ["Your own original video: no reposts, no other apps' watermarks",
+                  "Follows the community rules and is safe for everyone",
+                  "Labelled if it was made with AI"],
+         "look_for": ["Culture: real places, people, language, food, music",
+                      "A strong start in the first 3 seconds",
+                      "Clear sound and a steady, well-lit picture (a phone is fine)",
+                      "Captions when you speak",
+                      "A complete moment or story"],
+         "signals": ["More people watch it to the end than usual for you",
+                     "Real conversation in the comments"]},
+        {"key": "tv", "title": "Wano TV",
+         "intro": "Films and series, licensed by Wano. Quality over quantity.",
+         "must": ["18 or over, and ready to sign a licence agreement",
+                  "You own the rights to everything in it, music included",
+                  "Everyone on camera agreed to be in it"],
+         "look_for": ["1080p or better, with clean sound",
+                      "Subtitles in English and the original language",
+                      "A real story with a beginning, middle and end"],
+         "signals": []},
+    ],
+    "never_earns": ["Reposts and copies", "Money-making offers and \"comment interested\" posts",
+                    "False health or news claims", "Political campaigning"],
+    "submit": {"label": "Submit your film", "url": SUBMIT_FILM_URL},
+}
+
+
 async def give_wano_tv(db, admin: str, creator_text: str) -> dict:
+    """The last step of the Road to Wano TV, given by an admin. Never to a
+    banned or deleted account, and never to an under-18: Wano TV needs a signed
+    licence agreement, which a minor can't sign."""
     from app.api.v1.admin import _find_creator
-    from app.services import leaderboard
+    from app.services import home_ground, leaderboard
     u = await _find_creator(db, creator_text)
-    if not u:
+    if not u or u.get("is_active") is False:
         raise HTTPException(status_code=404, detail="No account found")
+    if home_ground.is_minor(u):
+        raise HTTPException(status_code=409,
+                            detail="Wano TV is for creators 18 and over (it needs a signed licence agreement)")
     ok = await leaderboard._award(db, u["_id"], "wano_tv", datetime.utcnow())
     return {"user_id": str(u["_id"]), "awarded": ok}
 
 
+async def undo_wano_tv(db, admin: str, creator_text: str) -> dict:
+    """Takes back a mistaken "On Wano TV" (the step and its badge). If its
+    notification already went out, that can't be recalled."""
+    from app.api.v1.admin import _find_creator
+    u = await _find_creator(db, creator_text)
+    if not u:
+        raise HTTPException(status_code=404, detail="No account found")
+    r = await db.user_badges.delete_one({"_id": f"{u['_id']}:wano_tv", "user_id": u["_id"], "kind": "wano_tv"})
+    return {"user_id": str(u["_id"]), "removed": r.deleted_count == 1}
+
+
+async def credited_on_wano_tv(db, u: dict) -> bool:
+    """Credited on a live Wano TV title (by account or username) counts as being
+    on Wano TV, without anyone having to press a button."""
+    me = u.get("_id")
+    if not isinstance(me, ObjectId):
+        return False
+    ors: List[dict] = [{"credits.people.user_id": str(me)}, {"makers.user_id": me}, {"makers.user_id": str(me)}]
+    name = u.get("username")
+    if isinstance(name, str) and 0 < len(name) <= 64:
+        ors.append({"credits.people.username": {"$in": sorted({name, name.lower(), f"@{name}", f"@{name.lower()}"})}})
+    return await db.tv_titles.find_one({"is_active": True, "$or": ors}, {"_id": 1}) is not None
+
+
 async def road(db, me: ObjectId) -> List[dict]:
-    kinds = set(await db.user_badges.distinct("kind", {"user_id": me}))
-    u = await db.users.find_one({"_id": me}, {"tier": 1}) or {}
+    kinds = {k for k in await db.user_badges.distinct("kind", {"user_id": me}) if isinstance(k, str)}
+    u = await db.users.find_one({"_id": me}, {"tier": 1, "username": 1}) or {}
+    tier = u.get("tier") if isinstance(u.get("tier"), str) else None
+    on_tv = "wano_tv" in kinds or await credited_on_wano_tv(db, u)
     return [
         {"key": "rising", "label": "Rising creator", "hint": "Reach 1K real followers",
-         "done": u.get("tier") in ("rising", "star", "gold", "legend")},
+         "done": tier in ("rising", "star", "gold", "legend")},
         {"key": "crowned", "label": "Crowned", "hint": "Be the week's top creator in your city or country",
          "done": bool(kinds & {"crown_city", "crown_country"})},
         {"key": "picked", "label": "Wano Pick", "hint": "Get a post picked by the Wano team",
          "done": "wano_pick" in kinds},
-        {"key": "wano_tv", "label": "On Wano TV", "hint": "Featured on Wano TV", "done": "wano_tv" in kinds},
+        {"key": "wano_tv", "label": "On Wano TV", "hint": "Featured on Wano TV", "done": on_tv,
+         **({"action": {"label": "Submit your film", "url": SUBMIT_FILM_URL}} if await on(db, "content_guide") else {})},
     ]
+
+
+async def pick_check(db, video_text: str) -> dict:
+    """The numbers behind a post before it's picked: reach, how many watched to
+    the end (and how that compares with the creator's usual), conversation, and
+    anything that should stop it (reports, not original, unlabelled AI, minor)."""
+    from app.services import home_ground
+    vid = video_id_from(video_text)
+    if not vid:
+        raise HTTPException(status_code=422, detail="Paste a post link or post ID")
+    v = await db.videos.find_one({"_id": vid}, {"creator_id": 1, "title": 1, "description": 1, "likes_count": 1,
+                                                "comments_count": 1, "shares_count": 1, "category": 1,
+                                                "ai_generated": 1, "originality": 1, "is_active": 1,
+                                                "privacy": 1, "created_at": 1})
+    if not v:
+        raise HTTPException(status_code=404, detail="No such post")
+    num = lambda x: x if isinstance(x, (int, float)) and not isinstance(x, bool) else 0  # noqa: E731
+    reach = await db.video_reach.find_one({"_id": vid}) or {}
+    views, finished = num(reach.get("views")), num(reach.get("finished"))
+    rate = round(finished / views, 3) if views else None
+    # The creator's usual: median watched-to-end rate over their last 20 posts with 20+ views.
+    others = [d["_id"] async for d in db.videos.find({"creator_id": v.get("creator_id"), "_id": {"$ne": vid}},
+                                                     {"_id": 1}).sort("created_at", -1).limit(20)]
+    rates = sorted([num(r.get("finished")) / num(r.get("views")) async for r in db.video_reach.find(
+        {"_id": {"$in": others}, "views": {"$gte": 20}}, {"views": 1, "finished": 1}) if num(r.get("views"))])
+    usual = round(rates[len(rates) // 2], 3) if rates else None
+    reports = {r["_id"]: r["n"] async for r in db.reports.aggregate([
+        {"$match": {"video_id": vid, "is_active": True}},
+        {"$group": {"_id": "$category", "n": {"$sum": 1}}}])}
+    creator = await db.users.find_one({"_id": v.get("creator_id")},
+                                      {"username": 1, "is_active": 1, "date_of_birth": 1}) or {}
+    warnings = []
+    if v.get("is_active") is False or v.get("privacy") not in (None, "public"):
+        warnings.append("Not public")
+    if creator.get("is_active") is False:
+        warnings.append("Creator's account isn't active")
+    if creator and home_ground.is_minor(creator):
+        warnings.append("Creator is under 18")
+    if isinstance(v.get("originality"), dict) and v["originality"].get("state") == "rejected":
+        warnings.append("Marked not original")
+    for k, label in (("intellectual_property", "Reported as a copy"), ("spam", "Reported as spam"),
+                     ("false_information", "Reported as false information")):
+        if reports.get(k):
+            warnings.append(f"{label} ({reports[k]})")
+    return {"video_id": str(vid), "creator": creator.get("username"),
+            "title": v.get("title") if isinstance(v.get("title"), str) else None,
+            "category": v.get("category") if isinstance(v.get("category"), str) else None,
+            "ai_label": v.get("ai_generated") is True,
+            "views": views, "watched_to_end": finished, "watched_to_end_rate": rate,
+            "creators_usual_rate": usual, "likes": num(v.get("likes_count")),
+            "comments": num(v.get("comments_count")), "shares": num(v.get("shares_count")),
+            "reports": sum(reports.values()), "warnings": warnings}
 
 
 # ---------------------------------------------------------------- missions

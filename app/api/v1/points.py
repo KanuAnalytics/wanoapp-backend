@@ -15,7 +15,7 @@ from app.services import points
 
 router = APIRouter()
 
-Category = Literal[tuple(points.CATEGORIES)]  # type: ignore[valid-type]
+Category = Literal[tuple(points.ALL_CATEGORIES)]  # type: ignore[valid-type]
 
 
 class BoostRequest(BaseModel):
@@ -55,9 +55,26 @@ async def _run(coro):
 
 
 @router.get("/categories")
-async def categories(current_user=Depends(get_optional_active_user)):
-    """Categories a post must be in to earn points."""
-    return [{"id": k, "label": v} for k, v in points.CATEGORIES.items()]
+async def categories(all: bool = Query(False), current_user=Depends(get_optional_active_user)):
+    """Categories a post must be in to earn points. The full list (more_categories)
+    only goes to apps that ask for it with ?all=1 (2.3.25+): older apps' category
+    sheet doesn't scroll, so they keep the six they were built for."""
+    db = get_database()
+    cats = await points.active_categories(db) if all else points.CATEGORIES
+    return [{"id": k, "label": v} for k, v in cats.items()]
+
+
+class SuggestIn(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+
+
+@router.post("/categories/suggest")
+async def suggest_category(body: SuggestIn, current_user: str = Depends(get_current_active_user)):
+    """My content fits none of the categories: tell the Wano team (more_categories)."""
+    db = get_database()
+    if not await points.more_on(db):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    return await points.suggest_category(db, ObjectId(current_user), body.name)
 
 
 @router.get("/me")
@@ -70,6 +87,8 @@ async def my_points(current_user: str = Depends(get_current_active_user)):
 async def set_category(video_id: str, body: CategoryRequest, current_user: str = Depends(get_current_active_user)):
     db = get_database()
     oid = _oid(video_id, "video ID")
+    if await points.allowed_category(db, body.category) is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Pick one of the categories shown")
     res = await db.videos.update_one({"_id": oid, "creator_id": ObjectId(current_user)},
                                      {"$set": {"category": body.category}})
     if not res.matched_count:

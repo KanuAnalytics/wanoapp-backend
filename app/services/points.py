@@ -55,6 +55,100 @@ CATEGORIES = {
     "film": "Film & documentary",
     "sports": "Sports",
 }
+# With the "more_categories" switch on, creators also see these (and two old
+# ones get clearer names). A post keeps its category if the switch goes off;
+# only picking a new one needs the switch.
+MORE_CATEGORIES = {
+    "local_news": "Local news",
+    "fashion_beauty": "Fashion & beauty",
+    "health": "Health & wellness",
+    "nature_travel": "Nature & travel",
+    "faith": "Faith & inspiration",
+    "family": "Family & relationships",
+    "farming_animals": "Farming & animals",
+    "diaspora": "Diaspora & community",
+    "business_skills": "Business & skills",
+    "tech_gaming": "Tech & gaming",
+}
+ALL_CATEGORIES = {**CATEGORIES, **MORE_CATEGORIES}
+MORE_LABELS = {"food_culture": "Food & culture", "learn_news": "Learn & education"}
+MORE_ORDER = ["comedy", "music", "food_culture", "learn_news", "local_news", "film", "sports",
+              "fashion_beauty", "health", "nature_travel", "faith", "family", "farming_animals",
+              "diaspora", "business_skills", "tech_gaming"]
+# With the switch on, posts reported as false information by COPY_REPORTS
+# people stop earning too (false health claims, fake news).
+MORE_REPORT_CATEGORIES = ("false_information",)
+
+
+async def more_on(db) -> bool:
+    try:
+        from app.services import features
+        return (await features.current(db)).get("more_categories") is True
+    except Exception:
+        return False
+
+
+async def active_categories(db) -> Dict[str, str]:
+    """What creators can pick right now, in display order."""
+    if not await more_on(db):
+        return dict(CATEGORIES)
+    return {k: MORE_LABELS.get(k, ALL_CATEGORIES[k]) for k in MORE_ORDER}
+
+
+async def allowed_category(db, key) -> Optional[str]:
+    """The category if it can be picked now, else None."""
+    if not isinstance(key, str) or key not in ALL_CATEGORIES:
+        return None
+    if key in CATEGORIES:
+        return key
+    return key if await more_on(db) else None
+
+
+SUGGEST_PER_DAY = 5
+
+
+def _fold(s: str) -> str:
+    import unicodedata
+    s = unicodedata.normalize("NFKD", s or "")
+    s = "".join(c for c in s if not unicodedata.combining(c)).casefold()
+    return " ".join(re.sub(r"[^\w ]+", " ", s.replace("&", " and ")).split())
+
+
+async def suggest_category(db, user: ObjectId, name) -> dict:
+    """A creator's content fits no category: count the suggestion for the admin
+    page (the "Suggest a category" button). Words only, no links or numbers."""
+    from fastapi import HTTPException
+    clean = " ".join(str(name or "").split()) if isinstance(name, str) else ""
+    if not (2 <= len(clean) <= 40) or any(ch.isdigit() for ch in clean) \
+            or not re.fullmatch(r"[^\W\d_][\w &'\-,/]{1,39}", clean, re.UNICODE) \
+            or re.search(r"(https?|www\.|\.com|\.net|\.org)", clean, re.I):
+        raise HTTPException(status_code=422, detail="Type a short name, like \"Cars\" or \"Poetry\"")
+    folded = _fold(clean)
+    for k, label in (await active_categories(db)).items():
+        if _fold(label) == folded or _fold(k.replace("_", " ")) == folded:
+            return {"exists": True, "category": {"id": k, "label": label}}
+    day = datetime.utcnow().strftime("%Y%m%d")
+    lim = await db.category_suggest_daily.find_one_and_update(
+        {"_id": f"{user}:{day}"}, {"$inc": {"n": 1}, "$setOnInsert": {"at": datetime.utcnow()}},
+        upsert=True, return_document=ReturnDocument.AFTER)
+    if (lim or {}).get("n", 0) > SUGGEST_PER_DAY:
+        raise HTTPException(status_code=429, detail="Thanks! That's enough suggestions for today.")
+    key = folded[:60]
+    await db.category_requests.update_one(
+        {"_id": key},
+        {"$setOnInsert": {"name": clean, "first_at": datetime.utcnow()},
+         "$addToSet": {"users": user}, "$set": {"last_at": datetime.utcnow()}},
+        upsert=True)
+    return {"exists": False}
+
+
+async def category_requests(db) -> List[dict]:
+    rows = await db.category_requests.aggregate([
+        {"$project": {"name": 1, "last_at": 1, "count": {"$size": {"$ifNull": ["$users", []]}}}},
+        {"$sort": {"count": -1, "last_at": -1}}, {"$limit": 100}]).to_list(100)
+    return [{"id": r["_id"], "name": r.get("name"), "count": r["count"]} for r in rows]
+
+
 PER_VIEW = 1
 PER_FINISH = 1
 DAILY_CAP = 2000
@@ -150,7 +244,7 @@ def qualifying() -> dict:
     return {"is_active": True, "privacy": "public", "isReadyToStream": {"$ne": False},
             "status": {"$nin": ["scheduled", "publishing", "cancelled"]},
             "moderation.state": {"$nin": ["held", "removed"]},
-            "category": {"$in": list(CATEGORIES)},
+            "category": {"$in": list(ALL_CATEGORIES)},
             "originality.state": {"$ne": "rejected"}}
 
 
@@ -159,7 +253,9 @@ async def _copy_reported(db, ids: List[ObjectId]) -> set:
         return set()
     out = set()
     async for r in db.reports.aggregate([
-        {"$match": {"video_id": {"$in": ids}, "is_active": True, "category": {"$in": list(COPY_CATEGORIES)}}},
+        {"$match": {"video_id": {"$in": ids}, "is_active": True,
+                    "category": {"$in": list(COPY_CATEGORIES) + (list(MORE_REPORT_CATEGORIES)
+                                                                if await more_on(db) else [])}}},
         {"$group": {"_id": "$video_id", "people": {"$addToSet": "$reporter_id"}}},
     ]):
         if len(r["people"]) >= COPY_REPORTS:
@@ -822,8 +918,8 @@ async def _progress(db, user: ObjectId, now: datetime, month: str) -> dict:
     async for r in db.points_ledger.find({"user_id": user, "kind": "earned", "month": month}, {"amount": 1}):
         this_month += _num(r.get("amount"))
     live = {"creator_id": user, "is_active": True, "privacy": "public"}
-    with_cat = await db.videos.count_documents({**live, "category": {"$in": list(CATEGORIES)}})
-    without_cat = await db.videos.count_documents({**live, "category": {"$nin": list(CATEGORIES)}})
+    with_cat = await db.videos.count_documents({**live, "category": {"$in": list(ALL_CATEGORIES)}})
+    without_cat = await db.videos.count_documents({**live, "category": {"$nin": list(ALL_CATEGORIES)}})
     day = now.replace(hour=0, minute=0, second=0, microsecond=0)
     posted_today = await db.videos.count_documents({**qualifying(), "creator_id": user, "created_at": {"$gte": day}}) > 0
     today_views = 0

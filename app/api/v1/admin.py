@@ -194,6 +194,13 @@ async def admin_picks(admin: str = Depends(require_admin)):
     return {"items": await creator_push.current_picks(get_database(), admin=True)}
 
 
+@router.get("/picks/check")
+async def admin_pick_check(video: str = Query(..., min_length=1, max_length=500), admin: str = Depends(require_admin)):
+    """The numbers behind a post before picking it."""
+    from app.services import creator_push
+    return await creator_push.pick_check(get_database(), video)
+
+
 @router.post("/picks", status_code=201)
 async def admin_add_pick(body: PickIn, admin: str = Depends(require_admin)):
     from app.services import creator_push
@@ -218,6 +225,31 @@ async def admin_wano_tv(body: WanoTvIn, admin: str = Depends(require_admin)):
     db = get_database()
     out = await creator_push.give_wano_tv(db, admin, body.creator[:200])
     await admin_log.record(db, admin, "wano_tv_featured", {"user": out["user_id"]})
+    return out
+
+
+@router.get("/category-requests")
+async def admin_category_requests(admin: str = Depends(require_admin)):
+    from app.services import points
+    db = get_database()
+    return {"items": await points.category_requests(db),
+            "categories": [{"id": k, "label": v} for k, v in (await points.active_categories(db)).items()]}
+
+
+@router.delete("/category-requests/{rid}")
+async def admin_dismiss_category_request(rid: str, admin: str = Depends(require_admin)):
+    db = get_database()
+    r = await db.category_requests.delete_one({"_id": rid[:80]})
+    await admin_log.record(db, admin, "category_request_dismissed", {"name": rid[:80]})
+    return {"removed": r.deleted_count == 1}
+
+
+@router.post("/wano-tv/undo")
+async def admin_wano_tv_undo(body: WanoTvIn, admin: str = Depends(require_admin)):
+    from app.services import creator_push
+    db = get_database()
+    out = await creator_push.undo_wano_tv(db, admin, body.creator[:200])
+    await admin_log.record(db, admin, "wano_tv_removed", {"user": out["user_id"], "removed": out["removed"]})
     return out
 
 
@@ -392,9 +424,10 @@ async def hg_reset(body: HgResetIn, admin: str = Depends(require_admin)):
     30-day lock only stops people hopping between cities on their own)."""
     from app.services import home_ground
     db = get_database()
-    name = body.username.strip().lstrip("@")
-    u = await db.users.find_one({"username": name}, {"home_ground": 1}) \
-        or await db.users.find_one({"username": name.lower()}, {"home_ground": 1})
+    try:
+        u = await _find_creator(db, body.username)
+    except HTTPException:
+        u = None
     if not u:
         raise HTTPException(status_code=404, detail="No such user")
     before = (u.get("home_ground") or {}).get("city") if isinstance(u.get("home_ground"), dict) else None

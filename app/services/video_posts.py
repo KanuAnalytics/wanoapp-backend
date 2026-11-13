@@ -182,7 +182,7 @@ async def create_video_post(
     if reply_to:
         video_doc["reply_to"] = reply_to
     # Same field PUT /points/videos/{id}/category sets; only known categories.
-    from app.services.points import CATEGORIES as _POINTS_CATEGORIES
+    from app.services.points import ALL_CATEGORIES as _POINTS_CATEGORIES
     if trial is True:
         video_doc["trial"] = True
     if ai_generated is True:

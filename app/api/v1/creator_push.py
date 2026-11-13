@@ -20,6 +20,14 @@ async def picks(current_user: Optional[str] = Depends(get_optional_active_user))
     return {"items": await cp.current_picks(db)}
 
 
+@router.get("/guide")
+async def guide(current_user: Optional[str] = Depends(get_optional_active_user)):
+    """What we look for: the standard behind a Wano Pick and Wano TV."""
+    db = get_database()
+    await cp.require(db, "content_guide")
+    return cp.GUIDE
+
+
 @router.get("/missions")
 async def missions(current_user: str = Depends(get_current_active_user)):
     db = get_database()

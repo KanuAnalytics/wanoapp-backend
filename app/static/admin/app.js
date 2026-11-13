@@ -128,7 +128,7 @@ $("logout").addEventListener("click", () => logout());
 
 const PAGES = [
   ["overview", "Overview"], ["payouts", "Payouts"], ["pool", "Cash pool"], ["creators", "Creators"],
-  ["moderation", "Reported posts"], ["messagereports", "Reported messages"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["cities", "Cities"], ["switches", "Feature switches"], ["speed", "Speed"], ["log", "Activity log"],
+  ["moderation", "Reported posts"], ["messagereports", "Reported messages"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["cities", "Cities"], ["categories", "Categories"], ["switches", "Feature switches"], ["speed", "Speed"], ["log", "Activity log"],
 ];
 let current = "overview";
 const counts = {};
@@ -182,6 +182,8 @@ const FEATURES = {
   instant_feed: ["Instant feed", "On opening the app, the New feed starts with the videos the person had loaded but not reached last time (saved on their phone, up to 8, for 12 hours), then the newest posts. Needs app 2.3.23 or later."],
   gzip_api: ["Compressed replies", "The server sends app data compressed: a feed page is about 7 KB instead of 34 KB. Works for every app version already installed. Turn off at once if anything looks wrong."],
   msg_lite: ["Light messages", "Messages use far less data: chats only fetch new messages, checks slow down and pause when the app is in the background, and a push brings a new message in at once. Needs app 2.3.24 or later."],
+  more_categories: ["More categories", "16 points categories instead of 6 (Fashion & beauty, Health, Faith, Tech & gaming...), a Suggest a category button, and posts reported as false information by 2 people stop earning. See the Categories page. Works for every app version; the Suggest button needs app 2.3.25."],
+  content_guide: ["What we look for", "Shows creators the standard for a Wano Pick and Wano TV under the Road to Wano TV, with a Submit your film link. Needs app 2.3.25."],
   clear_icons: ["Clearer icons", "Icons and tab names stay readable on bright videos (a thin dark edge and a soft top fade, measured at 3:1 or better on pure white), and Messages becomes two chat bubbles instead of a paper plane. Needs app 2.3.24 or later."],
   small_images: ["Small pictures", "The app loads small copies of pictures (avatars ~10 KB instead of up to 2 MB). Turn on once the Speed page shows the copies are done."],
   trial_posts: ["Trial posts", "Creators can post without telling followers, then share it later."],
@@ -399,21 +401,40 @@ const RENDER = {
       if (!ok) return;
       if (await act(e.target, () => api("POST", "/admin/picks", { video: video.value.trim(), note: note.value.trim() }), "Added to Wano Picks")) RENDER.picks(main);
     }});
+    const checkOut = el("div", { class: "small" });
+    const check = el("button", { class: "btn secondary", text: "Check this post", onclick: async (e) => {
+      if (!video.value.trim()) return toast("Paste a post link or ID", true);
+      let c;
+      try { c = await api("GET", `/admin/picks/check?video=${encodeURIComponent(video.value.trim())}`); }
+      catch (err) { return toast(err.message || "Couldn't check that post", true); }
+      const pct = (x) => (x === null || x === undefined ? "–" : `${Math.round(x * 100)}%`);
+      checkOut.replaceChildren(
+        el("div", { style: "font-weight: 600; margin-top: 8px;", text: `@${c.creator || "?"}${c.category ? " · " + c.category : " · no category"}${c.ai_label ? " · AI label" : ""}` }),
+        el("div", { text: `${num(c.views)} views · ${pct(c.watched_to_end_rate)} watched to the end (usual for them: ${pct(c.creators_usual_rate)})` }),
+        el("div", { text: `${num(c.likes)} likes · ${num(c.comments)} comments · ${num(c.shares)} shares · ${num(c.reports)} reports` }),
+        ...c.warnings.map((w) => el("div", { style: "color: #B42318; font-weight: 600;", text: "⚠ " + w })));
+    }});
     const who = el("input", { type: "text", placeholder: "@username or post link", maxlength: 200 });
     const tv = el("button", { class: "btn secondary", text: "Mark as featured on Wano TV", onclick: async (e) => {
       if (!who.value.trim()) return toast("Type a username", true);
-      const ok = await confirmBox("Mark as featured on Wano TV?", "They get the final step of the Road to Wano TV and a notification. This can't be undone.", "Mark");
+      const ok = await confirmBox("Mark as featured on Wano TV?", "They get the final step of the Road to Wano TV and a notification. 18+ only. You can take the step back, but not the notification.", "Mark");
       if (!ok) return;
       await act(e.target, () => api("POST", "/admin/wano-tv", { creator: who.value.trim() }), "Marked as featured on Wano TV");
+    }});
+    const tvUndo = el("button", { class: "btn secondary", text: "Undo", onclick: async (e) => {
+      if (!who.value.trim()) return toast("Type a username", true);
+      const ok = await confirmBox("Take back 'On Wano TV'?", "The step goes back to not done. A notification already sent can't be recalled.", "Take back");
+      if (!ok) return;
+      await act(e.target, () => api("POST", "/admin/wano-tv/undo", { creator: who.value.trim() }), "Taken back");
     }});
     main.replaceChildren(...head("Wano Picks", "Posts the Wano team features on Discover. Each stays 7 days."),
       el("div", { class: "two" },
         el("div", { class: "card" }, el("h3", { text: "New pick" }),
           el("label", { class: "field" }, el("span", { text: "Post" }), video),
-          el("label", { class: "field" }, el("span", { text: "Note" }), note), add,
+          el("label", { class: "field" }, el("span", { text: "Note" }), note), el("div", { class: "row" }, check, add), checkOut,
           el("h3", { text: "Road to Wano TV", style: "margin-top: 24px;" }),
-          el("p", { class: "small muted", text: "The last step on a creator's ladder: featured on Wano TV." }),
-          el("label", { class: "field" }, el("span", { text: "Creator" }), who), tv),
+          el("p", { class: "small muted", text: "The last step on a creator's ladder: featured on Wano TV. Creators credited on a live Wano TV title get it by themselves." }),
+          el("label", { class: "field" }, el("span", { text: "Creator" }), who), el("div", { class: "row" }, tv, tvUndo)),
         el("div", { class: "card" }, el("h3", { text: "Live picks" }), rows.length ? el("table", {}, el("tbody", {}, ...rows.map((p) => el("tr", {},
           el("td", {}, el("div", { style: "font-weight: 600;", text: "@" + (p.creator.username || "") }),
             el("div", { class: "small muted", text: p.note || p.title || "" }),
@@ -500,6 +521,22 @@ const RENDER = {
           el("h3", { text: "Recent", style: "margin-top: 16px;" }),
           ...(history.length ? history.map((d) => el("div", { class: "small", style: "padding: 6px 0;",
             text: `${d.state === "approved" ? "✓" : "✕"} @${d.account.username} · ${d.title || "(no title)"}${d.note ? " — " + d.note : ""}` })) : [el("div", { class: "small muted", text: "No history yet." })]))));
+  },
+
+  async categories(main) {
+    const r = await api("GET", "/admin/category-requests");
+    counts.categories = r.items.length; drawNav();
+    main.replaceChildren(...head("Points categories", "What creators can pick when posting (the More categories switch shows all 16). Suggestions from creators whose content fits none:"),
+      el("div", { class: "two" },
+        el("div", { class: "card" }, el("h3", { text: "Suggested by creators" }), r.items.length ? el("table", {}, el("tbody", {},
+          ...r.items.map((q) => el("tr", {}, el("td", {}, el("div", { style: "font-weight: 600;", text: q.name }),
+            el("div", { class: "small muted", text: `${q.count} ${q.count === 1 ? "person" : "people"}` })),
+            el("td", { style: "text-align: right;" }, el("button", { class: "btn small secondary", text: "Dismiss", onclick: async (e) => {
+              if (await act(e.target, () => api("DELETE", `/admin/category-requests/${encodeURIComponent(q.id)}`), "Dismissed")) RENDER.categories(main);
+            } })))))) : el("div", { class: "empty", text: "No suggestions yet." })),
+        el("div", { class: "card" }, el("h3", { text: "Categories now" }),
+          el("div", { class: "small muted", text: "Adding one is a small server change: ask Claude." }),
+          ...r.categories.map((c) => el("div", { text: c.label })))));
   },
 
   async cities(main) {

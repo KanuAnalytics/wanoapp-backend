@@ -28,9 +28,16 @@ from app.services.video_deletion import soft_delete_video
 from app.services.stitch_jobs import MAX_CLIPS, StitchValidationError, create_stitch_job
 from app.services.video_posts import DEFAULT_THUMBNAIL, create_video_post, post_stream_uid, stream_uid_reference_query
 from app.services.songs import sound_for_post
-from app.services.points import CATEGORIES as _POINTS_CATEGORIES
+from app.services.points import ALL_CATEGORIES as _POINTS_CATEGORIES
 
 PointsCategory = Literal[tuple(_POINTS_CATEGORIES)]  # type: ignore[valid-type]
+
+
+async def _points_category(key):
+    """New categories only while the more_categories switch is on; otherwise
+    the post is saved without one (it can be set later), never refused."""
+    from app.services import points
+    return await points.allowed_category(get_database(), key)
 
 
 async def _trial_on() -> bool:
@@ -309,7 +316,7 @@ async def post_video(
         video_id = await create_video_post(
             current_user,
             reply_to=reply_to,
-            points_category=input.points_category,
+            points_category=await _points_category(input.points_category),
             trial=input.trial and await _trial_on(),
             ai_generated=input.ai_generated and await _ai_label_on(),
             remix_enabled=input.remix_enabled is not False,
@@ -408,7 +415,7 @@ async def _create_stitch_job(input: VideoStitch, current_user: str, sound, sched
             "scheduled_at": scheduled_at,
             "scheduled_timezone": scheduled_timezone,
             "reply_to": reply_to,
-            "points_category": input.points_category,
+            "points_category": await _points_category(input.points_category),
             "trial": bool(input.trial and await _trial_on()),
             "ai_generated": bool(input.ai_generated and await _ai_label_on()),
         },

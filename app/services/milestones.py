@@ -222,7 +222,7 @@ async def summary(db, me: ObjectId) -> dict:
         nxt = next((n for n in steps if n not in reached[k]), None)
         ladders.append({"key": k, "label": LADDER_LABELS[k], "current": current[k], "next": nxt,
                         "reached": reached[k]})
-    tier = user.get("tier") if user.get("tier") in TIER_LABELS else None
+    tier = user.get("tier") if isinstance(user.get("tier"), str) and user.get("tier") in TIER_LABELS else None
     nt = next(((at, k, l) for at, k, l in TIERS if _tier_rank(k) > _tier_rank(tier)), None)
     celebrate = [{"id": r["_id"], "kind": r["kind"], "label": label(r["kind"]), "value": r.get("value"),
                   "at": r.get("at")} for r in rows if r.get("seen") is False]
