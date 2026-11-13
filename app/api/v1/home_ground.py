@@ -158,9 +158,7 @@ async def pulse(city: Optional[str] = Query(None, max_length=40), country: Optio
     now = datetime.utcnow()
     week_ago = now - timedelta(days=7)
     since = now - timedelta(days=PULSE_DAYS)
-    adult = {"$or": [{"date_of_birth": {"$exists": False}},
-                     {"date_of_birth": {"$not": {"$type": "date"}}},
-                     {"date_of_birth": {"$lte": now - timedelta(days=365 * 18 + 5)}}]}
+    adult = hg.adult_filter(now)
     if city:
         who = {"home_ground.city": city, "is_active": {"$ne": False}, **adult}
         members = await db.users.count_documents(who)

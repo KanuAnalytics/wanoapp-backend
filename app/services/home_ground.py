@@ -185,14 +185,36 @@ def city_of(user: dict) -> Optional[str]:
     return c if isinstance(c, str) and c in CITY else None
 
 
-def is_minor(user: dict, now: Optional[datetime] = None) -> bool:
-    dob = user.get("date_of_birth")
+# A saved birthday that makes someone younger than this is a mistake, not a
+# child (the old sign-up screen saved its default date when the picker was
+# skipped: 125 accounts "born" 2018-2026 in Nov 2026). It counts as unknown,
+# like no birthday at all. The person is still asked to correct it (age_check).
+IMPLAUSIBLE_AGE = 8
+
+
+def age_of(dob, now: Optional[datetime] = None) -> Optional[int]:
+    """Whole years since a saved birthday, or None when there isn't a usable one."""
     if not isinstance(dob, datetime):
-        return False  # unknown: treated as an adult, as everywhere else
+        return None
     now = now or datetime.utcnow()
     dob = dob.replace(tzinfo=None)
-    years = now.year - dob.year - ((now.month, now.day) < (dob.month, dob.day))
+    return now.year - dob.year - ((now.month, now.day) < (dob.month, dob.day))
+
+
+def is_minor(user: dict, now: Optional[datetime] = None) -> bool:
+    years = age_of(user.get("date_of_birth"), now)
+    if years is None or years < IMPLAUSIBLE_AGE:
+        return False  # unknown (or an impossible date): treated as an adult, as everywhere else
     return years < 18
+
+
+def adult_filter(now: Optional[datetime] = None) -> dict:
+    """Mongo filter matching what is_minor calls an adult."""
+    now = now or datetime.utcnow()
+    return {"$or": [{"date_of_birth": {"$exists": False}},
+                    {"date_of_birth": {"$not": {"$type": "date"}}},
+                    {"date_of_birth": {"$lte": now - timedelta(days=365 * 18 + 5)}},
+                    {"date_of_birth": {"$gt": now - timedelta(days=365 * IMPLAUSIBLE_AGE - 5)}}]}
 
 
 def place_label(user: dict) -> Optional[dict]:
