@@ -176,6 +176,19 @@ def _urls_of_video(v: dict) -> List[str]:
     return out
 
 
+def _urls_of_tv(t: dict) -> List[str]:
+    """Every picture of a Wano TV title the app shows: poster, backdrop, the
+    trailer's thumbnail (the lists use it) and episode thumbnails."""
+    out = [t.get("poster"), t.get("backdrop")]
+    trailer = t.get("trailer") if isinstance(t.get("trailer"), dict) else {}
+    out.append(trailer.get("thumbnail"))
+    for season in t.get("seasons") or []:
+        for ep in (season.get("episodes") or []) if isinstance(season, dict) else []:
+            if isinstance(ep, dict):
+                out.append(ep.get("thumbnail"))
+    return [u for u in out if isinstance(u, str)][:60]
+
+
 async def _todo(db, urls: Iterable[str]) -> List[str]:
     keys = list(dict.fromkeys(k for k in (source_key(u) for u in urls) if k))
     if not keys:
@@ -205,14 +218,17 @@ async def _backfill_urls(db, coll: str, want: int) -> List[str]:
     after = state.get("after") if isinstance(state.get("after"), ObjectId) else None
     q = {"_id": {"$gt": after}} if after else {}
     proj = {"profile_picture": 1} if coll == "users" else \
-        {"poster": 1, "backdrop": 1} if coll == "tv_titles" else {"urls.thumbnail": 1, "thumbnail": 1, "images": 1}
+        {"poster": 1, "backdrop": 1, "trailer.thumbnail": 1, "seasons.episodes.thumbnail": 1} if coll == "tv_titles" else \
+        {"image": 1} if coll == "tv_genres" else {"urls.thumbnail": 1, "thumbnail": 1, "images": 1}
     docs = await db[coll].find(q, proj).sort("_id", 1).limit(want).to_list(want)
     urls: List[str] = []
     for d in docs:
         if coll == "users":
             urls.append(d.get("profile_picture"))
         elif coll == "tv_titles":
-            urls += [d.get("poster"), d.get("backdrop")]
+            urls += _urls_of_tv(d)
+        elif coll == "tv_genres":
+            urls.append(d.get("image"))
         else:
             urls += _urls_of_video(d)
     last = docs[-1]["_id"] if docs else None
@@ -231,7 +247,7 @@ async def sweep(db, batch: int = BATCH) -> dict:
         keys += [d["_id"] async for d in db.image_variants.find(
             {"state": "failed", "decoder": {"$not": {"$gte": DECODER}}}, {"_id": 1}).limit(batch)
             if d["_id"] not in keys]
-    for coll in ("users", "videos", "tv_titles"):
+    for coll in ("users", "videos", "tv_titles", "tv_genres"):
         if len(keys) >= batch:
             break
         keys += [k for k in await _todo(db, await _backfill_urls(db, coll, 60)) if k not in keys]

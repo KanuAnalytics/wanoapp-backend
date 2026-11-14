@@ -207,3 +207,20 @@ async def test_PF6_swipe_freezes_are_counted(client, db):
     rows = (await client.get("/api/v1/admin/perf", headers=adh)).json()["rows"]
     ug = next(x for x in rows if x["country"] == "UG" and x["metric"] == "swipe_lag")
     assert ug["count"] == 2
+
+
+async def test_SI8_wano_tv_trailer_and_episode_pictures_get_small_copies(db, store):
+    """The TV lists show the trailer thumbnail; it had no small copy, so the
+    app's small URL was missing and every list tile was blank."""
+    from app.services import small_images as si
+    objects, puts = store
+    for k in ("wano-tv/a/poster.jpg", "wano-tv/a/thumb_16x9.jpg", "wano-tv/a/ep1.jpg", "wano-tv/genre.jpg"):
+        objects[k] = _jpeg(1600, 900)
+    await db.tv_titles.insert_one({"title": "A", "is_active": True, "poster": f"{CDN}/wano-tv/a/poster.jpg",
+                                   "trailer": {"thumbnail": f"{CDN}/wano-tv/a/thumb_16x9.jpg"},
+                                   "seasons": [{"number": 1, "episodes": [{"thumbnail": f"{CDN}/wano-tv/a/ep1.jpg"}]}]})
+    await db.tv_genres.insert_one({"name": "Drama", "image": f"{CDN}/wano-tv/genre.jpg", "is_active": True})
+    for _ in range(3):
+        await si.sweep(db)
+    for k in ("wano-tv/a/poster", "wano-tv/a/thumb_16x9", "wano-tv/a/ep1", "wano-tv/genre"):
+        assert f"small/w480/{k}.webp" in puts, k
