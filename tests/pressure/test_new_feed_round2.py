@@ -128,12 +128,21 @@ async def test_M10_ten_thousand_posts_page_fast(client, db):
     assert time.perf_counter() - t < 5 and len(seen) == 50 and len(set(seen)) == 50
 
 
-async def test_M11_old_skip_app_unaffected_by_cap(client, db):
+async def test_M11_old_skip_app_pages_exactly_with_the_daily_cap(client, db):
+    # Store builds page by skip: pages are exact and stable, and a creator's posts
+    # after their first 3 of a day are left out of New (test_new_feed_floods.py).
+    from app.services import new_feed
+    new_feed._flood_cache = (None, None, [])
     spammer, _ = await make_user(db)
     made = [await make_video(db, spammer, created_at=ago(minutes=i), isReadyToStream=True) for i in range(12)]
     p1, _ = await _ids(client, None, skip=0)
     p2, _ = await _ids(client, None, skip=10)
-    assert p1 + p2 == made     # old builds keep exact skip paging
+    by_day = {}
+    for v in reversed(made):          # oldest first: the first 3 of each UTC day are kept
+        d = (await db.videos.find_one({"_id": ObjectId(v)}))["created_at"].date()
+        by_day.setdefault(d, []).append(v)
+    kept = [v for v in made if any(v in vs[:3] for vs in by_day.values())]
+    assert p1 + p2 == kept
 
 
 async def test_M12_logged_in_skip_feed_hides_not_interested(client, db):

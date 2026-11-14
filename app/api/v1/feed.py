@@ -397,8 +397,9 @@ async def get_feed(
             has_more = next_cursor is not None
             apply_watch_filter = False   # already applied while paging
         else:
+            new_tab = not user_id and sort_field == "created_at"
             skip_match = match_conditions if user_id else await new_feed.skip_exclusions(
-                db, match_conditions, current_user)
+                db, match_conditions, current_user, floods=new_tab)
             pipeline = [
                 {"$match": skip_match},
                 {"$sort": sort_stage},
@@ -440,6 +441,8 @@ async def get_feed(
             # Posts of accounts that were deactivated before their posts were.
             if not user_id:
                 docs = [d for d in docs if (d.get("user") or {}).get("is_active") is not False]
+            if new_tab:
+                docs = new_feed.spread(docs)
 
     videos = []
     for doc in docs:

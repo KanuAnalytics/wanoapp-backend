@@ -9,6 +9,13 @@ the cursor marks the oldest post already scanned, so new uploads never move it.
 Flooding. With a cursor, no creator gets more than MAX_PER_CREATOR posts on one
 page and never two in a row. Their other posts aren't dropped: up to
 MAX_DEFERRED of them ride along in the cursor and come back on later pages.
+
+Store builds page by skip, where a page can't be reordered across pages or come
+back short (they read a short page as the end of the feed). There, a creator's
+posts beyond DAILY_CAP in one day (UTC) are left out of New in the query itself,
+so pages stay full and stable, and each page is spread so the same creator is
+not back to back where it can be helped. Those posts stay on the creator's
+profile and in For You.
 """
 
 import base64
@@ -158,7 +165,61 @@ async def all_inactive_creators(db) -> List[ObjectId]:
     return ids
 
 
-async def skip_exclusions(db, match: dict, viewer: Optional[str]) -> dict:
+# ---------------------------------------------------------------- floods (skip paging)
+
+DAILY_CAP = 3              # a creator's first 3 posts of a day (UTC) show in New
+FLOOD_LOOKBACK = timedelta(days=7)
+FLOOD_SCAN_MAX = 20000
+FLOOD_EXCESS_MAX = 5000
+_FLOOD_TTL = timedelta(seconds=60)
+_flood_cache: Tuple[Optional[int], Optional[datetime], List[ObjectId]] = (None, None, [])
+
+
+async def flood_excess_ids(db, now: Optional[datetime] = None) -> List[ObjectId]:
+    """Posts left out of skip-paged New: each creator's posts after their first
+    DAILY_CAP of a UTC day, over the last FLOOD_LOOKBACK. Keeping the *first*
+    ones means a new upload never pushes an older post out (pages don't shift).
+    Cached briefly; bounded scan."""
+    global _flood_cache
+    key, at, ids = _flood_cache
+    clock = datetime.now(timezone.utc)
+    if key == id(db) and at is not None and clock - at <= _FLOOD_TTL:
+        return ids
+    now = now or datetime.utcnow()
+    rows = await db.videos.find(
+        {"created_at": {"$gte": now - FLOOD_LOOKBACK}}, {"creator_id": 1, "created_at": 1},
+    ).sort([("created_at", 1), ("_id", 1)]).limit(FLOOD_SCAN_MAX).to_list(length=FLOOD_SCAN_MAX)
+    seen: dict = {}
+    excess: List[ObjectId] = []
+    for r in rows:
+        when = _naive(r.get("created_at"))
+        if not isinstance(when, datetime):
+            continue
+        k = (r.get("creator_id"), when.date())
+        seen[k] = seen.get(k, 0) + 1
+        if seen[k] > DAILY_CAP:
+            excess.append(r["_id"])
+            if len(excess) >= FLOOD_EXCESS_MAX:
+                break
+    _flood_cache = (id(db), clock, excess)
+    return excess
+
+
+def spread(docs: list) -> list:
+    """Same posts, reordered so one creator isn't shown back to back when another
+    creator's post can go between. Otherwise keeps newest-first order."""
+    def who(d):
+        return str(d.get("creator_id") or (d.get("user") or {}).get("username") or "")
+    pending, out, last = list(docs), [], None
+    while pending:
+        pick = next((i for i, d in enumerate(pending) if who(d) != last), 0)
+        d = pending.pop(pick)
+        out.append(d)
+        last = who(d)
+    return out
+
+
+async def skip_exclusions(db, match: dict, viewer: Optional[str], floods: bool = False) -> dict:
     """match with deactivated creators and the viewer's "not interested" posts
     left out in the query itself. Skip paging can't backfill a page, and the
     store builds take a page shorter than `limit` as the end of the feed, so
@@ -179,6 +240,13 @@ async def skip_exclusions(db, match: dict, viewer: Optional[str]) -> dict:
         ]
         if not_interested:
             match["_id"] = {"$nin": not_interested}
+    if floods:
+        excess = await flood_excess_ids(db)
+        if excess:
+            current = match.get("_id")
+            prev = current.get("$nin", []) if isinstance(current, dict) else []
+            if current is None or (isinstance(current, dict) and set(current) == {"$nin"}):
+                match["_id"] = {"$nin": list(prev) + excess}
     return match
 
 
