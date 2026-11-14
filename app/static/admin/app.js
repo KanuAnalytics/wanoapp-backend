@@ -128,7 +128,7 @@ $("logout").addEventListener("click", () => logout());
 
 const PAGES = [
   ["overview", "Overview"], ["payouts", "Payouts"], ["pool", "Cash pool"], ["creators", "Creators"],
-  ["moderation", "Reported posts"], ["messagereports", "Reported messages"], ["quickreports", "Reported quick posts"], ["whatsnew", "What's new"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["cities", "Cities"], ["categories", "Categories"], ["tvstrip", "Wano TV strip"], ["switches", "Feature switches"], ["speed", "Speed"], ["log", "Activity log"],
+  ["moderation", "Reported posts"], ["messagereports", "Reported messages"], ["quickreports", "Reported quick posts"], ["whatsnew", "What's new"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["cities", "Cities"], ["categories", "Categories"], ["tvstrip", "Wano TV strip"], ["switches", "Feature switches"], ["updates", "Force update"], ["speed", "Speed"], ["log", "Activity log"],
 ];
 let current = "overview";
 const counts = {};
@@ -702,6 +702,45 @@ const RENDER = {
       list, el("div", { class: "row space" }, el("span", { class: "small muted", text: "Emergency" }), kill));
   },
 
+  async updates(main) {
+    const v = await api("GET", "/admin/app-version");
+    const ROWS = [
+      ["android", "Android", "Android phones on an older version see \"Update Available\" with only an Update Now button, which opens Google Play."],
+      ["ios", "iPhone", "iPhones on an older version see the same box; Update Now opens the App Store."],
+      ["all", "Older apps (both)", "Used when the Android or iPhone box is empty, and possibly by old versions such as 2.1.1. Set it last, only when both stores have the new version for everyone."],
+    ];
+    const card = el("div", { class: "card" });
+    const draw = (state) => card.replaceChildren(...ROWS.map(([key, label, help]) => {
+      const cur = state[key];
+      const forced = cur && cur !== "0.0.0";
+      const input = el("input", { type: "text", value: cur || "", placeholder: key === "all" ? "0.0.0 (not forced)" : "empty (not forced)",
+        "aria-label": `${label} minimum version`, style: "max-width: 160px;" });
+      const save = el("button", { class: "btn small", text: "Save", onclick: async (e) => {
+        const val = input.value.trim();
+        if (val && !/^\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(val)) { toast("Write the version like 2.3.32", true); return; }
+        const off = !val || val === "0.0.0";
+        const sure = await confirmBox(off ? `Stop forcing updates on ${label}?` : `Force ${label} users to ${val}?`,
+          off ? "Nobody will be asked to update on this platform." :
+            `Everyone on ${label} with an older version gets a full-screen update box they can't close, the next time they open Wano. ` +
+            `Only do this when ${val} is in the store for 100% of users. If it's still rolling out or waiting for review, people will be stuck.`,
+          off ? "Stop forcing" : `Force ${val}`, !off);
+        if (!sure) return;
+        const r = await act(e.target, () => api("PUT", "/admin/app-version", { platform: key, version: val || null }),
+          off ? `${label}: not forced` : `${label}: everyone below ${val} must update`);
+        if (r) draw(r);
+      }});
+      return el("div", { class: "switch-row" },
+        el("div", { class: "txt" }, el("div", { class: "name", text: `${label}: ${forced ? "update required below " + cur : "not forced"}` }),
+          el("div", { class: "small muted", text: help })),
+        el("div", { class: "row" }, input, save));
+    }));
+    draw(v);
+    main.replaceChildren(...head("Force update", "Make everyone on an old app version update before using Wano. Clear a box (or 0.0.0) to stop forcing."),
+      card,
+      el("div", { class: "card" }, el("p", { class: "small muted", text:
+        "Order: 1) the new version is at 100% in Google Play / released in the App Store, 2) set Android and iPhone here, 3) open Wano on a phone with an old version to see the box." })));
+  },
+
   async speed(main) {
     const days = 7;
     const [p, si] = await Promise.all([api("GET", `/admin/perf?days=${days}`), api("GET", "/admin/small-images")]);
@@ -729,6 +768,7 @@ const RENDER = {
       switch (r.action) {
         case "feature": return `Turned ${(FEATURES[d.key] || [d.key])[0]} ${d.on ? "on" : "off"}`;
         case "features_all_off": return "Turned every feature off";
+        case "app_version": return d.to && d.to !== "0.0.0" ? `Force update: ${d.platform} must be ${d.to} or newer` : `Force update off for ${d.platform}`;
         case "pool": return `Set the ${d.month} pool: ${money(d.pool_usd)}`;
         case "distribute": return `Shared out ${d.month}: ${money(d.paid_usd)} to ${d.creators} creators`;
         case "payout_approve": return `Marked a ${money(d.usd)} payout as paid`;

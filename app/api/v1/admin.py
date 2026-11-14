@@ -17,7 +17,7 @@ from app.api.v1 import auth as auth_api
 from app.api.v1.config import APP_FEATURES
 from app.core.database import get_database
 from app.core.security import create_access_token, verify_password
-from app.services import admin_log, features, moderation, points
+from app.services import admin_log, app_version, features, moderation, points
 from app.services import challenges as challenges_svc
 
 router = APIRouter()
@@ -87,6 +87,32 @@ async def features_all_off(admin: str = Depends(require_admin)):
     db = get_database()
     out = await features.all_off(db)
     await admin_log.record(db, admin, "features_all_off")
+    return out
+
+
+# ---------------------------------------------------------------- force update
+
+class AppVersionIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    platform: Literal["android", "ios", "all"]
+    version: Optional[str] = Field(default=None, max_length=20)
+
+
+@router.get("/app-version")
+async def get_app_version(admin: str = Depends(require_admin)):
+    return await app_version.current(get_database())
+
+
+@router.put("/app-version")
+async def put_app_version(body: AppVersionIn, admin: str = Depends(require_admin)):
+    db = get_database()
+    before = await app_version.current(db)
+    try:
+        out = await app_version.set_version(db, body.platform, body.version)
+    except app_version.VersionError as e:
+        raise HTTPException(e.status, e.detail)
+    await admin_log.record(db, admin, "app_version", {"platform": body.platform, "from": before.get(body.platform),
+                                                      "to": out.get(body.platform)})
     return out
 
 
