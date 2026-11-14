@@ -77,6 +77,63 @@ def _too_many_codes() -> HTTPException:
         status_code=status.HTTP_429_TOO_MANY_REQUESTS,
         detail="Too many codes requested today. Please try again tomorrow.",
     )
+
+# --- WhatsApp code budget ("phone_signup" switch) --------------------------
+# Every WhatsApp code costs money, and a script can ask for codes to thousands
+# of different numbers (the per-number cap doesn't stop that). With the switch
+# on: at most WHATSAPP_CODES_PER_DAY codes a day in total, and
+# WHATSAPP_CODES_PER_IP_HOUR from one network an hour (generous: many people
+# share one mobile-network IP).
+WHATSAPP_CODES_PER_DAY = 400
+WHATSAPP_CODES_PER_IP_HOUR = 20
+
+
+def _request_ip(request: Optional[Request]) -> Optional[str]:
+    if request is None:
+        return None
+    hops = max(0, int(getattr(settings, "TRUSTED_PROXY_HOPS", 1)))
+    fwd = [p.strip() for p in (request.headers.get("x-forwarded-for") or "").split(",") if p.strip()]
+    if hops and len(fwd) >= hops:
+        return fwd[-hops][:64]
+    return request.client.host if request.client else None
+
+
+async def _take_from_budget(db, key: str, cap: int) -> bool:
+    """Atomically count one against a capped counter; False once it's full."""
+    r = await db.otp_budget.update_one({"_id": key, "n": {"$lt": cap}},
+                                       {"$inc": {"n": 1}, "$set": {"at": datetime.now(timezone.utc)}})
+    if r.modified_count == 1:
+        return True
+    try:
+        await db.otp_budget.insert_one({"_id": key, "n": 1, "at": datetime.now(timezone.utc)})
+        return True
+    except DuplicateKeyError:
+        return False
+
+
+async def _whatsapp_budget_ok(db, request: Optional[Request]) -> bool:
+    now = datetime.now(timezone.utc)
+    ip = _request_ip(request)
+    if ip and not await _take_from_budget(db, f"waip:{ip}:{now:%Y%m%d%H}", WHATSAPP_CODES_PER_IP_HOUR):
+        return False
+    if not await _take_from_budget(db, f"wa:{now:%Y%m%d}", WHATSAPP_CODES_PER_DAY):
+        logger.warning("WhatsApp code budget for today is used up")
+        return False
+    return True
+
+
+def _whatsapp_busy() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail="We can't send WhatsApp codes right now. Please sign up with your email, or try again later.",
+    )
+
+
+async def _feature_on(db, name: str) -> bool:
+    from app.services import features
+    return (await features.current(db)).get(name) is True
+
+
 # How long a verified registration OTP stays usable by /register (H5).
 REGISTRATION_VERIFIED_TTL = timedelta(minutes=30)
 USERNAME_RE = re.compile(r"^[a-zA-Z0-9_.]{3,30}$")
@@ -310,6 +367,20 @@ def _display_name_banned(name: str, whole_words: bool) -> bool:
             return True
     return False
 
+
+async def _signup_names_on(db) -> bool:
+    from app.services import features
+    return (await features.current(db)).get("signup_names") is True
+
+
+def _username_problem(username: str) -> str:
+    """Says what to type instead, e.g. 'Nkanda Rita' -> try Nkanda_Rita."""
+    import unicodedata
+    plain = "".join(c for c in unicodedata.normalize("NFKD", username.strip()) if not unicodedata.combining(c))
+    tip = re.sub(r"[^A-Za-z0-9_.]", "", re.sub(r"\s+", "_", plain))[:30]
+    msg = "Usernames can't have spaces or symbols: use letters, numbers, _ or . (3 to 30)."
+    return f"{msg} Try {tip}" if USERNAME_RE.match(tip) else msg
+
 @router.post("/register", response_model=RegisterResponse)
 async def register(request: RegisterRequest, x_device_id: Optional[str] = Header(None, alias="X-Device-Id")):
     """Register a new user and return access token"""
@@ -328,19 +399,24 @@ async def register(request: RegisterRequest, x_device_id: Optional[str] = Header
     if email:
         ensure_not_disposable_email(email)
 
+    # "signup_names" switch: stray spaces around the username are dropped (the
+    # 2.1.1 app sends it untrimmed, and keyboards add a space after a word).
+    signup_names = await _signup_names_on(db)
+    if signup_names and request.username:
+        request.username = request.username.strip()
+
     # Usernames must not look like an email or phone number (M4), since
     # login accepts any of the three as the identifier.
     if not USERNAME_RE.match(request.username or ""):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Username must be 3-30 characters: letters, numbers, underscores or dots"
+            detail=_username_problem(request.username or "") if signup_names
+            else "Username must be 3-30 characters: letters, numbers, underscores or dots"
         )
 
     # A blank display name: with the "signup_names" switch on it becomes the
     # username; otherwise it's refused, naming the box (it used to say only
     # "String should have at least 1 character").
-    from app.services import features
-    signup_names = (await features.current(db)).get("signup_names") is True
     if not request.display_name or not request.display_name.strip():
         if signup_names:
             request.display_name = request.username
@@ -506,7 +582,7 @@ async def register(request: RegisterRequest, x_device_id: Optional[str] = Header
     )
 
 @router.post("/request-registration-otp")
-async def request_registration_otp(request: RequestRegistrationOtpRequest):
+async def request_registration_otp(request: RequestRegistrationOtpRequest, http_request: Request = None):
     """
     Send an OTP to verify an email or WhatsApp number before registration.
     Email and WhatsApp OTPs are stored hashed in a temporary collection.
@@ -517,6 +593,14 @@ async def request_registration_otp(request: RequestRegistrationOtpRequest):
         ensure_not_disposable_email(email)
 
     db = get_database()
+
+    # "signup_names" switch: a username the account step would refuse is
+    # refused here, before the code is sent, instead of after all the steps.
+    if request.username and await _signup_names_on(db):
+        request.username = request.username.strip()
+        if not USERNAME_RE.match(request.username):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail=_username_problem(request.username))
 
     if request.username:
         existing_username = await db.users.find_one({"username": request.username})
@@ -638,6 +722,9 @@ async def request_registration_otp(request: RequestRegistrationOtpRequest):
         if not await _claim_otp_send(db.registration_whatsapp_otps,
                                      {"phone_number": request.phone_number}, "send"):
             raise _too_many_codes()
+
+        if await _feature_on(db, "phone_signup") and not await _whatsapp_budget_ok(db, http_request):
+            raise _whatsapp_busy()
 
         otp = _generate_numeric_otp(6)
         try:
@@ -770,6 +857,11 @@ async def login_json(login_data: LoginRequest, http_request: Request):
         raise invalid
 
     _clear_login_failures(throttle_key)
+    return await _signed_in(user, http_request)
+
+
+async def _signed_in(user: dict, http_request: Request) -> dict:
+    """What a successful sign-in returns (password or code)."""
     await recommendations.merge_device_into_user(http_request.headers.get("X-Device-Id"), str(user["_id"]))
 
     # Create access token
@@ -1132,3 +1224,123 @@ async def reset_password(request: ResetPasswordRequest):
     )
 
     return {"message": "Password has been reset successfully"}
+
+
+# --- Sign in with a code instead of a password ("code_login" switch) -------
+# The code goes to the account's email, or its WhatsApp when the account has no
+# email or the person typed their phone number. Same answer whether or not the
+# account exists. Codes are stored hashed, last 10 minutes, die after 5 wrong
+# guesses or one use, and an account gets at most MAX_OTPS_PER_DAY a day.
+
+LOGIN_CODE_MINUTES = 10
+LOGIN_CODE_FIELDS = ["login_code_hash", "login_code_expires"]
+
+
+class LoginCodeRequest(BaseModel):
+    username_or_email: str = Field(..., min_length=3, max_length=100)
+
+
+class LoginCodeVerify(BaseModel):
+    username_or_email: str = Field(..., min_length=3, max_length=100)
+    otp: str = Field(..., pattern=r"^\d{6}$")
+
+
+def _code_login_off() -> HTTPException:
+    return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")
+
+
+@router.post("/login-code")
+async def request_login_code(request: LoginCodeRequest, http_request: Request):
+    db = get_database()
+    if not await _feature_on(db, "code_login"):
+        raise _code_login_off()
+
+    generic = {
+        "message": "If this account exists, we've sent a sign-in code to its email or WhatsApp.",
+        "expires_in_minutes": LOGIN_CODE_MINUTES,
+    }
+    identifier = _normalize_identifier(request.username_or_email)
+    user = await _find_user_by_identifier(db, identifier)
+    if not user or user.get("is_active") is False:
+        return generic
+
+    now = datetime.now(timezone.utc)
+    last = _as_utc(user.get("login_code_requested_at"))
+    if last and last + timedelta(minutes=1) > now:
+        return generic                      # one a minute; same answer, no hint
+    if not await _claim_otp_send(db.users, {"_id": user["_id"]}, "login_code"):
+        return generic
+
+    use_whatsapp = bool(user.get("phone_number")) and (
+        not user.get("email") or identifier == user.get("phone_number"))
+    if use_whatsapp:
+        if not await _whatsapp_budget_ok(db, http_request):
+            return generic
+        otp = _generate_numeric_otp(6)
+        try:
+            await twilio_whatsapp_service.send_template_message(
+                to=user["phone_number"], content_variables={"1": otp})
+        except TwilioWhatsAppServiceError:
+            logger.warning("Login code WhatsApp failed")
+            return generic
+    elif user.get("email"):
+        try:
+            ok, otp = await email_service.send_login_code(
+                to_email=user["email"], username=user.get("username"), expiry_minutes=LOGIN_CODE_MINUTES)
+        except Exception:
+            logger.exception("Login code email failed")
+            return generic
+        if not ok:
+            return generic
+    else:
+        return generic
+
+    await db.users.update_one({"_id": user["_id"]}, {"$set": {
+        "login_code_hash": get_password_hash(otp),
+        "login_code_expires": now + timedelta(minutes=LOGIN_CODE_MINUTES),
+        "login_code_requested_at": now,
+        "login_code_failed_attempts": 0,
+    }})
+    return generic
+
+
+@router.post("/login-code/verify", response_model=Token)
+async def verify_login_code(request: LoginCodeVerify, http_request: Request):
+    db = get_database()
+    if not await _feature_on(db, "code_login"):
+        raise _code_login_off()
+
+    throttle_key = _login_key(request.username_or_email, _request_ip(http_request))
+    if _login_throttled(throttle_key):
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                            detail="Too many failed attempts. Please try again later.")
+
+    bad = HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=GENERIC_OTP_ERROR)
+    user = await _find_user_by_identifier(db, request.username_or_email)
+    if not user or user.get("is_active") is False:
+        _record_login_failure(throttle_key)
+        raise bad
+
+    filter_ = {"_id": user["_id"]}
+    if user.get("login_code_failed_attempts", 0) >= MAX_OTP_ATTEMPTS:
+        await db.users.update_one(filter_, {"$unset": {f: "" for f in LOGIN_CODE_FIELDS}})
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                            detail="Too many incorrect attempts. Please request a new code.")
+    code_hash = user.get("login_code_hash")
+    expires = _as_utc(user.get("login_code_expires"))
+    if not code_hash or not expires or expires < datetime.now(timezone.utc):
+        _record_login_failure(throttle_key)
+        raise bad
+    if not verify_password(request.otp, code_hash):
+        _record_login_failure(throttle_key)
+        await _register_otp_failure(db.users, filter_, "login_code_failed_attempts", LOGIN_CODE_FIELDS)
+
+    # One use only: the code is gone whether or not the rest succeeds. Only
+    # the request that actually removes it signs in (two at once: one wins).
+    used = await db.users.update_one(
+        {"_id": user["_id"], "login_code_hash": code_hash},
+        {"$unset": {f: "" for f in LOGIN_CODE_FIELDS + ["login_code_failed_attempts"]}})
+    if used.modified_count != 1:
+        raise bad
+    _clear_login_failures(throttle_key)
+    return await _signed_in(user, http_request)

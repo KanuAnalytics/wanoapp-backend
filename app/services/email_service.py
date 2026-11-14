@@ -146,6 +146,42 @@ class EmailService:
             logger.error(f"Failed to send password reset OTP: {str(e)}")
             return False, otp_code
 
+    async def send_login_code(self, to_email: str, username: str, otp: str | None = None, expiry_minutes: int = 10):
+        """A 6-digit code to sign in without a password. Returns (success, otp)."""
+        otp_code = otp or self._generate_otp(6)
+        if not self.is_configured:
+            logger.warning("SendGrid not configured. Using OTP above for testing.")
+            return True, otp_code
+
+        subject = f"{otp_code} is your Wano sign-in code"
+        html_content = f"""
+        <html>
+            <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                <h2 style="color: #333;">Sign in to Wano</h2>
+                <p>Hi {escape(str(username or "there"))},</p>
+                <p>Enter this code in the Wano app to sign in:</p>
+                <div style="text-align: center; margin: 24px 0;">
+                    <div style="display: inline-block; font-size: 28px; letter-spacing: 6px; font-weight: bold; padding: 12px 20px; border: 1px dashed #ccc; border-radius: 8px;">
+                        {otp_code}
+                    </div>
+                </div>
+                <p style="color: #666;">Never share this code. Wano will never ask you for it.</p>
+                <p style="color: #999; font-size: 14px;">This code will expire in {expiry_minutes} minutes.</p>
+                <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
+                <p style="color: #999; font-size: 12px;">If you didn't try to sign in, you can ignore this email: nobody can sign in without the code.</p>
+                <p>Best regards,<br>The WanoApp Team</p>
+            </body>
+        </html>
+        """
+        mail = Mail(self.from_email, To(to_email), subject, Content("text/html", html_content))
+        try:
+            response = await asyncio.to_thread(self.sg.send, mail)
+            logger.info(f"Login code sent. Status code: {response.status_code}")
+            return True, otp_code
+        except Exception as e:
+            logger.error(f"Failed to send login code: {str(e)}")
+            return False, otp_code
+
     async def send_report_notification(
         self,
         to_email: str | Iterable[str],

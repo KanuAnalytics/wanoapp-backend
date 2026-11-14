@@ -124,3 +124,74 @@ async def test_SN11_usernames_checked_as_before(client, db, verified):
     await verified("k@example.com")
     r = await client.post(R, json=body("essex_k", "k@example.com", display_name="Essex"))
     assert r.status_code == 400 and "Username" in r.json()["detail"]
+
+
+# The 2.1.1 store app: sends the username untrimmed, and only learned it was
+# refused at the last step, after the code.
+
+OTP = "/api/v1/auth/request-registration-otp"
+
+
+async def test_SN12_on_bad_username_refused_before_the_code_with_a_tip(client, db, monkeypatch):
+    from app.api.v1 import auth
+    sent = []
+
+    async def fake_send(to_email, username=None):
+        sent.append(to_email)
+        return True, "111222"
+    monkeypatch.setattr(auth.email_service, "send_registration_otp", fake_send)
+    await _switch(db, True)
+    r = await client.post(OTP, json={"email": "n@example.com", "username": "Nkanda Rita"})
+    assert r.status_code == 400 and "Try Nkanda_Rita" in r.json()["detail"] and not sent
+    r = await client.post(OTP, json={"email": "n@example.com", "username": "Élise"})
+    assert r.status_code == 400 and "Try Elise" in r.json()["detail"]
+    r = await client.post(OTP, json={"email": "n@example.com", "username": "ok_name "})
+    assert r.status_code == 200 and sent == ["n@example.com"]
+
+
+async def test_SN13_off_code_step_as_today(client, db, monkeypatch):
+    from app.api.v1 import auth
+
+    async def fake_send(to_email, username=None):
+        return True, "111222"
+    monkeypatch.setattr(auth.email_service, "send_registration_otp", fake_send)
+    r = await client.post(OTP, json={"email": "o@example.com", "username": "Nkanda Rita"})
+    assert r.status_code == 200
+
+
+async def test_SN14_on_trailing_space_username_accepted_and_saved_trimmed(client, db, verified):
+    await _switch(db, True)
+    await verified("p@example.com")
+    r = await client.post(R, json=body("judith_p ", "p@example.com", display_name="Judith"))
+    assert r.status_code == 200, r.text
+    assert await db.users.find_one({"username": "judith_p"})
+    r = await client.post("/api/v1/auth/login/json", json={"username": "judith_p", "password": "Password1"})
+    assert r.status_code == 200
+
+
+async def test_SN15_off_trailing_space_refused_as_today(client, db, verified):
+    await verified("q@example.com")
+    r = await client.post(R, json=body("judith_q ", "q@example.com", display_name="Judith"))
+    assert r.status_code == 400 and r.json()["detail"].startswith("Username must be 3-30")
+
+
+async def test_SN16_on_taken_username_still_taken_after_trim(client, db, verified):
+    from tests.pressure.conftest import make_user
+    await make_user(db, username="takenname")
+    await _switch(db, True)
+    await verified("t@example.com")
+    r = await client.post(R, json=body(" takenname ", "t@example.com", display_name="T"))
+    assert r.status_code == 400 and "already" in r.json()["detail"]
+
+
+async def test_SN17_on_the_whole_211_payload_goes_through(client, db, verified):
+    """What 2.1.1 actually sends: its whole form, untrimmed username."""
+    await _switch(db, True)
+    await verified("r@example.com")
+    r = await client.post(R, json={"display_name": "Nkanda Rita", "username": "nkanda_rita ", "email": "r@example.com",
+                                   "password": "Password1", "date_of_birth": "1999-05-01T00:00:00.000Z",
+                                   "gender": "female", "bio": "", "agreed_to_terms": True, "verification_code": "111222",
+                                   "localization": {"country": "cm"}})
+    assert r.status_code == 200, r.text
+    u = await db.users.find_one({"username": "nkanda_rita"})
+    assert u["display_name"] == "Nkanda Rita"
