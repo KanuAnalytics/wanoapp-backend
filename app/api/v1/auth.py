@@ -249,7 +249,9 @@ class RegisterRequest(BaseModel):
     email: Optional[EmailStr] = None
     phone_number: Optional[str] = Field(None, pattern=r"^\+[1-9]\d{7,14}$")
     password: str = Field(..., min_length=6)
-    display_name: str = Field(..., min_length=1, max_length=100)
+    # Required unless the "signup_names" switch is on (then a blank one becomes
+    # the username); checked in register() so the refusal can say which box.
+    display_name: Optional[str] = Field(None, max_length=100)
     localization: dict
     
     # Optional demographic fields
@@ -292,6 +294,21 @@ BANNED_WORDS = {
     "fuck", "sex", "porn", "sexy", "sperm", "cum", "bitch", "dick", "pussy",
     "cock", "slut", "nigger", "faggot", "rape", "nude", "wasted sperm"
 }
+# Short ones that sit inside ordinary names (Essex, Dickson, Hancock, Lucumba,
+# Draper): with the "signup_names" switch on, a display name only matches
+# these as whole words. The rest still match anywhere.
+WHOLE_WORD_ONLY = {"sex", "sexy", "cum", "dick", "cock", "rape", "nude"}
+
+
+def _display_name_banned(name: str, whole_words: bool) -> bool:
+    low = name.lower()
+    for w in BANNED_WORDS:
+        if whole_words and w in WHOLE_WORD_ONLY:
+            if re.search(rf"(?<![^\W\d_]){re.escape(w)}(?![^\W\d_])", low):
+                return True
+        elif w in low:
+            return True
+    return False
 
 @router.post("/register", response_model=RegisterResponse)
 async def register(request: RegisterRequest, x_device_id: Optional[str] = Header(None, alias="X-Device-Id")):
@@ -319,6 +336,21 @@ async def register(request: RegisterRequest, x_device_id: Optional[str] = Header
             detail="Username must be 3-30 characters: letters, numbers, underscores or dots"
         )
 
+    # A blank display name: with the "signup_names" switch on it becomes the
+    # username; otherwise it's refused, naming the box (it used to say only
+    # "String should have at least 1 character").
+    from app.services import features
+    signup_names = (await features.current(db)).get("signup_names") is True
+    if not request.display_name or not request.display_name.strip():
+        if signup_names:
+            request.display_name = request.username
+        elif not request.display_name:
+            raise HTTPException(
+                status_code=422,
+                detail=[{"loc": ["body", "display_name"], "type": "missing",
+                         "msg": "Please enter a display name (the name people see on your profile)"}]
+            )
+
     # --- Profanity and banned-word check (username + display name) ---
     username_probability = predict_prob([request.username])[0]
     display_probability = predict_prob([request.display_name])[0]
@@ -332,7 +364,7 @@ async def register(request: RegisterRequest, x_device_id: Optional[str] = Header
             detail="Username contains inappropriate language"
         )
 
-    if display_probability > 0.7 or any(bad_word in lower_display_name for bad_word in BANNED_WORDS):
+    if display_probability > 0.7 or _display_name_banned(request.display_name, signup_names):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Display name contains inappropriate language"
