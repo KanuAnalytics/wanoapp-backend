@@ -279,6 +279,11 @@ async def post_video(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="images is required for photo posts",
                 )
+            # Count photo posts the rules would refuse (more than 10 photos, or
+            # photos not stored on Wano's storage). Nothing is refused yet: once
+            # real uploads never trip this, it can start refusing.
+            from app.services import photo_checks
+            await photo_checks.note(get_database(), current_user, input.images)
         else:
             if not input.remoteUrl or not input.remoteUrl_CF:
                 raise HTTPException(

@@ -173,6 +173,8 @@ async def create_indexes():
         (d.messages, [("sender_id", 1), ("client_id", 1)], {"unique": True, "name": "messages_client_id_unique",
                                                             "partialFilterExpression": {"client_id": {"$type": "string"}}}),
         (d.message_limits, [("at", 1)], {"expireAfterSeconds": 2 * 24 * 3600}),
+        # Photo posts the rules would refuse (counted, not refused), kept 60 days.
+        (d.photo_checks, [("at", 1)], {"expireAfterSeconds": 60 * 24 * 3600}),
         # Local flyers: running ones, daily numbers (kept 400 days), people reached (each once a day), limits.
         (d.flyers, [("active", 1), ("ends_at", 1)], {}),
         (d.flyer_daily, [("flyer_id", 1), ("day", 1)], {}),

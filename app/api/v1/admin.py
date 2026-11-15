@@ -688,3 +688,10 @@ async def flyer_active(fid: str, body: FlyerActiveIn, admin: str = Depends(requi
 @router.get("/flyers/{fid}/report")
 async def flyer_report(fid: str, days: int = Query(30, ge=1, le=365), admin: str = Depends(require_admin)):
     return await flyers_svc.report(get_database(), fid[:40], days)
+
+
+@router.get("/photo-checks")
+async def photo_checks_summary(days: int = Query(7, ge=1, le=60), admin: str = Depends(require_admin)):
+    """Photo posts the rules would refuse (more than 10 photos, or stored elsewhere): counted, not refused."""
+    from app.services import photo_checks
+    return await photo_checks.summary(get_database(), days)

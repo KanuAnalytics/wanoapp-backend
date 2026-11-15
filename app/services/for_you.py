@@ -464,7 +464,7 @@ async def record_watch(db, *, viewer: str, video_id: str, portion: float) -> Non
             )
 
 
-async def report(db, days: int) -> dict:
+async def report(db, days: int, shapes: bool = False) -> dict:
     """Per variant and per source, computed inside MongoDB (one aggregate)."""
     since = _now() - timedelta(days=days)
     p = {"$ifNull": ["$portion", -1]}          # -1 = shown but never reported watched
@@ -499,4 +499,50 @@ async def report(db, days: int) -> dict:
         for src in v["by_source"].values():
             finish(src)
         finish(v)
-    return {"days": days, "since": since.isoformat(), "variants": out}
+    res = {"days": days, "since": since.isoformat(), "variants": out}
+    if shapes:      # asked for: a second pass over the impressions
+        res["by_shape"] = await _by_shape(db, since)
+    return res
+
+
+async def _by_shape(db, since, max_posts: int = 20000) -> dict:
+    """The same numbers split by what was shown: wide videos, tall videos,
+    photos. To see whether the blurred fill behind wide videos (wide_fill)
+    keeps more people watching. Grouped per video in the database first, then
+    each video's shape is read in batches (no join, works on any MongoDB)."""
+    p = {"$ifNull": ["$portion", -1]}
+    pipeline = [
+        {"$match": {"at": {"$gte": since}}},
+        {"$group": {"_id": "$video_id", "impressions": {"$sum": 1},
+                    "watched": {"$sum": {"$cond": [{"$gte": [p, 0]}, 1, 0]}},
+                    "portion_sum": {"$sum": {"$cond": [{"$gte": [p, 0]}, p, 0]}},
+                    "completed": {"$sum": {"$cond": [{"$gte": [p, 0.9]}, 1, 0]}},
+                    "skipped": {"$sum": {"$cond": [{"$and": [{"$gte": [p, 0]}, {"$lt": [p, 0.2]}]}, 1, 0]}}}},
+        {"$sort": {"impressions": -1}},
+        {"$limit": max_posts},
+    ]
+    per_video = [r async for r in db.feed_impressions.aggregate(pipeline)]
+    shape: Dict = {}
+    ids = [r["_id"] for r in per_video if r.get("_id") is not None]
+    for i in range(0, len(ids), 1000):
+        async for v in db.videos.find({"_id": {"$in": ids[i:i + 1000]}},
+                                      {"supports_landscape": 1, "media_type": 1, "images": 1}):
+            shape[v["_id"]] = ("photo" if v.get("media_type") == "photo" or v.get("images")
+                               else "wide_video" if v.get("supports_landscape") is True else "tall_video")
+    keys = ("impressions", "watched", "portion_sum", "completed", "skipped")
+    acc: Dict[str, dict] = {}
+    for r in per_video:
+        k = shape.get(r["_id"])
+        if not k:
+            continue            # a deleted post
+        a = acc.setdefault(k, {"posts": 0, **{x: 0 for x in keys}})
+        a["posts"] += 1
+        for x in keys:
+            a[x] += r[x]
+    out = {}
+    for k, r in acc.items():
+        w = r["watched"] or 1
+        out[k] = {"posts": r["posts"], "impressions": r["impressions"], "watched": r["watched"],
+                  "avg_portion": round(r["portion_sum"] / w, 4), "completion_rate": round(r["completed"] / w, 4),
+                  "skip_rate": round(r["skipped"] / w, 4)}
+    return out

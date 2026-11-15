@@ -45,10 +45,11 @@ async def get_buffer_status(
 @router.get("/for-you")
 async def for_you_report(
     days: int = Query(7, ge=1, le=90),
+    shapes: bool = Query(False, description="Also split by wide videos, tall videos and photos"),
     current_user: str = Depends(require_admin),
 ):
     """For You A/B report per variant and per source: impressions, how many were
     watched, average share watched, completion (>= 90%) and skip (< 20%) rates."""
     from app.services import for_you
     from app.core.database import get_database
-    return await for_you.report(get_database(), days)
+    return await for_you.report(get_database(), days, shapes)
