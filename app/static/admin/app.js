@@ -128,7 +128,7 @@ $("logout").addEventListener("click", () => logout());
 
 const PAGES = [
   ["overview", "Overview"], ["payouts", "Payouts"], ["pool", "Cash pool"], ["creators", "Creators"],
-  ["moderation", "Reported posts"], ["messagereports", "Reported messages"], ["quickreports", "Reported quick posts"], ["whatsnew", "What's new"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["cities", "Cities"], ["categories", "Categories"], ["tvstrip", "Wano TV strip"], ["switches", "Feature switches"], ["updates", "Force update"], ["speed", "Speed"], ["log", "Activity log"],
+  ["moderation", "Reported posts"], ["messagereports", "Reported messages"], ["quickreports", "Reported quick posts"], ["whatsnew", "What's new"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["cities", "Cities"], ["categories", "Categories"], ["tvstrip", "Wano TV strip"], ["flyers", "Local flyers"], ["switches", "Feature switches"], ["updates", "Force update"], ["speed", "Speed"], ["log", "Activity log"],
 ];
 let current = "overview";
 const counts = {};
@@ -184,6 +184,9 @@ const FEATURES = {
   instant_feed: ["Instant feed", "On opening the app, the New feed starts with the videos the person had loaded but not reached last time (saved on their phone, up to 8, for 12 hours), then the newest posts. Needs app 2.3.23 or later."],
   gzip_api: ["Compressed replies", "The server sends app data compressed: a feed page is about 7 KB instead of 34 KB. Works for every app version already installed. Turn off at once if anything looks wrong."],
   msg_lite: ["Light messages", "Messages use far less data: chats only fetch new messages, checks slow down and pause when the app is in the background, and a push brings a new message in at once. Needs app 2.3.24 or later."],
+  flyers: ["Local flyers", "Businesses' flyers in the Wano TV ticket's spot on shorts (Sponsored, with a WhatsApp, Call or Visit button), made on the Local flyers page. Shown only in the countries and cities picked; never to under-18s or logged-out people; drinks only to people whose birthday shows 18+. TV and flyers share the same limits: never in the first 5 posts, 8 posts apart, 2 a session. Needs app 2.3.37."],
+  msg_plus: ["Message extras", "In chats: long-press a message to react (one of 6 emojis), reply to it, edit your own (15 minutes, shows \"edited\") or delete it for everyone (1 hour, shows \"This message was deleted\"). Messages typed with no signal send when it comes back. The original text of edited or deleted messages is kept privately for 30 days so reports still show what was said. Needs app 2.3.37."],
+  msg_voice: ["Voice messages", "Hold the mic in a chat to send a voice message, up to 2 minutes (about 30 KB for 10 seconds). Not allowed in message requests until they're accepted. Needs app 2.3.37; older apps see \"Voice message (update Wano to listen)\"."],
   phone_signup: ["Phone sign-up", "A \"Sign up with phone number\" button on the first screen: the code comes by WhatsApp (each one costs a few cents through Twilio). While on, WhatsApp codes are capped at 400 a day in total and 20 an hour from one network, so a script can't run up the bill; when the cap is hit people are told to use email. Needs app 2.3.36."],
   code_login: ["Sign in with a code", "\"Email me a code instead\" on the sign-in screen: a 6-digit code to the account's email (or WhatsApp if it has no email, or they typed their phone number). For people who forgot their password. Codes last 10 minutes, die after 5 wrong tries, 10 a day per account. Needs app 2.3.36."],
   signup_names: ["Fairer sign-up", "Fixes for people refused at sign-up, mostly on the old 2.1.1 app. A username with a space (\"Nkanda Rita\") is refused at the email/WhatsApp code step with a tip (\"Try Nkanda_Rita\") instead of after all the steps; stray spaces around a username are dropped. A blank Display Name becomes the username. Names like Essex, Dickson, Hancock or Lucumba are no longer refused as rude: short words (sex, cum, dick, cock, rape, nude) only count as whole words in a display name. Works for every app version already installed."],
@@ -351,7 +354,8 @@ const RENDER = {
             el("span", { class: "pill amber", text: (rep.reason || "other").replace(/_/g, " ") }),
             el("span", { class: "muted", text: `@${(rep.sender && rep.sender.username) || "?"} reported by @${(rep.reporter && rep.reporter.username) || "?"}` })),
           ...(rep.context || []).map((m) => el("div", { class: "small", style: `padding: 3px 8px; border-radius: 6px; margin: 2px 0;${m.reported ? " background: #FFF4E5; font-weight: 600;" : ""}`,
-            text: `@${m.from || "?"}: ${m.kind === "post" && !m.text ? "[shared a post]" : (m.text || "[removed]")}` }))),
+            text: `@${m.from || "?"}: ${m.kind === "voice" ? "[voice message]" : m.kind === "post" && !m.text ? "[shared a post]" : (m.text || "[removed]")}${m.unsent ? "  (deleted by sender)" : ""}${(m.edits || []).length ? `  (edited; before: ${m.edits.map((t) => JSON.stringify(t)).join(", ")})` : ""}` },
+              m.kind === "voice" && safeUrl(m.audio_url) ? el("audio", { controls: true, preload: "none", src: safeUrl(m.audio_url) }) : null))),
         el("td", { style: "text-align: right; white-space: nowrap; vertical-align: top;" },
           el("button", { class: "btn secondary small", text: "Dismiss", onclick: (e) => decide(e.target, rep, "dismiss") }), " ",
           el("button", { class: "btn ghost-danger small", text: "Remove", onclick: (e) => decide(e.target, rep, "remove") })))))) :
@@ -380,6 +384,133 @@ const RENDER = {
             q.deleted ? null : el("button", { class: "btn secondary small", text: "Restore", onclick: (e) => decide(e.target, q, "restore") }), " ",
             q.deleted ? null : el("button", { class: "btn ghost-danger small", text: "Remove", onclick: (e) => decide(e.target, q, "remove") })));
       }))) : el("div", { class: "empty", text: "No reported quick posts." })));
+  },
+
+  async flyers(main) {
+    const [r, opt] = await Promise.all([api("GET", "/admin/flyers"), api("GET", "/admin/flyers/options")]);
+    const local = (d) => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+    const now = new Date();
+    let editing = null;
+    let image = null;
+    const f = {
+      business: el("input", { type: "text", maxlength: 40, placeholder: "Mama Rose Kitchen" }),
+      line: el("input", { type: "text", maxlength: 80, placeholder: "Lunch from 10,000 UGX, Kampala Road" }),
+      category: el("select", {}, ...opt.categories.map((c) => el("option", { value: c.id, text: c.name + (c.adults_only ? " · 18+ with known birthday" : "") }))),
+      countries: el("select", { multiple: true, size: 6 }, ...opt.countries.map((c) => el("option", { value: c.id, text: c.name }))),
+      cities: el("select", { multiple: true, size: 6 }),
+      button: el("select", {}, el("option", { value: "whatsapp", text: "WhatsApp" }), el("option", { value: "call", text: "Call" }),
+        el("option", { value: "link", text: "Visit (website)" })),
+      button_value: el("input", { type: "text", maxlength: 500, placeholder: "+256772123456" }),
+      starts: el("input", { type: "datetime-local", value: local(now) }),
+      ends: el("input", { type: "datetime-local", value: local(new Date(now.getTime() + 14 * 864e5)) }),
+      cap: el("input", { type: "number", min: 1, placeholder: "No limit" }),
+      file: el("input", { type: "file", accept: "image/jpeg,image/png,image/webp" }),
+      active: el("input", { type: "checkbox", checked: true }),
+    };
+    const preview = el("img", { style: "max-width: 160px; max-height: 120px; border-radius: 8px; display: none; margin-top: 6px;", alt: "" });
+    const picked = (sel) => [...sel.selectedOptions].map((o) => o.value);
+    const fillCities = (keep) => {
+      const cs = picked(f.countries);
+      f.cities.replaceChildren(...opt.cities.filter((c) => cs.includes(c.country))
+        .map((c) => el("option", { value: c.id, text: c.name, selected: (keep || []).includes(c.id) })));
+    };
+    f.countries.addEventListener("change", () => fillCities(picked(f.cities)));
+    f.button.addEventListener("change", () => { f.button_value.placeholder = f.button.value === "link" ? "https://..." : "+256772123456"; });
+    f.file.addEventListener("change", async () => {
+      const file = f.file.files && f.file.files[0];
+      if (!file) return;
+      const form = new FormData();
+      form.append("file", file);
+      try {
+        const res = await fetch(API + "/admin/flyers/image", { method: "POST", headers: { Authorization: "Bearer " + token }, body: form });
+        const data = await res.json().catch(() => null);
+        if (!res.ok) throw new Error((data && data.detail) || "Upload failed");
+        image = data;
+        preview.src = safeUrl(data.image_small) || "";
+        preview.style.display = "block";
+        toast("Picture ready");
+      } catch (e) { toast(e.message, true); }
+    });
+    const fill = (x) => {
+      editing = x ? x.id : null;
+      image = x ? { image: x.image, image_small: x.image_small } : null;
+      f.business.value = x ? x.business : ""; f.line.value = x ? x.line || "" : "";
+      f.category.value = x ? x.category : "food"; f.button.value = x ? x.button : "whatsapp";
+      f.button_value.value = x ? x.button_value : "";
+      [...f.countries.options].forEach((o) => { o.selected = !!x && x.countries.includes(o.value); });
+      fillCities(x ? x.cities : []);
+      f.starts.value = x ? local(new Date(x.starts_at + "Z")) : local(new Date());
+      f.ends.value = x ? local(new Date(x.ends_at + "Z")) : local(new Date(Date.now() + 14 * 864e5));
+      f.cap.value = x && x.daily_cap ? x.daily_cap : "";
+      f.active.checked = x ? x.active : true;
+      preview.src = image ? (safeUrl(image.image_small) || safeUrl(image.image) || "") : "";
+      preview.style.display = image ? "block" : "none";
+      save.textContent = x ? "Save changes" : "Create flyer";
+    };
+    const save = el("button", { class: "btn", text: "Create flyer", onclick: async (e) => {
+      const s = new Date(f.starts.value), en = new Date(f.ends.value);
+      if (isNaN(s) || isNaN(en)) return toast("Pick a start and end", true);
+      if (!image) return toast("Upload the flyer picture first", true);
+      const body = { business: f.business.value.trim(), line: f.line.value.trim(), category: f.category.value,
+        countries: picked(f.countries), cities: picked(f.cities), image: image.image, image_small: image.image_small || null,
+        button: f.button.value, button_value: f.button_value.value.trim(), starts_at: s.toISOString(), ends_at: en.toISOString(),
+        daily_cap: f.cap.value ? Number(f.cap.value) : null, active: f.active.checked };
+      const where = body.cities.length ? body.cities.map((c) => (opt.cities.find((x) => x.id === c) || { name: c }).name).join(", ")
+        : body.countries.map((c) => (opt.countries.find((x) => x.id === c) || { name: c }).name).join(", ") + " (whole country)";
+      if (body.active && !(await confirmBox(editing ? "Save this flyer?" : "Start this flyer?",
+        `${body.business}\nShown in: ${where}\n${when(body.starts_at)} to ${when(body.ends_at)}\nOnly while the Local flyers switch is on.`, editing ? "Save" : "Start"))) return;
+      const call = editing ? api("PUT", `/admin/flyers/${encodeURIComponent(editing)}`, body) : api("POST", "/admin/flyers", body);
+      if (await act(e.target, () => call, editing ? "Saved" : "Flyer created")) RENDER.flyers(main);
+    }});
+    const pct = (x) => (x === null || x === undefined ? "–" : `${(x * 100).toFixed(1)}%`);
+    const placeName = (id) => (opt.cities.find((c) => c.id === id) || opt.countries.find((c) => c.id === id) || { name: id }).name;
+    const showReport = async (x) => {
+      const rep = await act(null, () => api("GET", `/admin/flyers/${encodeURIComponent(x.id)}/report`));
+      if (!rep) return;
+      const t = (rows, key, label) => el("table", {}, el("thead", {}, el("tr", {}, ...[label, "Seen", "People", "Tapped", "Closed"].map((h) => el("th", { text: h })))),
+        el("tbody", {}, ...rows.map((d) => el("tr", {}, el("td", { text: key === "place" ? placeName(d.place) : d[key] }), el("td", { text: num(d.shown) }), el("td", { text: num(d.reach) }),
+          el("td", { text: num(d.tap) }), el("td", { text: num(d.close) })))));
+      const tot = rep.days.reduce((a, d) => ({ shown: a.shown + d.shown, reach: a.reach + d.reach, tap: a.tap + d.tap }), { shown: 0, reach: 0, tap: 0 });
+      main.replaceChildren(...head(`${x.business}: last 30 days`, `Seen ${num(tot.shown)} times, ${num(tot.tap)} taps on ${x.button === "whatsapp" ? "WhatsApp" : x.button === "call" ? "Call" : "Visit"}. "People" counts each person once a day, so a regular viewer counts once for each day they saw it. Copy these numbers for the business.`),
+        el("button", { class: "btn secondary", text: "Back to flyers", onclick: () => RENDER.flyers(main) }),
+        el("div", { class: "two" }, el("div", { class: "card" }, el("h3", { text: "By place" }), rep.places.length ? t(rep.places, "place", "City / country") : el("div", { class: "empty", text: "Not shown yet." })),
+          el("div", { class: "card" }, el("h3", { text: "By day" }), rep.days.length ? t(rep.days, "day", "Day") : el("div", { class: "empty", text: "Not shown yet." }))));
+    };
+    main.replaceChildren(...head("Local flyers", "Businesses' flyers in the Wano TV ticket's spot on shorts, marked Sponsored, with a WhatsApp, Call or Visit button. Only people in the countries (and cities) you pick see them; never under-18s; drinks only to people whose birthday shows 18+. Turn on the Local flyers switch for any to show."),
+      el("div", { class: "two" },
+        el("div", { class: "card" }, el("h3", { text: "Make a flyer" }),
+          el("label", { class: "field" }, el("span", { text: "Business name (40)" }), f.business),
+          el("label", { class: "field" }, el("span", { text: "One line (80)" }), f.line),
+          el("label", { class: "field" }, el("span", { text: "Picture (JPG, PNG or WebP, square or wide works best)" }), f.file, preview),
+          el("label", { class: "field" }, el("span", { text: "Category" }), f.category),
+          el("div", { class: "two", style: "gap: 10px;" },
+            el("label", { class: "field" }, el("span", { text: "Countries (Ctrl/Cmd-click for more)" }), f.countries),
+            el("label", { class: "field" }, el("span", { text: "Cities (none = whole country)" }), f.cities)),
+          el("div", { class: "two", style: "gap: 10px;" },
+            el("label", { class: "field" }, el("span", { text: "Button" }), f.button),
+            el("label", { class: "field" }, el("span", { text: "Number or link" }), f.button_value)),
+          el("div", { class: "two", style: "gap: 10px;" },
+            el("label", { class: "field" }, el("span", { text: "Starts" }), f.starts),
+            el("label", { class: "field" }, el("span", { text: "Ends" }), f.ends)),
+          el("label", { class: "field" }, el("span", { text: "Views per day (optional)" }), f.cap),
+          el("label", { class: "row", style: "gap: 8px; margin: 8px 0;" }, f.active, el("span", { text: "On" })),
+          el("div", { class: "row", style: "gap: 8px;" }, save, el("button", { class: "btn secondary", text: "Clear", onclick: () => fill(null) }))),
+        el("div", { class: "card" }, el("h3", { text: "All flyers (last 30 days)" }), r.items.length ? el("table", {}, el("thead", {}, el("tr", {},
+            ...["", "Seen", "People", "Tapped", "Tap rate", ""].map((h) => el("th", { text: h })))),
+          el("tbody", {}, ...r.items.map((x) => el("tr", {},
+            el("td", {}, el("div", { style: "font-weight: 600;", text: x.business }), el("div", { class: "small muted", text: x.line || "" }),
+              el("div", { class: "row small", style: "margin-top: 4px; gap: 6px;" },
+                el("span", { class: "pill " + (x.active ? "green" : "grey"), text: x.active ? "On" : "Off" }),
+                el("span", { class: "muted", text: (x.cities.length ? x.cities : x.countries).map(placeName).join(", ") + " · until " + when(x.ends_at) }))),
+            el("td", { text: num(x.stats.shown) }), el("td", { text: num(x.stats.reach) }), el("td", { text: num(x.stats.tap) }),
+            el("td", { text: pct(x.stats.tap_rate) }),
+            el("td", { style: "text-align: right; white-space: nowrap;" },
+              el("button", { class: "btn small secondary", text: "Numbers", onclick: () => showReport(x) }), " ",
+              el("button", { class: "btn small secondary", text: "Edit", onclick: () => { fill(x); f.business.focus(); } }), " ",
+              el("button", { class: "btn small secondary", text: x.active ? "Pause" : "Resume", onclick: async (e) => {
+                if (await act(e.target, () => api("POST", `/admin/flyers/${encodeURIComponent(x.id)}/active`, { active: !x.active }), x.active ? "Paused" : "Resumed")) RENDER.flyers(main);
+              } }))))))
+          : el("div", { class: "empty", text: "No flyers yet." }))));
   },
 
   async whatsnew(main) {
@@ -782,6 +913,9 @@ const RENDER = {
         case "challenge_end": return `Ended #${d.hashtag}`;
         case "moderation_restore": return "Restored a reported post";
         case "moderation_remove": return "Removed a reported post";
+        case "flyer_create": return `Made a flyer: ${d.business}`;
+        case "flyer_update": return `Changed the flyer: ${d.business}`;
+        case "flyer_active": return d.on ? "Resumed a flyer" : "Paused a flyer";
         default: return r.action;
       }
     };

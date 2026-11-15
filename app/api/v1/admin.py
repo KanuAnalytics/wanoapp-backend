@@ -605,3 +605,84 @@ async def payouts(state: Literal["requested", "approved", "rejected"] = "request
                              "display_name": u.get("display_name"), "phone_number": u.get("phone_number"),
                              "account_active": u.get("is_active") is True}})
     return out
+
+
+# ---------------------------------------------------------------- local flyers
+
+from fastapi import File, UploadFile  # noqa: E402
+from pydantic import StrictInt  # noqa: E402
+from app.services import flyers as flyers_svc  # noqa: E402
+
+
+class FlyerIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    business: str = Field(..., max_length=200)
+    line: str = Field("", max_length=400)
+    category: str = Field(..., max_length=40)
+    countries: list[str] = Field(..., max_length=60)
+    cities: list[str] = Field(default_factory=list, max_length=60)
+    image: str = Field(..., max_length=2048)
+    image_small: Optional[str] = Field(None, max_length=2048)
+    button: Literal["whatsapp", "call", "link"]
+    button_value: str = Field(..., max_length=500)
+    starts_at: str = Field(..., max_length=40)
+    ends_at: str = Field(..., max_length=40)
+    daily_cap: Optional[StrictInt] = None
+    active: StrictBool = True
+
+
+class FlyerActiveIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    active: StrictBool
+
+
+@router.get("/flyers/options")
+async def flyer_options(admin: str = Depends(require_admin)):
+    from app.services import home_ground as hg
+    db = get_database()
+    await hg.load_custom(db)
+    return {"categories": [{"id": k, "name": v, "adults_only": k in flyers_svc.ADULTS_ONLY}
+                           for k, v in flyers_svc.CATEGORIES.items()],
+            "countries": [{"id": k, "name": v} for k, v in sorted(hg.COUNTRIES.items(), key=lambda x: x[1])],
+            "cities": [{"id": c["id"], "name": c["name"], "country": c["country"]}
+                       for c in sorted(hg.CITY.values(), key=lambda c: c["name"])]}
+
+
+@router.get("/flyers")
+async def flyer_list(days: int = Query(30, ge=1, le=365), admin: str = Depends(require_admin)):
+    return {"items": await flyers_svc.admin_list(get_database(), days)}
+
+
+@router.post("/flyers/image")
+async def flyer_image(file: UploadFile = File(...), admin: str = Depends(require_admin)):
+    data = await file.read(flyers_svc.IMAGE_MAX_BYTES + 1)
+    return await flyers_svc.store_image(data)
+
+
+@router.post("/flyers")
+async def flyer_create(body: FlyerIn, admin: str = Depends(require_admin)):
+    db = get_database()
+    out = await flyers_svc.create(db, admin, body.model_dump())
+    await admin_log.record(db, admin, "flyer_create", {"id": out["id"], "business": out["business"]})
+    return out
+
+
+@router.put("/flyers/{fid}")
+async def flyer_update(fid: str, body: FlyerIn, admin: str = Depends(require_admin)):
+    db = get_database()
+    out = await flyers_svc.update(db, admin, fid[:40], body.model_dump())
+    await admin_log.record(db, admin, "flyer_update", {"id": out["id"], "business": out["business"]})
+    return out
+
+
+@router.post("/flyers/{fid}/active")
+async def flyer_active(fid: str, body: FlyerActiveIn, admin: str = Depends(require_admin)):
+    db = get_database()
+    out = await flyers_svc.set_active(db, fid[:40], body.active)
+    await admin_log.record(db, admin, "flyer_active", {"id": out["id"], "on": body.active})
+    return out
+
+
+@router.get("/flyers/{fid}/report")
+async def flyer_report(fid: str, days: int = Query(30, ge=1, le=365), admin: str = Depends(require_admin)):
+    return await flyers_svc.report(get_database(), fid[:40], days)

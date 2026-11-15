@@ -173,6 +173,14 @@ async def create_indexes():
         (d.messages, [("sender_id", 1), ("client_id", 1)], {"unique": True, "name": "messages_client_id_unique",
                                                             "partialFilterExpression": {"client_id": {"$type": "string"}}}),
         (d.message_limits, [("at", 1)], {"expireAfterSeconds": 2 * 24 * 3600}),
+        # Local flyers: running ones, daily numbers (kept 400 days), people reached (each once a day), limits.
+        (d.flyers, [("active", 1), ("ends_at", 1)], {}),
+        (d.flyer_daily, [("flyer_id", 1), ("day", 1)], {}),
+        (d.flyer_daily, [("day", 1)], {"expireAfterSeconds": 400 * 24 * 3600}),
+        (d.flyer_reach, [("at", 1)], {"expireAfterSeconds": 3 * 24 * 3600}),
+        (d.flyer_limits, [("at", 1)], {"expireAfterSeconds": 2 * 24 * 3600}),
+        # Message extras: a chat's check for what changed (edits, unsends, reactions).
+        (d.messages, [("conversation_id", 1), ("updated_at", 1)], {"sparse": True}),
         # "Suggest a category": a per-person daily limit (TTL).
         (d.category_suggest_daily, [("at", 1)], {"expireAfterSeconds": 2 * 24 * 3600}),
         # Wano TV strip: per-person event cap (TTL) and daily counts per film (kept 90 days).

@@ -74,6 +74,8 @@ from app.api.v1.messages import router as messages_router  # noqa: E402
 api_router.include_router(messages_router, prefix="/messages", tags=["messages"])
 from app.api.v1.quick_posts import router as quick_posts_router  # noqa: E402
 api_router.include_router(quick_posts_router, prefix="/quick", tags=["quick posts"])
+from app.api.v1.flyers import router as flyers_router  # noqa: E402
+api_router.include_router(flyers_router, prefix="/flyers", tags=["flyers"])
 from app.api.v1.age import router as age_router  # noqa: E402
 api_router.include_router(age_router, prefix="/age", tags=["age"])
 from app.api.v1.whats_new import router as whats_new_router  # noqa: E402
