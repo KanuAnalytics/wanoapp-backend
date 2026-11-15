@@ -163,6 +163,7 @@ async def upload_video(
 @router.post("/v2/presigned-upload")
 async def get_presigned_upload_url_v2(
     payload: PresignRequest,
+    request: Request,
     uploader: str = Depends(get_uploader),
 ):
     """
@@ -176,6 +177,9 @@ async def get_presigned_upload_url_v2(
             fileSize=payload.fileSize,
             folder=payload.folder or "videos",
         )
+        from app.services import upload_attempts
+        await upload_attempts.note_address(get_database(), result.get("stream_uid"), uploader, payload.fileSize,
+                                           payload.folder, request.headers.get("user-agent"))
         return {
             "status": 200,
             "message": "Pre-signed upload URL generated successfully",

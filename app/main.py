@@ -147,7 +147,16 @@ async def validation_error_handler(request, exc):
     # FastAPI's default echoes the rejected input back; a NaN/Infinity there
     # can't be written as JSON and turned a 422 into a 500.
     errors = [{"loc": list(e.get("loc", [])), "msg": e.get("msg"), "type": e.get("type")} for e in exc.errors()]
+    if request.url.path in POST_PATHS:
+        # Which field a refused post failed on (never the value): see upload_attempts.
+        from app.services import upload_attempts
+        from app.core.database import get_database
+        fields = ", ".join(sorted({".".join(str(x) for x in e["loc"][1:]) or "body" for e in errors}))[:100]
+        await upload_attempts.note_refused(get_database(), None, POST_PATHS[request.url.path], 422, f"invalid {fields}")
     return JSONResponse({"detail": errors}, status_code=422)
+
+
+POST_PATHS = {"/api/v1/videos/post": "post", "/api/v1/videos/stitch": "stitch"}
 
 
 @app.exception_handler(InvalidId)
@@ -169,6 +178,10 @@ async def timeout_middleware(request, call_next):
     try:
         return await asyncio.wait_for(call_next(request), timeout=REQUEST_TIMEOUT_SECONDS)
     except asyncio.TimeoutError:
+        if request.url.path in POST_PATHS:
+            from app.services import upload_attempts
+            from app.core.database import get_database
+            await upload_attempts.note_refused(get_database(), None, POST_PATHS[request.url.path], 504, "Request timed out")
         logger.error(
             f"REQUEST TIMEOUT ({REQUEST_TIMEOUT_SECONDS}s): "
             f"{request.method} {request.url.path}"

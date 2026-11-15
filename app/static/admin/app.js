@@ -396,6 +396,7 @@ const RENDER = {
 
   async failedups(main) {
     const r = await api("GET", "/admin/failed-uploads");
+    const attemptsCard = el("div", { class: "card" }, el("div", { class: "small muted", text: "Loading posting attempts..." }));
     const stat = (n, label) => el("div", { class: "card", style: "text-align:center; flex: 1 1 140px;" },
       el("div", { style: "font-size: 26px; font-weight: 700;", text: num(n) }), el("div", { class: "small muted", text: label }));
     const send = el("button", { class: "btn", text: `Send to ${num(r.to_invite)} creators`, disabled: !r.to_invite, onclick: async (e) => {
@@ -410,7 +411,22 @@ const RENDER = {
       el("div", { class: "card" }, el("h3", { text: "The message (push notification, opens their profile)" }),
         el("div", { style: "font-weight: 600;", text: r.title }), el("div", { text: r.message }),
         el("div", { class: "small muted", style: "margin: 8px 0;", text: `${num(r.reachable_by_push)} of ${num(r.to_invite)} have notifications on; the others can't be reached this way.` }),
-        send));
+        send),
+      attemptsCard);
+    const a = await api("GET", "/admin/upload-attempts?days=7").catch(() => null);
+    if (!a) return;
+    const pct = (n) => (a.attempts ? ` (${Math.round(n / a.attempts * 100)}%)` : "");
+    attemptsCard.replaceChildren(el("h3", { text: `Posting attempts, last ${a.days} days` }),
+      el("p", { class: "small muted", text: "Each time the app gets an upload address, then whether a post followed. Counting started with this server update, so the first days are thin." }),
+      el("table", {}, el("tbody", {},
+        ...[["Upload addresses handed out", a.attempts, ""], ["Became a post", a.posted, pct(a.posted)],
+          ["Refused by the server (see reasons)", a.refused, pct(a.refused)], ["Gave up, then posted from a later try", a.tried_again, pct(a.tried_again)],
+          ["No post at all", a.no_post, pct(a.no_post)]].map(([k, v, p]) => el("tr", {}, el("td", { text: k }), el("td", { text: num(v) + p }))),
+        ...Object.entries(a.by_platform).map(([k, v]) => el("tr", {}, el("td", { class: "muted", text: `${k}: posted` }), el("td", { text: `${num(v.posted)} of ${num(v.attempts)}` }))),
+        el("tr", {}, el("td", { class: "muted", text: "Typical file size: posted / not posted" }), el("td", { text: `${a.size_mb.posted ?? "–"} MB / ${a.size_mb.not_posted ?? "–"} MB` })))),
+      el("h3", { text: `Why posts were refused (${num(a.refusals)})` }),
+      a.refusal_reasons.length ? el("table", {}, el("tbody", {}, ...a.refusal_reasons.map((x) => el("tr", {}, el("td", { text: x.reason }), el("td", { text: num(x.count) })))))
+        : el("div", { class: "empty", text: "None yet." }));
   },
   async places(main) {
     const q = el("input", { type: "search", maxlength: 60, placeholder: "Search: Ntinda, Kololo, Yaba..." });

@@ -782,3 +782,11 @@ async def failed_uploads_invite(body: InviteIn, admin: str = Depends(require_adm
     out = await upload_invites.send(db, admin)
     await admin_log.record(db, admin, "upload_invites", out)
     return out
+
+
+
+@router.get("/upload-attempts")
+async def upload_attempts_summary(days: int = Query(7, ge=1, le=30), admin: str = Depends(require_admin)):
+    """Posting attempts: upload addresses handed out, how many became posts, and why not."""
+    from app.services import upload_attempts
+    return await upload_attempts.summary(get_database(), days)

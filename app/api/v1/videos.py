@@ -357,11 +357,19 @@ async def post_video(
         message = "Photo posted successfully" if is_photo_post else "Video posted successfully"
         if scheduled_at:
             message = "Post scheduled successfully"
+        if not is_photo_post:
+            from app.services import upload_attempts
+            await upload_attempts.note_posted(get_database(), [post_stream_uid(input.remoteUrl_CF, input.remoteUrl)])
         return {"message": message, "video_id": video_id}
-    except HTTPException:
+    except HTTPException as e:
+        if input.media_type != "photo":
+            from app.services import upload_attempts
+            await upload_attempts.note_refused(get_database(), current_user, "post", e.status_code, e.detail)
         raise
     except Exception:
         logger.exception("Posting a video failed")
+        from app.services import upload_attempts
+        await upload_attempts.note_refused(get_database(), current_user, "post", 500, "Could not create the post")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Could not create the post"
@@ -375,6 +383,15 @@ async def stitch_video(
     Queue a multi-clip post. The clips are stitched once Cloudflare Stream has
     processed all of them, and the post appears when the result is ready.
     """
+    from app.services import upload_attempts
+    try:
+        return await _stitch_video(input, current_user)
+    except HTTPException as e:
+        await upload_attempts.note_refused(get_database(), current_user, "stitch", e.status_code, e.detail)
+        raise
+
+
+async def _stitch_video(input: VideoStitch, current_user: str):
     sound = await sound_for_post(input.audio.id, input.audio.uri) if input.audio else None
     scheduled_at, scheduled_timezone = normalize_schedule(
         input.scheduled_at, input.timezone, require_lead_time=False
@@ -396,6 +413,9 @@ async def stitch_video(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Could not start processing this video"
         )
+    from app.services import upload_attempts
+    await upload_attempts.note_posted(get_database(), [post_stream_uid(getattr(c, "url", None) or "")
+                                                       for c in input.videoUrls])
     return {"message": "Video submitted successfully. Processing in background.", "job_id": job_id}
 
 
