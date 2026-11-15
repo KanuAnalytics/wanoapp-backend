@@ -14,6 +14,17 @@ from app.services import recommendations
 router = APIRouter()
 
 
+@router.get("/health")
+async def health(ping: bool = True, reset: bool = False, current_user: str = Depends(require_admin)):
+    """Is Recombee answering, how fast, and did views/likes reach it? Counts are
+    per server process since it started (or since reset=true)."""
+    from app.services import recombee_service
+    out = {"pings_ms": await recombee_service.ping() if ping else None, **recombee_service.stats()}
+    if reset:
+        recombee_service.reset_stats()
+    return out
+
+
 @router.post("/test-first-item")
 async def get_first_video(current_user: str = Depends(require_admin)):
     db = get_database()

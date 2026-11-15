@@ -112,6 +112,10 @@ async def db(monkeypatch, calls):
     for_you.clear_cache()
     from app.services import tv_popularity
     tv_popularity.clear_cache()
+    from app.services import recombee_service
+    recombee_service._switch.update(on=False, tune=False)
+    recombee_service.forget()
+    recombee_service.reset_stats()
     trending.reset_limits()
     from app.services.metrics_service import metrics_buffer
     metrics_buffer.views_buffer.clear()

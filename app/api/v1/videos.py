@@ -21,7 +21,7 @@ import logging
 from bson.json_util import dumps
 from app.models.user import UserType
 from recombee_api_client.api_requests import SetViewPortion, AddRating, DeleteRating, AddBookmark, DeleteBookmark, SetItemValues, Batch, DeleteItem
-from app.services.recombee_service import recombee_send
+from app.services.recombee_service import recombee_send, recombee_signal
 from app.services import creators, for_you, moderation, recommendations, search, trending
 from app.services.recommendations import anon_id, viewer_id
 from app.services.video_deletion import soft_delete_video
@@ -691,7 +691,7 @@ async def get_video(
                 kwargs["time_spent"] = time_spent
             req = SetViewPortion(current_user, video_id, portion, **kwargs)
             req.timeout = 5000
-            await recombee_send(req)
+            await recombee_signal(req)
         except Exception:
             pass
     
@@ -788,7 +788,7 @@ async def track_video_watch(
                 kwargs["time_spent"] = body.time_spent
             req = SetViewPortion(viewer, video_id, body.portion, **kwargs)
             req.timeout = 5000
-            await recombee_send(req)
+            await recombee_signal(req)
         except Exception:
             pass
     try:

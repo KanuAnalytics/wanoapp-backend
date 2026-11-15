@@ -74,6 +74,11 @@ def _forget_cached():
         gzip_switch.forget()
     except Exception:
         pass
+    try:
+        from app.services import recombee_service
+        recombee_service.forget()
+    except Exception:
+        pass
 
 
 async def all_off(db) -> Dict[str, bool]:

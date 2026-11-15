@@ -49,6 +49,17 @@ FOLLOWING_DAYS = 14
 MAX_PER_CREATOR = 2
 DIVERSITY = 0.3
 ROTATION_RATE = 0.5
+# "recombee_tune" switch. Recombee counts every pick it hands us as "shown" and
+# pushes it down next time (rotation). We ask for 5x the page and show a
+# fifth, and already hide what the viewer saw in the last 24 h ourselves, so
+# at 0.5 the best picks we never showed were pushed down on the next fresh
+# page: personal picks were watched less than the plain popular backup
+# (control, 7 days to Nov 15 2026: 15.8% vs 25.2% watched).
+TUNED_ROTATION_RATE = 0.1
+# How many picks to ask Recombee for, per post on the page. Asking for fewer
+# answers faster ("recombee_fast" switch).
+OVERFETCH = 5
+FAST_OVERFETCH = 3
 
 SHARES = {"fresh": 0.15, "trending": 0.10, "following": 0.05, "local": 0.10}
 LOCAL_DAYS = 7
@@ -117,12 +128,15 @@ def _slot_plan(limit: int, quotas: Dict[str, int]) -> List[str]:
 async def _personal(viewer: str, scenario: str, count: int, next_recomm_id: Optional[str],
                     user_tags: List[str]):
     """(ids, recomm_id) from Recombee; ([], None) if it fails."""
+    from app.services import recombee_service
+    tuned = await recombee_service.tune_on()
     try:
         if next_recomm_id:
             req = RecommendNextItems(next_recomm_id, count)
         else:
             kw = dict(
-                scenario=scenario, cascade_create=True, rotation_rate=ROTATION_RATE,
+                scenario=scenario, cascade_create=True,
+                rotation_rate=TUNED_ROTATION_RATE if tuned else ROTATION_RATE,
                 diversity=DIVERSITY,
                 filter="'is_active' == true AND 'privacy' == \"public\" AND 'is_ready_to_stream' == true",
             )
@@ -261,7 +275,9 @@ async def build_page(db, *, viewer: str, current_user: Optional[str], scenario: 
 
     slots = limit - (1 if featured else 0)
     # Over-fetch from Recombee: some picks get dropped by the rules below.
-    want = min(100, max(slots * 5, 20))
+    from app.services import recombee_service
+    fast = await recombee_service.refresh_switch()
+    want = min(60, max(slots * FAST_OVERFETCH, 20)) if fast else min(100, max(slots * OVERFETCH, 20))
 
     # What this viewer has already seen. These lookups and Recombee don't
     # depend on each other, so they run at the same time (one after another
