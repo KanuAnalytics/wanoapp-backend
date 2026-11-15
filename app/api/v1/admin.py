@@ -759,3 +759,26 @@ async def places_reach(place_id: str = Query(..., max_length=80), km: float = Qu
     """How many adults picked an area inside the circle, rounded (under 20: "fewer than 20")."""
     from app.services import places
     return await places.reach(get_database(), place_id, km)
+
+
+# ---------------------------------------------------------------- failed uploads
+# Creators whose video never uploaded (app/services/upload_invites.py).
+
+class InviteIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    confirm: Literal[True]
+
+
+@router.get("/failed-uploads")
+async def failed_uploads(admin: str = Depends(require_admin)):
+    from app.services import upload_invites
+    return upload_invites.public(await upload_invites.eligible(get_database()))
+
+
+@router.post("/failed-uploads/invite")
+async def failed_uploads_invite(body: InviteIn, admin: str = Depends(require_admin)):
+    from app.services import upload_invites
+    db = get_database()
+    out = await upload_invites.send(db, admin)
+    await admin_log.record(db, admin, "upload_invites", out)
+    return out

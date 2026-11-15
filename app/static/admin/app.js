@@ -128,7 +128,7 @@ $("logout").addEventListener("click", () => logout());
 
 const PAGES = [
   ["overview", "Overview"], ["payouts", "Payouts"], ["pool", "Cash pool"], ["creators", "Creators"],
-  ["moderation", "Reported posts"], ["messagereports", "Reported messages"], ["quickreports", "Reported quick posts"], ["whatsnew", "What's new"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["cities", "Cities"], ["categories", "Categories"], ["tvstrip", "Wano TV strip"], ["flyers", "Local flyers"], ["places", "Places"], ["switches", "Feature switches"], ["updates", "Force update"], ["speed", "Speed"], ["log", "Activity log"],
+  ["moderation", "Reported posts"], ["messagereports", "Reported messages"], ["quickreports", "Reported quick posts"], ["whatsnew", "What's new"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["cities", "Cities"], ["categories", "Categories"], ["tvstrip", "Wano TV strip"], ["flyers", "Local flyers"], ["places", "Places"], ["failedups", "Failed uploads"], ["switches", "Feature switches"], ["updates", "Force update"], ["speed", "Speed"], ["log", "Activity log"],
 ];
 let current = "overview";
 const counts = {};
@@ -394,6 +394,24 @@ const RENDER = {
       }))) : el("div", { class: "empty", text: "No reported quick posts." })));
   },
 
+  async failedups(main) {
+    const r = await api("GET", "/admin/failed-uploads");
+    const stat = (n, label) => el("div", { class: "card", style: "text-align:center; flex: 1 1 140px;" },
+      el("div", { style: "font-size: 26px; font-weight: 700;", text: num(n) }), el("div", { class: "small muted", text: label }));
+    const send = el("button", { class: "btn", text: `Send to ${num(r.to_invite)} creators`, disabled: !r.to_invite, onclick: async (e) => {
+      if (!(await confirmBox("Send the invite?", `${num(r.to_invite)} creators (${num(r.reachable_by_push)} with notifications on) get this once:\n\n${r.title}\n${r.message}\n\nNobody is ever sent it twice.`, "Send"))) return;
+      const out = await act(e.target, () => api("POST", "/admin/failed-uploads/invite", { confirm: true }), "Invites sent");
+      if (out) RENDER.failedups(main);
+    } });
+    main.replaceChildren(...head("Failed uploads", `Creators whose video never finished uploading in the last ${r.days} days and who haven't posted since. The video can't be recovered (it never reached Cloudflare), but it's usually still in their gallery. Best sent once the app version that keeps trying broken uploads is in the store.`),
+      el("div", { class: "row", style: "gap: 10px; flex-wrap: wrap;" },
+        stat(r.failed_posts, "posts that never arrived"), stat(r.creators, "creators affected"),
+        stat(r.posted_since, "posted again since"), stat(r.already_invited, "already invited"), stat(r.to_invite, "to invite now")),
+      el("div", { class: "card" }, el("h3", { text: "The message (push notification, opens their profile)" }),
+        el("div", { style: "font-weight: 600;", text: r.title }), el("div", { text: r.message }),
+        el("div", { class: "small muted", style: "margin: 8px 0;", text: `${num(r.reachable_by_push)} of ${num(r.to_invite)} have notifications on; the others can't be reached this way.` }),
+        send));
+  },
   async places(main) {
     const q = el("input", { type: "search", maxlength: 60, placeholder: "Search: Ntinda, Kololo, Yaba..." });
     const cc = el("input", { type: "text", maxlength: 2, placeholder: "ug", style: "width: 4em;" });
@@ -1003,6 +1021,7 @@ const RENDER = {
       switch (r.action) {
         case "feature": return `Turned ${(FEATURES[d.key] || [d.key])[0]} ${d.on ? "on" : "off"}`;
         case "features_all_off": return "Turned every feature off";
+        case "upload_invites": return `Invited ${d.invited} creators to post a failed video again`;
         case "review_prompt": return `Ask for ratings on ${d.platform}: ${d.on ? "on" : "off"}`;
         case "app_version": return d.to && d.to !== "0.0.0" ? `Force update: ${d.platform} must be ${d.to} or newer` : `Force update off for ${d.platform}`;
         case "pool": return `Set the ${d.month} pool: ${money(d.pool_usd)}`;
