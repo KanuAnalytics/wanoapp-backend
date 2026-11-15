@@ -102,5 +102,5 @@ async def test_SH1_report_splits_wide_tall_and_photo(client, db):
 
 async def test_SW1_new_switches_off_by_default(client, db):
     f = (await client.get("/api/v1/config/features")).json()
-    for k in ("wide_fill", "quiet_counts", "follow_plus", "dark_nav", "photo_zoom"):
+    for k in ("wide_fill", "quiet_counts", "follow_plus", "dark_nav", "photo_zoom", "photo_full"):
         assert f[k] is False, k
