@@ -130,19 +130,28 @@ async def _personal(viewer: str, scenario: str, count: int, next_recomm_id: Opti
     """(ids, recomm_id) from Recombee; ([], None) if it fails."""
     from app.services import recombee_service
     tuned = await recombee_service.tune_on()
-    try:
-        if next_recomm_id:
+    if next_recomm_id:
+        # The next page of a chain. If Recombee no longer knows the chain (an
+        # app holding an id from before a region move, or one past its 30
+        # minutes), start a fresh one instead of serving no picks at all.
+        try:
             req = RecommendNextItems(next_recomm_id, count)
-        else:
-            kw = dict(
-                scenario=scenario, cascade_create=True,
-                rotation_rate=TUNED_ROTATION_RATE if tuned else ROTATION_RATE,
-                diversity=DIVERSITY,
-                filter="'is_active' == true AND 'privacy' == \"public\" AND 'is_ready_to_stream' == true",
-            )
-            if user_tags:
-                kw["booster"] = "if size(intersection(context_user[\"tags\"], 'hashtags')) > 0 then 1.5 else 1"
-            req = RecommendItemsToUser(viewer, count, **kw)
+            req.timeout = 5000
+            result = await recombee_send(req) or {}
+            ids = [r.get("id") for r in result.get("recomms", []) if ObjectId.is_valid(r.get("id", ""))]
+            return ids, result.get("recommId")
+        except Exception:
+            logger.info("Recombee chain %s not usable; starting a fresh one", next_recomm_id[:40])
+    try:
+        kw = dict(
+            scenario=scenario, cascade_create=True,
+            rotation_rate=TUNED_ROTATION_RATE if tuned else ROTATION_RATE,
+            diversity=DIVERSITY,
+            filter="'is_active' == true AND 'privacy' == \"public\" AND 'is_ready_to_stream' == true",
+        )
+        if user_tags:
+            kw["booster"] = "if size(intersection(context_user[\"tags\"], 'hashtags')) > 0 then 1.5 else 1"
+        req = RecommendItemsToUser(viewer, count, **kw)
         req.timeout = 5000
         result = await recombee_send(req) or {}
         ids = [r.get("id") for r in result.get("recomms", []) if ObjectId.is_valid(r.get("id", ""))]

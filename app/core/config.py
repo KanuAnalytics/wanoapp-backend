@@ -128,6 +128,15 @@ class Settings(BaseSettings):
     # Recombee
     RECOMBEE_DB_ID: str
     RECOMBEE_PRIVATE_TOKEN: str
+    # Where that database lives: us-west, eu-west, ca-east or ap-se. EU West is
+    # the closest to Africa (Recombee has no African region).
+    RECOMBEE_REGION: str = "us-west"
+    # A second database being filled while the first keeps serving (moving
+    # region): every write is copied to it, and POST /api/v1/recombee/move
+    # fills it from Wano's own records. Empty = no move going on.
+    RECOMBEE_NEW_DB_ID: str = ""
+    RECOMBEE_NEW_PRIVATE_TOKEN: str = ""
+    RECOMBEE_NEW_REGION: str = "eu-west"
     
     #service URL
     VIDEO_SERVICE_URL: str

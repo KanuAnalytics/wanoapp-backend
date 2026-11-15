@@ -25,6 +25,21 @@ async def health(ping: bool = True, reset: bool = False, current_user: str = Dep
     return out
 
 
+@router.get("/move")
+async def move_status(current_user: str = Depends(require_admin)):
+    """How far filling the new Recombee database has got (see recombee_move)."""
+    from app.services import recombee_move
+    return await recombee_move.status(get_database())
+
+
+@router.post("/move")
+async def move_start(current_user: str = Depends(require_admin)):
+    """Fill the new Recombee database (RECOMBEE_NEW_*) from Wano's own records,
+    in the background. Safe to run again."""
+    from app.services import recombee_move
+    return await recombee_move.start(get_database())
+
+
 @router.post("/test-first-item")
 async def get_first_video(current_user: str = Depends(require_admin)):
     db = get_database()

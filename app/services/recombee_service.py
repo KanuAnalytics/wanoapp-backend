@@ -113,11 +113,34 @@ transport = _Transport()
 # The client looks `requests` up in its own module on every call.
 _rc_module.requests = transport
 
+REGIONS = {"us-west": Region.US_WEST, "eu-west": Region.EU_WEST,
+           "ca-east": Region.CA_EAST, "ap-se": Region.AP_SE}
+
+
+def region_of(name) -> Region:
+    key = str(name or "").strip().lower().replace("_", "-")
+    if key not in REGIONS:
+        logger.error("Unknown Recombee region %r; using us-west", name)
+    return REGIONS.get(key, Region.US_WEST)
+
+
 recombee_client = RecombeeClient(
     settings.RECOMBEE_DB_ID,
     settings.RECOMBEE_PRIVATE_TOKEN,
-    region=Region.US_WEST
+    region=region_of(getattr(settings, "RECOMBEE_REGION", "us-west")),
 )
+
+
+def _new_client():
+    db_id = (getattr(settings, "RECOMBEE_NEW_DB_ID", "") or "").strip()
+    token = (getattr(settings, "RECOMBEE_NEW_PRIVATE_TOKEN", "") or "").strip()
+    if not db_id or not token or db_id == settings.RECOMBEE_DB_ID:
+        return None
+    return RecombeeClient(db_id, token, region=region_of(getattr(settings, "RECOMBEE_NEW_REGION", "eu-west")))
+
+
+# The database being moved to (None when no move is going on).
+new_client = _new_client()
 
 _pool = ThreadPoolExecutor(max_workers=POOL_SIZE, thread_name_prefix="recombee")
 
@@ -152,6 +175,8 @@ def stats() -> dict:
                        "fail_rate": round(s["failed"] / n, 4) if n else 0,
                        "avg_ms": round(s["ms"] / n) if n else None, "max_ms": round(s["max_ms"])}
     return {"since": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(_started)), "fast": fast_on(),
+            "region": str(getattr(settings, "RECOMBEE_REGION", "us-west")),
+            "moving_to": (str(getattr(settings, "RECOMBEE_NEW_REGION", "")) if new_client is not None else None),
             "calls": kinds, "last_errors": list(_errors)[::-1]}
 
 
@@ -180,12 +205,56 @@ async def recombee_send(request):
         _count(_kind(request), False, (time.perf_counter() - t) * 1000, e)
         raise
     _count(_kind(request), True, (time.perf_counter() - t) * 1000)
+    if new_client is not None and _is_write(request):
+        _mirror(request)
     return out
 
 
-_real_send = recombee_send   # tests swap recombee_send out; this stays the real one
+# Requests that only read (recommendations, lists): never copied to the new database.
+_READ_PREFIXES = ("Recommend", "List", "Get", "Search", "Composite")
+
+
+def _is_write(request) -> bool:
+    from recombee_api_client.api_requests import Batch
+    if isinstance(request, Batch):
+        return any(_is_write(r) for r in request.requests)
+    return not type(request).__name__.startswith(_READ_PREFIXES)
+
+
+def _mirror(request) -> None:
+    """Copy a write that worked on the current database to the new one, in
+    the background, so nothing done during a move is lost."""
+    async def go():
+        kind = "mirror:" + _kind(request)
+        t = time.perf_counter()
+        try:
+            await asyncio.get_running_loop().run_in_executor(_pool, new_client.send, request)
+            _count(kind, True, (time.perf_counter() - t) * 1000)
+        except Exception as e:
+            _count(kind, False, (time.perf_counter() - t) * 1000, e)
+    task = asyncio.create_task(go())
+    _background.add(task)
+    task.add_done_callback(_background.discard)
+
+
+async def send_to_new(request):
+    """Send straight to the new database (filling it). Counted as move:<kind>."""
+    if new_client is None:
+        raise RuntimeError("No new Recombee database configured")
+    kind = "move:" + _kind(request)
+    t = time.perf_counter()
+    try:
+        out = await asyncio.get_running_loop().run_in_executor(_pool, new_client.send, request)
+    except Exception as e:
+        _count(kind, False, (time.perf_counter() - t) * 1000, e)
+        raise
+    _count(kind, True, (time.perf_counter() - t) * 1000)
+    return out
+
 
 _background: set = set()
+
+_real_send = recombee_send   # tests swap recombee_send out; this stays the real one
 
 
 async def recombee_signal(request) -> None:
