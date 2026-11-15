@@ -404,6 +404,8 @@ const RENDER = {
       starts: el("input", { type: "datetime-local", value: local(now) }),
       ends: el("input", { type: "datetime-local", value: local(new Date(now.getTime() + 14 * 864e5)) }),
       cap: el("input", { type: "number", min: 1, placeholder: "No limit" }),
+      testers: el("input", { type: "text", maxlength: 400, placeholder: "eilmer, nasir" }),
+      testersOnly: el("input", { type: "checkbox" }),
       file: el("input", { type: "file", accept: "image/jpeg,image/png,image/webp" }),
       active: el("input", { type: "checkbox", checked: true }),
     };
@@ -442,6 +444,8 @@ const RENDER = {
       f.starts.value = x ? local(new Date(x.starts_at + "Z")) : local(new Date());
       f.ends.value = x ? local(new Date(x.ends_at + "Z")) : local(new Date(Date.now() + 14 * 864e5));
       f.cap.value = x && x.daily_cap ? x.daily_cap : "";
+      f.testers.value = x && x.testers ? x.testers.join(", ") : "";
+      f.testersOnly.checked = !!(x && x.testers_only);
       f.active.checked = x ? x.active : true;
       preview.src = image ? (safeUrl(image.image_small) || safeUrl(image.image) || "") : "";
       preview.style.display = image ? "block" : "none";
@@ -454,8 +458,10 @@ const RENDER = {
       const body = { business: f.business.value.trim(), line: f.line.value.trim(), category: f.category.value,
         countries: picked(f.countries), cities: picked(f.cities), image: image.image, image_small: image.image_small || null,
         button: f.button.value, button_value: f.button_value.value.trim(), starts_at: s.toISOString(), ends_at: en.toISOString(),
-        daily_cap: f.cap.value ? Number(f.cap.value) : null, active: f.active.checked };
-      const where = body.cities.length ? body.cities.map((c) => (opt.cities.find((x) => x.id === c) || { name: c }).name).join(", ")
+        daily_cap: f.cap.value ? Number(f.cap.value) : null, active: f.active.checked,
+        testers: f.testers.value.split(/[\s,]+/).map((t) => t.replace(/^@/, "").trim()).filter(Boolean),
+        testers_only: f.testersOnly.checked };
+      const where = body.testers_only ? `only the testers: ${body.testers.join(", ")}` : body.cities.length ? body.cities.map((c) => (opt.cities.find((x) => x.id === c) || { name: c }).name).join(", ")
         : body.countries.map((c) => (opt.countries.find((x) => x.id === c) || { name: c }).name).join(", ") + " (whole country)";
       if (body.active && !(await confirmBox(editing ? "Save this flyer?" : "Start this flyer?",
         `${body.business}\nShown in: ${where}\n${when(body.starts_at)} to ${when(body.ends_at)}\nOnly while the Local flyers switch is on.`, editing ? "Save" : "Start"))) return;
@@ -493,6 +499,8 @@ const RENDER = {
             el("label", { class: "field" }, el("span", { text: "Starts" }), f.starts),
             el("label", { class: "field" }, el("span", { text: "Ends" }), f.ends)),
           el("label", { class: "field" }, el("span", { text: "Views per day (optional)" }), f.cap),
+          el("label", { class: "field" }, el("span", { text: "Testers: usernames who see it anywhere, first (optional, up to 10)" }), f.testers),
+          el("label", { class: "row", style: "gap: 8px; margin: 4px 0;" }, f.testersOnly, el("span", { text: "Testers only (a preview: nobody else sees it)" })),
           el("label", { class: "row", style: "gap: 8px; margin: 8px 0;" }, f.active, el("span", { text: "On" })),
           el("div", { class: "row", style: "gap: 8px;" }, save, el("button", { class: "btn secondary", text: "Clear", onclick: () => fill(null) }))),
         el("div", { class: "card" }, el("h3", { text: "All flyers (last 30 days)" }), r.items.length ? el("table", {}, el("thead", {}, el("tr", {},
@@ -501,6 +509,7 @@ const RENDER = {
             el("td", {}, el("div", { style: "font-weight: 600;", text: x.business }), el("div", { class: "small muted", text: x.line || "" }),
               el("div", { class: "row small", style: "margin-top: 4px; gap: 6px;" },
                 el("span", { class: "pill " + (x.active ? "green" : "grey"), text: x.active ? "On" : "Off" }),
+                x.testers_only ? el("span", { class: "pill", text: "Testers only" }) : null,
                 el("span", { class: "muted", text: (x.cities.length ? x.cities : x.countries).map(placeName).join(", ") + " · until " + when(x.ends_at) }))),
             el("td", { text: num(x.stats.shown) }), el("td", { text: num(x.stats.reach) }), el("td", { text: num(x.stats.tap) }),
             el("td", { text: pct(x.stats.tap_rate) }),

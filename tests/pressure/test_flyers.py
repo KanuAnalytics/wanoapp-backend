@@ -168,7 +168,7 @@ async def test_FY10_at_most_three_at_once_and_safe_fields_only(client, db):
     r = (await client.get(F, headers=h)).json()
     assert len(r["flyers"]) == svc.MAX_PER_VIEWER
     f = r["flyers"][0]
-    assert set(f) == {"id", "business", "line", "image", "image_small", "button", "label"}
+    assert set(f) == {"id", "business", "line", "image", "image_small", "button", "label"}   # no "test" for normal viewers
     assert f["label"] == "Sponsored"
     assert f["button"] == {"kind": "whatsapp", "label": "WhatsApp",
                            "url": "https://wa.me/256772123456?text=Hi%2C%20I%20saw%20your%20flyer%20on%20Wano"}
@@ -281,3 +281,53 @@ def svc_doc(i, now):
             "cities": ["kampala"] if i % 3 == 0 else [], "image": IMG, "image_small": None, "button": "call",
             "button_value": "+256772123456", "starts_at": now - timedelta(hours=1), "ends_at": now + timedelta(days=1),
             "daily_cap": None, "active": True}
+
+
+async def test_FY18_testers_see_it_anywhere_first_and_nobody_else_changes(client, db):
+    await _on(db)
+    eilmer, eh = await _viewer(db, "us", username="eilmer")
+    await _flyer(client, db, business="Kampala Only", countries=["ug"], cities=["kampala"], testers=["@Eilmer "])
+    await _flyer(client, db, business="Lagos Only", countries=["ng"])
+    r = (await client.get(F, headers=eh)).json()["flyers"]
+    assert [f["business"] for f in r] == ["Kampala Only"] and r[0]["test"] is True
+    _, us = await _viewer(db, "us")
+    assert await _seen(client, us) == []
+    _, kla = await _viewer(db, "ug", city="kampala")
+    out = (await client.get(F, headers=kla)).json()["flyers"]
+    assert [f["business"] for f in out] == ["Kampala Only"] and "test" not in out[0]
+    # a tester's own views and taps still count, under their own country
+    f_id = r[0]["id"]
+    assert (await client.post(f"{F}/event", json={"flyer_id": f_id, "kind": "shown"}, headers=eh)).json()["counted"]
+
+
+async def test_FY19_testers_must_exist_and_are_capped(client, db):
+    _, ah = await _admin(db)
+    assert (await client.post(A, json=_body(testers=["nobody_here"]), headers=ah)).status_code == 422
+    names = []
+    for i in range(11):
+        await make_user(db, username=f"t{i}")
+        names.append(f"t{i}")
+    assert (await client.post(A, json=_body(testers=names), headers=ah)).status_code == 422
+    assert (await client.post(A, json=_body(testers=[{"$ne": 1}]), headers=ah)).status_code == 422
+
+
+async def test_FY20_testers_only_reaches_nobody_else(client, db):
+    await _on(db)
+    _, eh = await _viewer(db, "us", username="eilmer")
+    await _flyer(client, db, business="Preview", countries=["ug"], testers=["eilmer"], testers_only=True)
+    assert await _seen(client, eh) == ["Preview"]
+    _, kla = await _viewer(db, "ug", city="kampala")
+    _, ug = await _viewer(db, "ug")
+    assert await _seen(client, kla) == [] and await _seen(client, ug) == []
+    f = (await client.get(A, headers=(await _admin(db))[1])).json()["items"][0]
+    assert f["testers_only"] is True
+    # their taps can't be counted either
+    fid = f["id"]
+    assert (await client.post(f"{F}/event", json={"flyer_id": fid, "kind": "tap"}, headers=ug)).json()["counted"] is False
+
+
+async def test_FY21_testers_only_needs_a_tester(client, db):
+    _, ah = await _admin(db)
+    r = await client.post(A, json=_body(testers_only=True), headers=ah)
+    assert r.status_code == 422 and "tester" in r.json()["detail"]
+    assert (await client.post(A, json=_body(testers_only="yes"), headers=ah)).status_code == 422

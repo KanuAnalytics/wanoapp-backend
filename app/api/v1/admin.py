@@ -629,6 +629,8 @@ class FlyerIn(BaseModel):
     ends_at: str = Field(..., max_length=40)
     daily_cap: Optional[StrictInt] = None
     active: StrictBool = True
+    testers: list[str] = Field(default_factory=list, max_length=20)
+    testers_only: StrictBool = False
 
 
 class FlyerActiveIn(BaseModel):

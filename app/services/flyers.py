@@ -16,6 +16,9 @@ Who sees a flyer (decided here, never by the app):
   no birthday on file, no alcohol flyer;
 - running now (between its start and end), switched on, and under its views
   per day if it has one.
+Testers (up to 10 usernames on the flyer) see it anywhere, ahead of Wano TV,
+so a flyer for Kampala can be checked from Chicago. Nobody else is affected.
+"Testers only" makes a flyer a preview: nobody but its testers sees it.
 Never offered as categories: betting, loans, crypto, adult. Only admins make
 flyers. Phase 2 (businesses paying by Mobile Money) is not built yet.
 
@@ -51,6 +54,7 @@ ADULTS_ONLY = {"drinks"}
 BUTTONS = ("whatsapp", "call", "link")
 BUTTON_LABEL = {"whatsapp": "WhatsApp", "call": "Call", "link": "Visit"}
 MAX_PER_VIEWER = 3                 # flyers sent to the app at once
+MAX_TESTERS = 10
 EVENT_KINDS = ("shown", "tap", "close")
 EVENTS_PER_DAY = 60                # per person
 IMAGE_MAX_BYTES = 5_000_000
@@ -146,12 +150,24 @@ async def validate(db, body: dict) -> dict:
         raise HTTPException(status_code=422, detail="Pick the start and end dates")
     if ends <= starts or ends - starts > timedelta(days=366):
         raise HTTPException(status_code=422, detail="The end must be after the start (at most a year)")
+    names = sorted({n.strip().lstrip("@").lower() for n in (body.get("testers") or []) if isinstance(n, str) and n.strip()})
+    if len(names) > MAX_TESTERS:
+        raise HTTPException(status_code=422, detail=f"At most {MAX_TESTERS} testers")
+    tester_ids = []
+    for n in names:
+        u = await db.users.find_one({"username": n}, {"_id": 1})
+        if not u:
+            raise HTTPException(status_code=422, detail=f"No account called @{n[:30]}")
+        tester_ids.append(u["_id"])
+    if body.get("testers_only") is True and not tester_ids:
+        raise HTTPException(status_code=422, detail="Add at least one tester for a testers-only flyer")
     cap = body.get("daily_cap")
     if cap is not None and (not isinstance(cap, int) or isinstance(cap, bool) or not (1 <= cap <= 10_000_000)):
         raise HTTPException(status_code=422, detail="Views per day must be a number, or empty for no limit")
     return {"business": business, "line": line, "category": category, "countries": countries, "cities": cities,
             "image": image, "image_small": _https(body.get("image_small")), "button": kind, "button_value": value,
-            "starts_at": starts, "ends_at": ends, "daily_cap": cap, "active": body.get("active") is not False}
+            "starts_at": starts, "ends_at": ends, "daily_cap": cap, "active": body.get("active") is not False,
+            "testers": names, "tester_ids": tester_ids, "testers_only": body.get("testers_only") is True}
 
 
 async def create(db, admin: str, body: dict) -> dict:
@@ -187,7 +203,8 @@ def _admin_out(d: dict) -> dict:
             "countries": d.get("countries") or [], "cities": d.get("cities") or [], "image": d.get("image"),
             "image_small": d.get("image_small"), "button": d.get("button"), "button_value": d.get("button_value"),
             "starts_at": d.get("starts_at"), "ends_at": d.get("ends_at"), "daily_cap": d.get("daily_cap"),
-            "active": d.get("active") is True}
+            "active": d.get("active") is True, "testers": d.get("testers") or [],
+            "testers_only": d.get("testers_only") is True}
 
 
 def _put(key: str, data: bytes) -> None:
@@ -275,8 +292,16 @@ async def _running(db, now: datetime) -> List[dict]:
     return [r for r in rows if r.get("starts_at") and r["starts_at"] <= now < r["ends_at"]]
 
 
+def is_tester(flyer: dict, viewer: dict) -> bool:
+    return viewer.get("_id") is not None and viewer["_id"] in (flyer.get("tester_ids") or [])
+
+
 def matches(flyer: dict, viewer: dict, now: Optional[datetime] = None) -> bool:
     from app.services import home_ground as hg
+    if is_tester(flyer, viewer):
+        return True
+    if flyer.get("testers_only") is True:
+        return False
     if hg.is_minor(viewer, now):
         return False
     country = hg.country_of(viewer)
@@ -300,7 +325,14 @@ async def _under_cap(db, flyer: dict, now: datetime) -> bool:
     return total < cap
 
 
-def viewer_out(f: dict) -> dict:
+def viewer_out(f: dict, test: bool = False) -> dict:
+    out = viewer_out_base(f)
+    if test:
+        out["test"] = True
+    return out
+
+
+def viewer_out_base(f: dict) -> dict:
     return {"id": str(f["_id"]), "business": f.get("business") or "", "line": f.get("line") or "",
             "image": f.get("image"), "image_small": f.get("image_small"),
             "button": {"kind": f.get("button"), "label": BUTTON_LABEL.get(f.get("button"), "Open"),
@@ -321,10 +353,11 @@ async def for_viewer(db, viewer_id: Optional[str], now: Optional[datetime] = Non
         return {"flyers": [], "rules": rules}
     picks = [f for f in await _running(db, now) if matches(f, viewer, now)]
     random.shuffle(picks)
+    picks.sort(key=lambda f: not is_tester(f, viewer))      # a tester's flyers first
     out = []
     for f in picks:
-        if await _under_cap(db, f, now):
-            out.append(viewer_out(f))
+        if is_tester(f, viewer) or await _under_cap(db, f, now):
+            out.append(viewer_out(f, test=is_tester(f, viewer)))
         if len(out) >= MAX_PER_VIEWER:
             break
     return {"flyers": out, "rules": rules}
