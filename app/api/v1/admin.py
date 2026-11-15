@@ -116,6 +116,25 @@ async def put_app_version(body: AppVersionIn, admin: str = Depends(require_admin
     return out
 
 
+class ReviewPromptIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    platform: Literal["android", "ios"]
+    on: StrictBool
+
+
+@router.get("/review-prompt")
+async def get_review_prompt(admin: str = Depends(require_admin)):
+    return await app_version.review_prompt(get_database())
+
+
+@router.put("/review-prompt")
+async def put_review_prompt(body: ReviewPromptIn, admin: str = Depends(require_admin)):
+    db = get_database()
+    out = await app_version.set_review_prompt(db, body.platform, body.on)
+    await admin_log.record(db, admin, "review_prompt", {"platform": body.platform, "on": body.on})
+    return out
+
+
 # ---------------------------------------------------------------- overview and log
 
 @router.get("/overview")

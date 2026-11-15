@@ -61,3 +61,25 @@ async def set_version(db, platform: str, version: Optional[str]) -> Dict[str, Op
         if not _clean(doc.get(FIELDS["all"])):
             await db.config.update_one({"_id": doc["_id"]}, {"$set": {FIELDS["all"]: NOT_FORCED}})
     return await current(db)
+
+
+# Asking for a store rating. Every app version already does it on someone's
+# 10th video in a feed session, if the setting for its platform is on; the
+# store then decides whether to show its own rating card (Google keeps it
+# rare, Apple shows it at most 3 times a year). The app never asks "do you
+# like Wano?" first, which the stores don't allow.
+REVIEW_FIELDS = {"android": "showReviewAndroid", "ios": "showReviewIos"}
+
+
+async def review_prompt(db) -> Dict[str, bool]:
+    doc = await db.config.find_one({}, projection={f: 1 for f in REVIEW_FIELDS.values()}, sort=[("_id", -1)]) or {}
+    return {p: doc.get(f) is True for p, f in REVIEW_FIELDS.items()}
+
+
+async def set_review_prompt(db, platform: str, on: bool) -> Dict[str, bool]:
+    if platform not in REVIEW_FIELDS:
+        raise VersionError(422, "Platform must be android or ios")
+    doc = await db.config.find_one_and_update({}, {"$set": {REVIEW_FIELDS[platform]: bool(on)}}, sort=[("_id", -1)])
+    if not doc:
+        await db.config.insert_one({FIELDS["all"]: NOT_FORCED, REVIEW_FIELDS[platform]: bool(on)})
+    return await review_prompt(db)

@@ -957,8 +957,20 @@ const RENDER = {
         el("div", { class: "row" }, input, save));
     }));
     draw(v);
-    main.replaceChildren(...head("Force update", "Make everyone on an old app version update before using Wano. Clear a box (or 0.0.0) to stop forcing."),
-      card,
+    const rp = await api("GET", "/admin/review-prompt").catch(() => ({ android: false, ios: false }));
+    const rcard = el("div", { class: "card" });
+    const drawReview = (state) => rcard.replaceChildren(el("h3", { text: "Ask for a store rating" }),
+      el("p", { class: "small muted", text: "When on, the app asks the store to show its own rating card on someone's 10th video in a session (every app version does this). Google keeps it rare and Apple shows it at most 3 times a year. More good ratings lift Wano in store search. Best turned on once the newest version has reached most people." }),
+      ...[["android", "Android"], ["ios", "iPhone"]].map(([key, label]) => el("div", { class: "switch-row" },
+        el("div", { class: "txt" }, el("div", { class: "name", text: `${label}: ${state[key] ? "asking" : "not asking"}` })),
+        el("button", { class: "btn small" + (state[key] ? " secondary" : ""), text: state[key] ? "Stop asking" : "Start asking", onclick: async (e) => {
+          const r = await act(e.target, () => api("PUT", "/admin/review-prompt", { platform: key, on: !state[key] }),
+            state[key] ? `${label}: not asking` : `${label}: asking for ratings`);
+          if (r) drawReview(r);
+        } }))));
+    drawReview(rp);
+    main.replaceChildren(...head("Force update", "Make everyone on an old app version update before using Wano. Clear a box (or 0.0.0) to stop forcing. Below: asking for store ratings."),
+      card, rcard,
       el("div", { class: "card" }, el("p", { class: "small muted", text:
         "Order: 1) the new version is at 100% in Google Play / released in the App Store, 2) set Android and iPhone here, 3) open Wano on a phone with an old version to see the box." })));
   },
@@ -990,6 +1002,7 @@ const RENDER = {
       switch (r.action) {
         case "feature": return `Turned ${(FEATURES[d.key] || [d.key])[0]} ${d.on ? "on" : "off"}`;
         case "features_all_off": return "Turned every feature off";
+        case "review_prompt": return `Ask for ratings on ${d.platform}: ${d.on ? "on" : "off"}`;
         case "app_version": return d.to && d.to !== "0.0.0" ? `Force update: ${d.platform} must be ${d.to} or newer` : `Force update off for ${d.platform}`;
         case "pool": return `Set the ${d.month} pool: ${money(d.pool_usd)}`;
         case "distribute": return `Shared out ${d.month}: ${money(d.paid_usd)} to ${d.creators} creators`;

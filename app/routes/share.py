@@ -26,13 +26,14 @@ Everything that came from users (titles, descriptions, names, URLs) is
 escaped before it reaches HTML, XML or JSON-LD. The pages run no scripts.
 """
 
+import contextvars
 import html
 import json
 import math
 import re
 from datetime import datetime, timezone
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from bson import ObjectId
 from fastapi import APIRouter
@@ -209,6 +210,7 @@ def _headers(*, cache: str, noindex: bool, frameable: bool, player_host: Optiona
         "Content-Security-Policy": csp,
         "X-Content-Type-Options": "nosniff",
         "Referrer-Policy": "strict-origin-when-cross-origin",
+        "Vary": "User-Agent",         # the buttons depend on the phone
     }
     if not frameable:
         h["X-Frame-Options"] = "DENY"
@@ -230,25 +232,72 @@ h1{font-size:18px;line-height:1.3;margin:14px 0 4px}p{margin:0;color:#b9b9c0;fon
 .cta{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
 .cta a{flex:1 1 140px;text-align:center;padding:12px 14px;border-radius:10px;
 text-decoration:none;font-weight:600;font-size:15px;background:#26262b;color:#fff}
-.cta a.primary{background:#ff3b30}
+.cta a.primary{background:linear-gradient(90deg,#3AB586,#73BD8C);flex-basis:100%;font-size:16px;padding:14px}
+.get{margin-top:18px;color:#d6d6dc;font-size:14px;text-align:center}
 .gone{text-align:center;padding:96px 16px}
 """
 
 
-def _cta(video_id: Optional[str], path: Optional[str] = None) -> str:
-    links = []
-    if path is None:
-        path = f"v/{video_id}" if video_id else ""
-    scheme = re.sub(r"[^a-z0-9+.-]", "", (settings.APP_SCHEME or "").lower())
-    if scheme:
-        links.append(f'<a class="primary" href="{_e(f"{scheme}://{path}")}">Open in Wano</a>')
+# The phone that opened the page (from its User-Agent), so the first button is
+# the one that works there. Set by each page route; pages still run no scripts.
+_UA: contextvars.ContextVar[str] = contextvars.ContextVar("share_ua", default="")
+_KIND = {"v": "video", "u": "profile", "tv": "tv"}
+
+
+def _platform() -> str:
+    ua = _UA.get().lower()
+    if "android" in ua:
+        return "android"
+    if any(k in ua for k in ("iphone", "ipad", "ipod")):
+        return "ios"
+    return "other"
+
+
+def _store_links(path: str):
+    """Store links that say they came from a share, so Play Console and App
+    Store Connect show how many installs shared links bring."""
+    kind = _KIND.get(path.split("/")[0], "app") if path else "app"
     ios = _safe_https(settings.IOS_APP_STORE_URL)
     android = _safe_https(settings.ANDROID_PLAY_STORE_URL)
     if ios:
-        links.append(f'<a href="{_e(ios)}">App Store</a>')
+        ios += ("&" if "?" in ios else "?") + f"ct=share_{kind}"
     if android:
-        links.append(f'<a href="{_e(android)}">Google Play</a>')
-    return f'<div class="cta">{"".join(links)}</div>' if links else ""
+        android += ("&" if "?" in android else "?") + "referrer=" + quote(
+            f"utm_source=wano_share&utm_medium={kind}&utm_campaign=share", safe="")
+    return ios, android
+
+
+def _cta(video_id: Optional[str], path: Optional[str] = None) -> str:
+    """The buttons under a shared post. Someone without Wano mustn't hit a
+    dead "Open in Wano" first: on Android one button opens the app if it's
+    there and the Play Store if not; on iPhone the App Store comes first."""
+    if path is None:
+        path = f"v/{video_id}" if video_id else ""
+    scheme = re.sub(r"[^a-z0-9+.-]", "", (settings.APP_SCHEME or "").lower())
+    ios, android = _store_links(path)
+    plat = _platform()
+    links = []
+    if plat == "android" and android and scheme:
+        pkg = (parse_qs(urlparse(android).query).get("id") or [""])[0]
+        pkg = re.sub(r"[^A-Za-z0-9._]", "", pkg)
+        intent = (f"intent://{path}#Intent;scheme={scheme};" + (f"package={pkg};" if pkg else "")
+                  + f"S.browser_fallback_url={quote(android, safe='')};end")
+        links.append(f'<a class="primary" href="{_e(intent)}">Watch on Wano · free</a>')
+    elif plat == "ios" and ios:
+        links.append(f'<a class="primary" href="{_e(ios)}">Get Wano · free</a>')
+        if scheme:
+            links.append(f'<a href="{_e(f"{scheme}://{path}")}">I have Wano: open it</a>')
+    else:
+        if scheme:
+            links.append(f'<a class="primary" href="{_e(f"{scheme}://{path}")}">Open in Wano</a>')
+        if ios:
+            links.append(f'<a href="{_e(ios)}">App Store</a>')
+        if android:
+            links.append(f'<a href="{_e(android)}">Google Play</a>')
+    if not links:
+        return ""
+    pitch = '<p class="get">More African videos, films and chat on Wano. Free, and light on your data.</p>'
+    return f'{pitch}<div class="cta">{"".join(links)}</div>'
 
 
 def _smart_banner(url: Optional[str]) -> str:
@@ -275,7 +324,8 @@ def _not_available() -> Response:
 # ------------------------------------------------------------------ pages
 
 @router.api_route("/v/{video_id}", methods=["GET", "HEAD"], include_in_schema=False)
-async def watch_page(video_id: str):
+async def watch_page(video_id: str, request: Request):
+    _UA.set(request.headers.get("user-agent", "")[:300])
     db = get_database()
     video, creator = await _shareable(db, video_id)
     if not video:
@@ -530,7 +580,8 @@ def _gone(what: str) -> Response:
 
 
 @router.api_route("/u/{user_id}", methods=["GET", "HEAD"], include_in_schema=False)
-async def profile_page(user_id: str):
+async def profile_page(user_id: str, request: Request):
+    _UA.set(request.headers.get("user-agent", "")[:300])
     from app.services.home_ground import is_minor
     if not ObjectId.is_valid(user_id):
         return _gone("profile")
@@ -555,7 +606,8 @@ async def profile_page(user_id: str):
 
 
 @router.api_route("/tv/{title_id}", methods=["GET", "HEAD"], include_in_schema=False)
-async def tv_page(title_id: str):
+async def tv_page(title_id: str, request: Request):
+    _UA.set(request.headers.get("user-agent", "")[:300])
     if not ObjectId.is_valid(title_id):
         return _gone("title")
     db = get_database()
@@ -572,7 +624,8 @@ async def tv_page(title_id: str):
 
 
 @router.api_route("/app", methods=["GET", "HEAD"], include_in_schema=False)
-async def app_page():
+async def app_page(request: Request):
+    _UA.set(request.headers.get("user-agent", "")[:300])
     return _simple_page(title="Wano", description="Watch, post and share African videos on Wano.",
                         image=None, url=f"{_base()}/app", path="", heading="Wano",
                         sub="Watch, post and share African videos.", noindex=False,
