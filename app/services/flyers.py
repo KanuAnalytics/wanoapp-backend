@@ -11,6 +11,8 @@ Who sees a flyer (decided here, never by the app):
 - the flyer's countries include theirs. If the flyer names cities, their
   Home Ground city must be one of them; people without a city only ever get
   country-wide flyers. Someone in Nigeria never sees a Ugandan flyer;
+- a flyer can also aim at a circle (a place + 0.5, 1, 3 or 10 km; see
+  app/services/places.py): then only people whose picked area lies inside it;
 - never under-18s (by saved birthday);
 - alcohol ("drinks") only to people whose saved birthday shows 18 or older:
   no birthday on file, no alcohol flyer;
@@ -161,13 +163,27 @@ async def validate(db, body: dict) -> dict:
         tester_ids.append(u["_id"])
     if body.get("testers_only") is True and not tester_ids:
         raise HTTPException(status_code=422, detail="Add at least one tester for a testers-only flyer")
+    circle = None
+    c = body.get("circle")
+    if c:
+        from app.services import places
+        center = await places.get(db, c.get("place_id") if isinstance(c, dict) else None)
+        km = c.get("km") if isinstance(c, dict) else None
+        if not center:
+            raise HTTPException(status_code=422, detail="Pick the circle's centre from the list")
+        if isinstance(km, bool) or km not in places.CIRCLE_KM:
+            raise HTTPException(status_code=422, detail="The circle is 0.5, 1, 3 or 10 km")
+        if center["country"] not in countries:
+            raise HTTPException(status_code=422, detail=f"{center['name']} isn't in the countries picked")
+        circle = {"place_id": center["id"], "km": float(km)}
     cap = body.get("daily_cap")
     if cap is not None and (not isinstance(cap, int) or isinstance(cap, bool) or not (1 <= cap <= 10_000_000)):
         raise HTTPException(status_code=422, detail="Views per day must be a number, or empty for no limit")
     return {"business": business, "line": line, "category": category, "countries": countries, "cities": cities,
             "image": image, "image_small": _https(body.get("image_small")), "button": kind, "button_value": value,
             "starts_at": starts, "ends_at": ends, "daily_cap": cap, "active": body.get("active") is not False,
-            "testers": names, "tester_ids": tester_ids, "testers_only": body.get("testers_only") is True}
+            "testers": names, "tester_ids": tester_ids, "testers_only": body.get("testers_only") is True,
+            "circle": circle}
 
 
 async def create(db, admin: str, body: dict) -> dict:
@@ -204,7 +220,16 @@ def _admin_out(d: dict) -> dict:
             "image_small": d.get("image_small"), "button": d.get("button"), "button_value": d.get("button_value"),
             "starts_at": d.get("starts_at"), "ends_at": d.get("ends_at"), "daily_cap": d.get("daily_cap"),
             "active": d.get("active") is True, "testers": d.get("testers") or [],
-            "testers_only": d.get("testers_only") is True}
+            "testers_only": d.get("testers_only") is True, "circle": _circle_out(d.get("circle"))}
+
+
+def _circle_out(c) -> Optional[dict]:
+    if not isinstance(c, dict) or not c.get("place_id"):
+        return None
+    from app.services import places
+    places._ensure()
+    p = places._PLACES.get(c["place_id"])
+    return {"place_id": c["place_id"], "km": c.get("km"), "label": places.out(p)["label"] if p else c["place_id"]}
 
 
 def _put(key: str, data: bytes) -> None:
@@ -310,6 +335,10 @@ def matches(flyer: dict, viewer: dict, now: Optional[datetime] = None) -> bool:
     cities = flyer.get("cities") or []
     if cities and hg.city_of(viewer) not in cities:
         return False
+    if flyer.get("circle"):
+        from app.services import places
+        if not places.in_circle(viewer, flyer["circle"]):
+            return False
     if flyer.get("category") in ADULTS_ONLY and not known_adult(viewer, now):
         return False
     return True
@@ -348,7 +377,8 @@ async def for_viewer(db, viewer_id: Optional[str], now: Optional[datetime] = Non
         return {"flyers": [], "rules": rules}
     await hg.load_custom(db)
     viewer = await db.users.find_one({"_id": ObjectId(viewer_id)},
-                                     {"localization": 1, "home_ground": 1, "date_of_birth": 1, "is_active": 1})
+                                     {"localization": 1, "home_ground": 1, "area": 1, "date_of_birth": 1,
+                                      "is_active": 1})
     if not viewer or viewer.get("is_active") is False:
         return {"flyers": [], "rules": rules}
     picks = [f for f in await _running(db, now) if matches(f, viewer, now)]
@@ -371,7 +401,7 @@ async def record(db, viewer_id: str, fid: str, kind: str, now: Optional[datetime
         return False
     f = await db.flyers.find_one({"_id": ObjectId(fid)})
     viewer = await db.users.find_one({"_id": ObjectId(viewer_id)}, {"localization": 1, "home_ground": 1,
-                                                                    "date_of_birth": 1})
+                                                                    "area": 1, "date_of_birth": 1})
     if not f or not viewer or not matches(f, viewer, now):
         return False
     day = _day(now)

@@ -6,11 +6,11 @@ POST /challenges; moderation uses /reports/admin/*."""
 
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Literal, Optional
+from typing import Literal, Optional, Union
 
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from pydantic import BaseModel, ConfigDict, Field, StrictBool
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, StrictInt
 
 from app.api.deps import require_admin
 from app.api.v1 import auth as auth_api
@@ -631,6 +631,22 @@ class FlyerIn(BaseModel):
     active: StrictBool = True
     testers: list[str] = Field(default_factory=list, max_length=20)
     testers_only: StrictBool = False
+    circle: Optional["CircleIn"] = None
+
+
+class CircleIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    place_id: str = Field(..., max_length=80)
+    km: Union[StrictInt, StrictFloat]       # true/"1" are not distances
+
+
+FlyerIn.model_rebuild()
+
+
+class PlaceEditIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    hidden: Optional[StrictBool] = None
+    name: Optional[str] = Field(None, max_length=80)
 
 
 class FlyerActiveIn(BaseModel):
@@ -695,3 +711,32 @@ async def photo_checks_summary(days: int = Query(7, ge=1, le=60), admin: str = D
     """Photo posts the rules would refuse (more than 10 photos, or stored elsewhere): counted, not refused."""
     from app.services import photo_checks
     return await photo_checks.summary(get_database(), days)
+
+
+# ---------------------------------------------------------------- places
+# Towns and neighbourhoods (app/services/places.py). Admin tools work with the
+# "places" switch off, so the list can be checked and tidied before people see it.
+
+@router.get("/places/search")
+async def places_search(q: str = Query("", max_length=60), country: Optional[str] = Query(None, max_length=2),
+                        admin: str = Depends(require_admin)):
+    from app.services import places
+    rows = await places.search(get_database(), q, country, include_hidden=True)
+    return {"items": [{**places.out(p), "hidden": p.get("hidden") is True} for p in rows], **places.stats()}
+
+
+@router.post("/places/{pid}")
+async def places_edit(pid: str, body: PlaceEditIn, admin: str = Depends(require_admin)):
+    from app.services import places
+    db = get_database()
+    out = await places.edit(db, admin, pid[:80], body.hidden, body.name)
+    await admin_log.record(db, admin, "place_edited", {"place": pid[:80], "hidden": body.hidden, "name": body.name})
+    return out
+
+
+@router.get("/places/reach")
+async def places_reach(place_id: str = Query(..., max_length=80), km: float = Query(...),
+                       admin: str = Depends(require_admin)):
+    """How many adults picked an area inside the circle, rounded (under 20: "fewer than 20")."""
+    from app.services import places
+    return await places.reach(get_database(), place_id, km)

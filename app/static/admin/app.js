@@ -128,7 +128,7 @@ $("logout").addEventListener("click", () => logout());
 
 const PAGES = [
   ["overview", "Overview"], ["payouts", "Payouts"], ["pool", "Cash pool"], ["creators", "Creators"],
-  ["moderation", "Reported posts"], ["messagereports", "Reported messages"], ["quickreports", "Reported quick posts"], ["whatsnew", "What's new"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["cities", "Cities"], ["categories", "Categories"], ["tvstrip", "Wano TV strip"], ["flyers", "Local flyers"], ["switches", "Feature switches"], ["updates", "Force update"], ["speed", "Speed"], ["log", "Activity log"],
+  ["moderation", "Reported posts"], ["messagereports", "Reported messages"], ["quickreports", "Reported quick posts"], ["whatsnew", "What's new"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["cities", "Cities"], ["categories", "Categories"], ["tvstrip", "Wano TV strip"], ["flyers", "Local flyers"], ["places", "Places"], ["switches", "Feature switches"], ["updates", "Force update"], ["speed", "Speed"], ["log", "Activity log"],
 ];
 let current = "overview";
 const counts = {};
@@ -190,6 +190,7 @@ const FEATURES = {
   dark_nav: ["Dark bottom bar on videos", "On Home and Wano TV the bottom bar is Wano's dark charcoal instead of a white card over the video; Wano green stays the active colour. Other screens keep the white bar. Needs app 2.3.39."],
   photo_full: ["Full-screen photos", "Photo posts use the whole screen like videos (dark header and caption over the picture) instead of a white header and white panel around a smaller photo. Needs app 2.3.40."],
   photo_zoom: ["Pinch to zoom photos (Android)", "Two fingers zoom into a photo post on Android, letting go springs back. iPhone already zooms. Needs app 2.3.39."],
+  places: ["Places and areas", "People search a big list of towns and neighbourhoods (Ntinda, Kololo, Yaba...) and pick their area; flyers can then aim at a circle round a place (0.5, 1, 3 or 10 km). The old Home Ground city list and battles don't change. An area is picked by the person, never read from the phone's location. Tidy the list on the Places page first. Needs a new app version for people to pick an area."],
   flyers: ["Local flyers", "Businesses' flyers in the Wano TV ticket's spot on shorts (Sponsored, with a WhatsApp, Call or Visit button), made on the Local flyers page. Shown only in the countries and cities picked; never to under-18s or logged-out people; drinks only to people whose birthday shows 18+. TV and flyers share the same limits: never in the first 5 posts, 8 posts apart, 2 a session. Needs app 2.3.37."],
   msg_plus: ["Message extras", "In chats: long-press a message to react (one of 6 emojis), reply to it, edit your own (15 minutes, shows \"edited\") or delete it for everyone (1 hour, shows \"This message was deleted\"). Messages typed with no signal send when it comes back. The original text of edited or deleted messages is kept privately for 30 days so reports still show what was said. Needs app 2.3.37."],
   msg_voice: ["Voice messages", "Hold the mic in a chat to send a voice message, up to 2 minutes (about 30 KB for 10 seconds). Not allowed in message requests until they're accepted. Needs app 2.3.37; older apps see \"Voice message (update Wano to listen)\"."],
@@ -392,6 +393,38 @@ const RENDER = {
       }))) : el("div", { class: "empty", text: "No reported quick posts." })));
   },
 
+  async places(main) {
+    const q = el("input", { type: "search", maxlength: 60, placeholder: "Search: Ntinda, Kololo, Yaba..." });
+    const cc = el("input", { type: "text", maxlength: 2, placeholder: "ug", style: "width: 4em;" });
+    const box = el("div", {});
+    const stats = await api("GET", "/admin/places/search?q=").catch(() => null);
+    const draw = async () => {
+      if (q.value.trim().length < 2) { box.replaceChildren(el("div", { class: "empty", text: "Type at least 2 letters." })); return; }
+      const r = await api("GET", `/admin/places/search?q=${encodeURIComponent(q.value.trim())}${cc.value.trim() ? "&country=" + encodeURIComponent(cc.value.trim().toLowerCase()) : ""}`);
+      box.replaceChildren(r.items.length ? el("table", {}, el("thead", {}, el("tr", {}, ...["Place", "Kind", "", ""].map((h) => el("th", { text: h })))),
+        el("tbody", {}, ...r.items.map((p) => el("tr", {},
+          el("td", {}, el("div", { style: "font-weight: 600;", text: p.label }), p.hidden ? el("span", { class: "pill grey", text: "Hidden" }) : null),
+          el("td", { text: p.kind }),
+          el("td", {}, el("button", { class: "btn small secondary", text: "Rename", onclick: async (e) => {
+            const name = prompt("New name for " + p.name, p.name);
+            if (name && name.trim() && name.trim() !== p.name && await act(e.target, () => api("POST", `/admin/places/${encodeURIComponent(p.id)}`, { name: name.trim() }), "Renamed")) draw();
+          } })),
+          el("td", {}, el("button", { class: "btn small secondary", text: p.hidden ? "Show" : "Hide", onclick: async (e) => {
+            if (await act(e.target, () => api("POST", `/admin/places/${encodeURIComponent(p.id)}`, { hidden: !p.hidden }), p.hidden ? "Shown" : "Hidden")) draw();
+          } }))))))
+        : el("div", { class: "empty", text: "Nothing found." }));
+    };
+    let t = null;
+    q.addEventListener("input", () => { clearTimeout(t); t = setTimeout(draw, 250); });
+    cc.addEventListener("input", () => { clearTimeout(t); t = setTimeout(draw, 250); });
+    main.replaceChildren(...head("Places", "The towns and neighbourhoods people can search and pick as their area (behind the Places switch). Hide a wrong or duplicate place, or fix its spelling; Home Ground cities and battles are separate and don't change."),
+      el("div", { class: "card" },
+        el("div", { class: "row", style: "gap: 8px;" }, q, cc, el("span", { class: "small muted", text: "country code (optional)" })),
+        stats ? el("div", { class: "small muted", style: "margin: 6px 0;", text: `${num(stats.places)} places: ${num(stats.by_kind.city || 0)} cities, ${num(stats.by_kind.town || 0)} towns, ${num(stats.by_kind.area || 0)} neighbourhoods.` }) : null,
+        box,
+        el("div", { class: "small muted", style: "margin-top: 10px;", text: "Place names: © OpenStreetMap contributors, and GeoNames (CC BY 4.0)." })));
+    draw();
+  },
   async flyers(main) {
     const [r, opt] = await Promise.all([api("GET", "/admin/flyers"), api("GET", "/admin/flyers/options")]);
     const local = (d) => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
@@ -414,7 +447,35 @@ const RENDER = {
       testersOnly: el("input", { type: "checkbox" }),
       file: el("input", { type: "file", accept: "image/jpeg,image/png,image/webp" }),
       active: el("input", { type: "checkbox", checked: true }),
+      circleQ: el("input", { type: "search", maxlength: 60, placeholder: "Type a place: Ntinda" }),
+      circlePick: el("select", {}, el("option", { value: "", text: "No circle (whole cities or countries)" })),
+      circleKm: el("select", {}, ...[["0.5", "500 m"], ["1", "1 km"], ["3", "3 km"], ["10", "10 km"]].map(([v, t]) => el("option", { value: v, text: t, selected: v === "1" }))),
     };
+    const reachLine = el("div", { class: "small muted", text: "" });
+    let circleLabel = {};
+    const showReach = async () => {
+      const pid = f.circlePick.value;
+      if (!pid) { reachLine.textContent = ""; return; }
+      try {
+        const r = await api("GET", `/admin/places/reach?place_id=${encodeURIComponent(pid)}&km=${encodeURIComponent(f.circleKm.value)}`);
+        reachLine.textContent = `Reaches ${r.label} adults who picked an area inside (${r.places_inside} places in the circle).`;
+      } catch (e) { reachLine.textContent = ""; }
+    };
+    let circleTimer = null;
+    f.circleQ.addEventListener("input", () => {
+      clearTimeout(circleTimer);
+      circleTimer = setTimeout(async () => {
+        const q = f.circleQ.value.trim();
+        if (q.length < 2) return;
+        const cc = picked(f.countries)[0] || "";
+        const r = await api("GET", `/admin/places/search?q=${encodeURIComponent(q)}${cc ? "&country=" + cc : ""}`).catch(() => ({ items: [] }));
+        const keep = f.circlePick.value;
+        f.circlePick.replaceChildren(el("option", { value: "", text: "No circle (whole cities or countries)" }),
+          ...r.items.filter((p) => !p.hidden).map((p) => { circleLabel[p.id] = p.label; return el("option", { value: p.id, text: p.label, selected: p.id === keep }); }));
+      }, 250);
+    });
+    f.circlePick.addEventListener("change", showReach);
+    f.circleKm.addEventListener("change", showReach);
     const preview = el("img", { style: "max-width: 160px; max-height: 120px; border-radius: 8px; display: none; margin-top: 6px;", alt: "" });
     const picked = (sel) => [...sel.selectedOptions].map((o) => o.value);
     const fillCities = (keep) => {
@@ -453,6 +514,12 @@ const RENDER = {
       f.testers.value = x && x.testers ? x.testers.join(", ") : "";
       f.testersOnly.checked = !!(x && x.testers_only);
       f.active.checked = x ? x.active : true;
+      const c = x && x.circle;
+      f.circleQ.value = "";
+      f.circlePick.replaceChildren(el("option", { value: "", text: "No circle (whole cities or countries)" }),
+        ...(c ? [el("option", { value: c.place_id, text: c.label, selected: true })] : []));
+      if (c) { circleLabel[c.place_id] = c.label; f.circleKm.value = String(c.km); }
+      showReach();
       preview.src = image ? (safeUrl(image.image_small) || safeUrl(image.image) || "") : "";
       preview.style.display = image ? "block" : "none";
       save.textContent = x ? "Save changes" : "Create flyer";
@@ -466,11 +533,14 @@ const RENDER = {
         button: f.button.value, button_value: f.button_value.value.trim(), starts_at: s.toISOString(), ends_at: en.toISOString(),
         daily_cap: f.cap.value ? Number(f.cap.value) : null, active: f.active.checked,
         testers: f.testers.value.split(/[\s,]+/).map((t) => t.replace(/^@/, "").trim()).filter(Boolean),
-        testers_only: f.testersOnly.checked };
+        testers_only: f.testersOnly.checked,
+        circle: f.circlePick.value ? { place_id: f.circlePick.value, km: Number(f.circleKm.value) } : null };
+      const circleWhere = body.circle ? ` within ${f.circleKm.selectedOptions[0].text} of ${circleLabel[body.circle.place_id] || body.circle.place_id}` : "";
       const where = body.testers_only ? `only the testers: ${body.testers.join(", ")}` : body.cities.length ? body.cities.map((c) => (opt.cities.find((x) => x.id === c) || { name: c }).name).join(", ")
-        : body.countries.map((c) => (opt.countries.find((x) => x.id === c) || { name: c }).name).join(", ") + " (whole country)";
+        : body.countries.map((c) => (opt.countries.find((x) => x.id === c) || { name: c }).name).join(", ") + (circleWhere ? "" : " (whole country)");
+      const whereAll = body.testers_only ? where : where + circleWhere;
       if (body.active && !(await confirmBox(editing ? "Save this flyer?" : "Start this flyer?",
-        `${body.business}\nShown in: ${where}\n${when(body.starts_at)} to ${when(body.ends_at)}\nOnly while the Local flyers switch is on.`, editing ? "Save" : "Start"))) return;
+        `${body.business}\nShown in: ${whereAll}\n${when(body.starts_at)} to ${when(body.ends_at)}\nOnly while the Local flyers switch is on.`, editing ? "Save" : "Start"))) return;
       const call = editing ? api("PUT", `/admin/flyers/${encodeURIComponent(editing)}`, body) : api("POST", "/admin/flyers", body);
       if (await act(e.target, () => call, editing ? "Saved" : "Flyer created")) RENDER.flyers(main);
     }});
@@ -498,6 +568,9 @@ const RENDER = {
           el("div", { class: "two", style: "gap: 10px;" },
             el("label", { class: "field" }, el("span", { text: "Countries (Ctrl/Cmd-click for more)" }), f.countries),
             el("label", { class: "field" }, el("span", { text: "Cities (none = whole country)" }), f.cities)),
+          el("label", { class: "field" }, el("span", { text: "Circle round a place (optional, needs the Places switch): only people who picked an area inside" }), f.circleQ),
+          el("div", { class: "two", style: "gap: 10px;" }, f.circlePick, f.circleKm),
+          reachLine,
           el("div", { class: "two", style: "gap: 10px;" },
             el("label", { class: "field" }, el("span", { text: "Button" }), f.button),
             el("label", { class: "field" }, el("span", { text: "Number or link" }), f.button_value)),
@@ -516,7 +589,7 @@ const RENDER = {
               el("div", { class: "row small", style: "margin-top: 4px; gap: 6px;" },
                 el("span", { class: "pill " + (x.active ? "green" : "grey"), text: x.active ? "On" : "Off" }),
                 x.testers_only ? el("span", { class: "pill", text: "Testers only" }) : null,
-                el("span", { class: "muted", text: (x.cities.length ? x.cities : x.countries).map(placeName).join(", ") + " · until " + when(x.ends_at) }))),
+                el("span", { class: "muted", text: (x.cities.length ? x.cities : x.countries).map(placeName).join(", ") + (x.circle ? ` · ${x.circle.km} km round ${x.circle.label}` : "") + " · until " + when(x.ends_at) }))),
             el("td", { text: num(x.stats.shown) }), el("td", { text: num(x.stats.reach) }), el("td", { text: num(x.stats.tap) }),
             el("td", { text: pct(x.stats.tap_rate) }),
             el("td", { style: "text-align: right; white-space: nowrap;" },
