@@ -107,6 +107,13 @@ async def rescue_uploads(current_user: str = Depends(require_admin)):
     return await stuck_uploads.rescue_once(get_database())
 
 
+@router.post("/repair")
+async def repair(force: bool = False, current_user: str = Depends(require_admin)):
+    """Create any Recombee property the database lacks, then re-send every
+    video once (or again, with force=true)."""
+    return await recommendations.repair_schema(get_database(), force=force)
+
+
 @router.post("/sync-items")
 async def sync_items(current_user: str = Depends(require_admin)):
     """Re-send every video's properties (readiness, privacy, counts) to Recombee.

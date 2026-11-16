@@ -20,7 +20,7 @@ Fixes for the For You feed live here:
 import asyncio
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Iterable, Optional
 
 from bson import ObjectId
@@ -153,28 +153,82 @@ def item_values(video: dict) -> dict:
 
 
 async def push_item(video: dict) -> bool:
-    try:
-        req = SetItemValues(str(video["_id"]), item_values(video), cascade_create=True)
-        req.timeout = 10000
-        await recombee_send(req)
-        return True
-    except Exception:
-        logger.exception("Recombee sync failed for video %s", video.get("_id"))
-        return False
+    for attempt in (1, 2):
+        try:
+            req = SetItemValues(str(video["_id"]), item_values(video), cascade_create=True)
+            req.timeout = 10000
+            await recombee_send(req)
+            return True
+        except Exception as e:
+            if attempt == 1 and _missing_property(e):
+                await ensure_properties()        # a property the database lacks: add it, try once more
+                continue
+            logger.exception("Recombee sync failed for video %s", video.get("_id"))
+            return False
+    return False
 
 
-async def ensure_properties() -> None:
-    """Create the item/user properties Recombee needs (existing ones are left alone)."""
+async def ensure_properties() -> dict:
+    """Create the item/user properties Recombee needs (existing ones are left alone).
+    Returns the names it created."""
+    made = []
     for name, kind in ITEM_PROPERTIES.items():
         try:
             await recombee_send(AddItemProperty(name, kind))
+            made.append(name)
         except Exception:
             pass  # already exists
     for name, kind in USER_PROPERTIES.items():
         try:
             await recombee_send(AddUserProperty(name, kind))
+            made.append(f"user.{name}")
         except Exception:
             pass
+    return {"created": made}
+
+
+# Bumped when ITEM_PROPERTIES / USER_PROPERTIES change: the server then creates
+# the new properties and re-sends every video once, by itself, at startup.
+#
+# Why (Nov 2026): the production database never got media_type, views_count,
+# likes_count, comments_count, bookmarks_count or the user properties tags and
+# country. Recombee refuses a whole SetItemValues when one property is
+# unknown, so every new post, privacy change and count update failed, and new
+# posts were never set active/public there: For You's Recombee picks held
+# nothing newer than September (Recombee Admin > Integration issues).
+SCHEMA_VERSION = 2
+SCHEMA_STATE_ID = "recombee_schema"
+
+
+async def _claim(db, now: datetime) -> bool:
+    """One server process does the re-send; another may take over after an hour."""
+    from pymongo.errors import DuplicateKeyError
+    lock = f"{SCHEMA_STATE_ID}:lock:{SCHEMA_VERSION}"
+    try:
+        await db.config.insert_one({"_id": lock, "at": now})
+        return True
+    except DuplicateKeyError:
+        r = await db.config.update_one({"_id": lock, "at": {"$lt": now - timedelta(hours=1)}}, {"$set": {"at": now}})
+        return r.modified_count == 1
+
+
+async def repair_schema(db, force: bool = False) -> dict:
+    """Make sure every property exists; re-send all videos once per SCHEMA_VERSION."""
+    made = await ensure_properties()
+    state = await db.config.find_one({"_id": SCHEMA_STATE_ID}) or {}
+    if int(state.get("version") or 0) >= SCHEMA_VERSION and not force:
+        return {**made, "resynced": False}
+    if not force and not await _claim(db, datetime.utcnow()):
+        return {**made, "resynced": False, "reason": "another server is on it"}
+    out = await sync_items(db)
+    if out.get("sent") and not out.get("failed"):
+        await db.config.update_one({"_id": SCHEMA_STATE_ID}, {"$set": {
+            "version": SCHEMA_VERSION, "at": datetime.utcnow(), "result": out}}, upsert=True)
+    return {**made, "resynced": True, **out}
+
+
+def _missing_property(exc: Exception) -> bool:
+    return "does not exist" in str(exc) and "property" in str(exc)
 
 
 async def sync_items(db, batch_size: int = BATCH_SIZE) -> dict:
@@ -302,3 +356,13 @@ async def report_not_interested(user_id: str, video_id: str, recomm_id: Optional
     if recomm_id:
         kw["recomm_id"] = recomm_id
     await _send(AddRating(user_id, video_id, -1.0, **kw))
+
+
+async def repair_schema_in_background() -> None:
+    """At startup: never blocks the server, never raises."""
+    from app.core.database import get_database
+    try:
+        out = await repair_schema(get_database())
+        logger.info("Recombee schema: %s", {k: v for k, v in out.items() if k != "items"})
+    except Exception:
+        logger.exception("Recombee schema repair failed")

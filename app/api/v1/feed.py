@@ -619,6 +619,9 @@ async def new_count(
     return result
 
 
+RECOMBEE_SCENARIOS = {"for-you", "trending", "explore", "default"}
+
+
 @router.get("/v2", response_model=List[FeedVideo])
 async def get_feed_v2(
     scenario: str,
@@ -635,6 +638,10 @@ async def get_feed_v2(
     t0 = _time.perf_counter()
     db = get_database()
     viewer = viewer_id(current_user, x_device_id)
+    # Recombee refuses a scenario that wasn't made in its admin (403), which
+    # left that page with no personal picks. Anything else asks as For You.
+    if scenario not in RECOMBEE_SCENARIOS:
+        scenario = "for-you"
 
     featured = None
     if video_id and ObjectId.is_valid(video_id):
