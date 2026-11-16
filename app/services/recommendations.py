@@ -120,11 +120,22 @@ def _num(value, cast=int, default=0):
 
 
 def _thumbnail(video: dict) -> str:
+    """Recombee stores thumbnail as an image property and refuses the whole
+    item (400 "Invalid url") for anything but a full http(s) address, so a
+    post with an odd or empty thumbnail used to never reach it."""
+    from urllib.parse import urlparse
     from app.services.thumbnails import best_thumbnail
     try:
-        return best_thumbnail(video) or ""
+        url = best_thumbnail(video) or ""
     except Exception:
         return ""
+    if not isinstance(url, str) or len(url) > 2000 or any(c.isspace() for c in url):
+        return ""
+    try:
+        u = urlparse(url)
+    except Exception:
+        return ""
+    return url if u.scheme in ("http", "https") and u.netloc else ""
 
 
 def item_values(video: dict) -> dict:
@@ -136,7 +147,6 @@ def item_values(video: dict) -> dict:
         "description": (video.get("description") or "")[:2000],
         "video_type": video.get("video_type") or "",
         "duration": _num(duration, float, 0.0),
-        "thumbnail": _thumbnail(video),
         "hashtags": [h for h in (video.get("hashtags") or []) if isinstance(h, str)][:50],
         "is_active": bool(video.get("is_active", True)),
         "supports_landscape": bool(video.get("supports_landscape", False)),
@@ -144,6 +154,9 @@ def item_values(video: dict) -> dict:
         "is_ready_to_stream": is_ready_to_stream(video),
         "media_type": media_type,
     }
+    thumb = _thumbnail(video)
+    if thumb:
+        values["thumbnail"] = thumb       # left out rather than sent invalid
     created = _iso(video.get("published_at") or video.get("created_at"))
     if created:
         values["created_at"] = created
@@ -196,7 +209,7 @@ async def ensure_properties() -> dict:
 # unknown, so every new post, privacy change and count update failed, and new
 # posts were never set active/public there: For You's Recombee picks held
 # nothing newer than September (Recombee Admin > Integration issues).
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3   # 3: thumbnails Recombee refused (Nov 16 2026) re-sent without them
 SCHEMA_STATE_ID = "recombee_schema"
 
 

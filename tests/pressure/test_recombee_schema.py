@@ -97,3 +97,13 @@ async def test_RS6_repair_endpoint_is_admin_only(client, db, rb):
     _, ha = await make_user(db, user_type="admin")
     r = await client.post("/api/v1/recombee/repair", headers=ha)
     assert r.status_code == 200 and "created" in r.json()
+
+
+async def test_RS7_invalid_thumbnails_are_left_out_not_sent(db):
+    from app.services.recommendations import item_values
+    good = {"_id": 1, "urls": {"thumbnail": "https://videodelivery.net/abc/thumbnails/thumbnail.jpg"}}
+    for bad in ("", "not a url", "/relative/pic.jpg", "file:///x.jpg", "https://", "https://x.com/a b.jpg"):
+        v = item_values({"_id": 2, "urls": {"thumbnail": bad}, "thumbnail": bad})
+        assert "thumbnail" not in v or v["thumbnail"].startswith("http"), bad
+    vg = item_values(good)
+    assert vg.get("thumbnail", "").startswith("https://")
