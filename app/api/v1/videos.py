@@ -837,11 +837,10 @@ async def share_video(
     strongest signals that they liked it."""
     db = get_database()
     video = await _visible_video_or_404(db, video_id, current_user)
-    await db.videos.update_one({"_id": ObjectId(video_id)}, {"$inc": {"shares_count": 1}})
-    await trending.record_once(db, video_id, actor=current_user, creator=video.get("creator_id"),
-                               kind="share", shares=1)
-    await recommendations.report_share(current_user, video_id, (body or FeedbackBody()).recomm_id)
-    return {"shared": True}
+    from app.services.shares import count_share
+    counted = await count_share(db, video_id, current_user, creator=video.get("creator_id"),
+                                recomm_id=(body or FeedbackBody()).recomm_id)
+    return {"shared": True, "counted": counted}
 
 
 @router.post("/{video_id}/not-interested", status_code=status.HTTP_200_OK)

@@ -530,6 +530,13 @@ async def send(db, me_id: str, cid: str, text, post_id, client_id, reply_to=None
         await db.conversations.update_one({"_id": conv["_id"]}, upd)
         _push_later(db, conv["_id"], me, other, VOICE_TEXT if voice is not None else body, post_oid is not None,
                     request=(state == "request" and conv.get("requester") == me_oid))
+        if post_oid is not None:
+            # A post sent to someone is a share (app/services/shares.py).
+            try:
+                from app.services.shares import count_share
+                await count_share(db, str(post_oid), me_id)
+            except Exception:
+                logger.warning("couldn't count the share of %s", post_oid)
     return (await _out_many(db, conv["_id"], [doc], me_oid))[0], True
 
 

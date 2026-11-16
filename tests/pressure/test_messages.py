@@ -353,6 +353,10 @@ async def test_MS25_share_a_post(client, db):
     assert body["text"] == "look"
     inbox = await _inbox(client, bh)
     assert inbox[0]["last_message"]["kind"] == "post"
+    # Sending a post is a share: counted once (app/services/shares.py).
+    assert (await db.videos.find_one({"_id": ObjectId(v)}))["shares_count"] == 1
+    await client.post(f"{M}/conversations/{cid}/messages", json={"post_id": v}, headers=ah)
+    assert (await db.videos.find_one({"_id": ObjectId(v)}))["shares_count"] == 1
 
 
 async def test_MS26_cant_share_hidden_private_or_removed_posts(client, db):
