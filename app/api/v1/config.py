@@ -65,7 +65,8 @@ APP_FEATURES = ("points", "boost", "earnings", "replies", "challenges", "sounds"
                 "quick_posts", "age_check", "whats_new", "signup_names",
                 "phone_signup", "code_login", "msg_plus", "msg_voice", "flyers",
                 "wide_fill", "quiet_counts", "follow_plus", "dark_nav", "photo_zoom", "photo_full", "places", "upload_retry",
-                "recombee_fast", "recombee_tune")
+                "recombee_fast", "recombee_tune",
+                "lean_preload", "loop_cap", "data_saver")
 
 
 @router.get("/features")

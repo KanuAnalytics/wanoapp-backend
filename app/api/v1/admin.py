@@ -4,9 +4,10 @@ Everything here needs an admin account. Payouts, the pool and "not original"
 use the existing /points/admin/* endpoints; challenges are created with
 POST /challenges; moderation uses /reports/admin/*."""
 
+import logging
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Literal, Optional, Union
+from typing import List, Literal, Optional, Union
 
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -21,6 +22,7 @@ from app.services import admin_log, app_version, features, moderation, points
 from app.services import challenges as challenges_svc
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 SESSION_HOURS = 8
 
@@ -790,3 +792,37 @@ async def upload_attempts_summary(days: int = Query(7, ge=1, le=30), admin: str 
     """Posting attempts: upload addresses handed out, how many became posts, and why not."""
     from app.services import upload_attempts
     return await upload_attempts.summary(get_database(), days)
+
+
+# ------------------------------------------------------------------ video storage
+
+class StreamDeleteIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    uids: List[str]
+    confirm: StrictBool
+
+
+@router.get("/stream-storage")
+async def stream_storage(admin: str = Depends(require_admin)):
+    """The last list of Cloudflare videos no post uses (see stream_cleanup)."""
+    from app.services import stream_cleanup
+    return await stream_cleanup.last_scan(get_database())
+
+
+@router.post("/stream-storage/scan")
+async def stream_storage_scan(admin: str = Depends(require_admin)):
+    from app.services import stream_cleanup
+    try:
+        return await stream_cleanup.scan(get_database())
+    except Exception as e:
+        logger.exception("Stream storage scan failed")
+        raise HTTPException(502, f"Couldn't read Cloudflare: {str(e)[:120]}")
+
+
+@router.post("/stream-storage/delete")
+async def stream_storage_delete(body: StreamDeleteIn, admin: str = Depends(require_admin)):
+    """Delete videos from the last scan (each re-checked against the posts first)."""
+    from app.services import stream_cleanup
+    if not body.confirm:
+        raise HTTPException(400, "Confirm first")
+    return await stream_cleanup.delete(get_database(), body.uids, admin)

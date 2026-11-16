@@ -91,8 +91,10 @@ async def test_GZ3_only_when_the_client_asks(client, db):
 
 async def test_GZ4_small_replies_and_non_api_paths_left_alone(client, db):
     await _switch(db, gzip_api=True)
-    r = await client.get("/api/v1/config/features", headers=GZ)
-    assert r.status_code == 200 and "content-encoding" not in r.headers   # ~400 bytes
+    # The switch list grew past MIN_SIZE (Nov 2026); the version reply stays small.
+    await db.config.insert_one({"appVersionNumber": "2.3.43", "appVersionIos": "2.3.43", "appVersionAndroid": "2.3.43"})
+    r = await client.get("/api/v1/config/version", headers=GZ)
+    assert r.status_code == 200 and len(r.content) < 1000 and "content-encoding" not in r.headers
     for path in ("/", "/health", "/admin"):
         r = await client.get(path, headers=GZ)
         assert r.headers.get("content-encoding") != "gzip", path

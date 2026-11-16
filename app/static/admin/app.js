@@ -128,7 +128,7 @@ $("logout").addEventListener("click", () => logout());
 
 const PAGES = [
   ["overview", "Overview"], ["payouts", "Payouts"], ["pool", "Cash pool"], ["creators", "Creators"],
-  ["moderation", "Reported posts"], ["messagereports", "Reported messages"], ["quickreports", "Reported quick posts"], ["whatsnew", "What's new"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["cities", "Cities"], ["categories", "Categories"], ["tvstrip", "Wano TV strip"], ["flyers", "Local flyers"], ["places", "Places"], ["failedups", "Failed uploads"], ["switches", "Feature switches"], ["updates", "Force update"], ["speed", "Speed"], ["log", "Activity log"],
+  ["moderation", "Reported posts"], ["messagereports", "Reported messages"], ["quickreports", "Reported quick posts"], ["whatsnew", "What's new"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["cities", "Cities"], ["categories", "Categories"], ["tvstrip", "Wano TV strip"], ["flyers", "Local flyers"], ["places", "Places"], ["failedups", "Failed uploads"], ["switches", "Feature switches"], ["updates", "Force update"], ["speed", "Speed"], ["storage", "Video storage"], ["log", "Activity log"],
 ];
 let current = "overview";
 const counts = {};
@@ -207,6 +207,9 @@ const FEATURES = {
   clear_icons: ["Clearer icons", "Icons and tab names stay readable on bright videos (a thin dark edge and a soft top fade, measured at 3:1 or better on pure white), and Messages becomes two chat bubbles instead of a paper plane. Needs app 2.3.24 or later."],
   recombee_fast: ["Faster For You (Recombee)", "The server keeps its connections to Recombee open instead of opening a new one for every call (the Recombee step was 0.6-1 s of every For You page), asks for 60 picks instead of 100, and sends view signals in the background. Works for every app version. Check Recombee health: GET /api/v1/recombee/health."],
   recombee_tune: ["Better For You picks (Recombee)", "Recombee stops pushing down good picks the viewer was never shown (rotation 0.5 to 0.1). Compare personal vs popular watch rates on the For You report a few days after turning it on. Works for every app version."],
+  lean_preload: ["Lighter preloading (iPhone)", "iPhones load the next 2 videos instead of 5, and read only about 10 seconds ahead in a video. About half the minutes Cloudflare billed in November were never watched. Android already loads 2. Needs app 2.3.43."],
+  loop_cap: ["Stop after 3 loops", "A video plays 3 times, then pauses with the play button up (a tap plays 3 more). Each loop was downloaded and billed again: short clips were billed 1.46 full plays per view. Watch the For You report after turning it on. Needs app 2.3.43."],
+  data_saver: ["Data saver on mobile data", "On mobile data, videos play in standard quality (about 480p, at most ~22 MB a minute instead of up to 61 MB); people can turn on \"HD on mobile data\" in Settings. Wi-Fi is unchanged. Doesn't change the Cloudflare bill. Needs app 2.3.43."],
   small_images: ["Small pictures", "The app loads small copies of pictures (avatars ~10 KB instead of up to 2 MB). Turn on once the Speed page shows the copies are done."],
   trial_posts: ["Trial posts", "Creators can post without telling followers, then share it later."],
   milestones: ["Creator milestones", "Celebrations at follower and view milestones, tier badges (Rising, Star, Gold, Legend) next to names, achievements page."],
@@ -1032,6 +1035,34 @@ const RENDER = {
       el("div", { class: "card" }, el("h3", { text: "Timings" }), table));
   },
 
+  async storage(main) {
+    const draw = async (r) => {
+      const items = r.items || [];
+      const mins = (sec) => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+      const scan = el("button", { class: "btn", text: r.scanned_at ? "Check again" : "Check Cloudflare", onclick: async (e) => {
+        const out = await act(e.target, () => api("POST", "/admin/stream-storage/scan"), "Checked");
+        if (out) draw(out);
+      } });
+      const del = el("button", { class: "btn danger", text: `Delete these ${num(items.length)} videos`, disabled: !items.length, onclick: async (e) => {
+        if (!(await confirmBox("Delete from Cloudflare?", `${num(items.length)} videos (${num(r.unused_minutes)} minutes) that no post, draft or upload in progress uses. This can't be undone. Each one is checked against the posts again first.`, "Delete", true))) return;
+        const out = await act(e.target, () => api("POST", "/admin/stream-storage/delete", { uids: items.map((x) => x.uid), confirm: true }), "Deleted");
+        if (out) draw(await api("GET", "/admin/stream-storage"));
+      } });
+      const table = items.length ? el("table", {}, el("thead", {}, el("tr", {}, ...["Uploaded", "Length", "State", "Name", ""].map((h) => el("th", { text: h })))),
+        el("tbody", {}, ...items.slice(0, 500).map((x) => el("tr", {}, el("td", { text: (x.created || "").slice(0, 10) }), el("td", { text: mins(x.seconds || 0) }),
+          el("td", { text: x.state || "" }), el("td", { class: "small", text: x.name || "" }),
+          el("td", {}, x.thumbnail ? el("a", { href: x.thumbnail, target: "_blank", rel: "noopener", text: "picture" }) : null)))))
+        : el("div", { class: "empty", text: r.scanned_at ? "Nothing to clean up." : "Not checked yet." });
+      main.replaceChildren(...head("Video storage", "Cloudflare charges for every stored minute every month. These are videos in Cloudflare that no post, draft or upload in progress uses, at least 7 days old. Look through them, then delete."),
+        el("div", { class: "card" },
+          r.scanned_at ? el("div", { text: `${num(r.videos)} videos (${num(r.minutes)} minutes) in Cloudflare · ${num(r.unused)} unused (${num(r.unused_minutes)} minutes)` }) : null,
+          r.scanned_at ? el("div", { class: "small muted", text: `Checked ${String(r.scanned_at).slice(0, 16).replace("T", " ")} UTC` }) : null,
+          el("div", { class: "row", style: "gap: 8px; margin-top: 8px;" }, scan, del)),
+        el("div", { class: "card" }, table, items.length > 500 ? el("div", { class: "small muted", text: `Showing the first 500 of ${num(items.length)}.` }) : null));
+    };
+    draw(await api("GET", "/admin/stream-storage"));
+  },
+
   async log(main) {
     const rows = await api("GET", "/admin/log?limit=200");
     const describe = (r) => {
@@ -1040,6 +1071,7 @@ const RENDER = {
         case "feature": return `Turned ${(FEATURES[d.key] || [d.key])[0]} ${d.on ? "on" : "off"}`;
         case "features_all_off": return "Turned every feature off";
         case "upload_invites": return `Invited ${d.invited} creators to post a failed video again`;
+        case "stream_cleanup": return `Deleted ${d.deleted} unused videos from Cloudflare (${d.minutes} minutes)`;
         case "review_prompt": return `Ask for ratings on ${d.platform}: ${d.on ? "on" : "off"}`;
         case "app_version": return d.to && d.to !== "0.0.0" ? `Force update: ${d.platform} must be ${d.to} or newer` : `Force update off for ${d.platform}`;
         case "pool": return `Set the ${d.month} pool: ${money(d.pool_usd)}`;
