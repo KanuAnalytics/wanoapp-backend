@@ -128,7 +128,7 @@ $("logout").addEventListener("click", () => logout());
 
 const PAGES = [
   ["overview", "Overview"], ["payouts", "Payouts"], ["pool", "Cash pool"], ["creators", "Creators"],
-  ["moderation", "Reported posts"], ["messagereports", "Reported messages"], ["quickreports", "Reported quick posts"], ["whatsnew", "What's new"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["cities", "Cities"], ["categories", "Categories"], ["tvstrip", "Wano TV strip"], ["flyers", "Local flyers"], ["places", "Places"], ["failedups", "Failed uploads"], ["switches", "Feature switches"], ["updates", "Force update"], ["speed", "Speed"], ["storage", "Video storage"], ["log", "Activity log"],
+  ["kampala", "Kampala growth"], ["moderation", "Reported posts"], ["messagereports", "Reported messages"], ["quickreports", "Reported quick posts"], ["whatsnew", "What's new"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["cities", "Cities"], ["categories", "Categories"], ["tvstrip", "Wano TV strip"], ["flyers", "Local flyers"], ["places", "Places"], ["failedups", "Failed uploads"], ["switches", "Feature switches"], ["updates", "Force update"], ["speed", "Speed"], ["storage", "Video storage"], ["log", "Activity log"],
 ];
 let current = "overview";
 const counts = {};
@@ -1034,6 +1034,35 @@ const RENDER = {
         el("div", { class: "small muted", text: `Backlog: ${walked}` }),
         t.n ? el("div", { class: "small muted", text: `Originals ${mb(t.orig)} → avatars ${mb(t.w320)}, previews ${mb(t.w480)}` }) : null),
       el("div", { class: "card" }, el("h3", { text: "Timings" }), table));
+  },
+
+  async kampala(main) {
+    const draw = (r) => {
+      const pct = (v) => v == null ? "–" : `${v}%`;
+      const seg = (s) => el("div", { class: "card" }, el("h3", { text: s.name }),
+        el("table", {}, el("thead", {}, el("tr", {}, ...["Week of", "Active", "Came back", "Came back %", "New", "New who came back", "Posted"].map((h) => el("th", { text: h })))),
+          el("tbody", {}, ...s.rows.slice().reverse().map((x) => el("tr", {},
+            el("td", { text: x.week + (x.partial ? " (so far)" : "") }), el("td", { text: num(x.active) }),
+            el("td", { text: num(x.returning) }), el("td", { text: pct(x.return_pct) }), el("td", { text: num(x.new) }),
+            el("td", { text: `${num(x.new_back)} (${pct(x.new_back_pct)})` }), el("td", { text: num(x.posters) }))))));
+      const cr = r.creators || [];
+      const creators = el("div", { class: "card" }, el("h3", { text: `${r.city.name} creators, last 4 weeks` }),
+        el("p", { class: "small muted", text: "Who to thank, feature in Wano Picks and ask to bring friends." }),
+        cr.length ? el("table", {}, el("thead", {}, el("tr", {}, ...["Creator", "Posts", "Views", "Followers"].map((h) => el("th", { text: h })))),
+          el("tbody", {}, ...cr.map((c) => el("tr", {}, el("td", { text: `@${c.username || c.id}${c.name ? " · " + c.name : ""}` }),
+            el("td", { text: num(c.posts) }), el("td", { text: num(c.views) }), el("td", { text: num(c.followers) })))))
+          : el("div", { class: "empty", text: "No posts from this city in the last 4 weeks." }));
+      const again = el("button", { class: "btn secondary small", text: "Refresh", onclick: async (e) => {
+        const out = await act(e.target, () => api("GET", "/admin/city-report?city=kampala&fresh=true"), "Updated");
+        if (out) draw(out);
+      } });
+      main.replaceChildren(...head(`${r.city.name} growth`, "The number that matters: people who come back every week, not downloads. Active = signed in and watched, liked, posted or sent a message that week (Monday to Sunday, UTC). Came back % = of last week's active people, how many were active again."),
+        el("div", { class: "card" },
+          el("div", { text: `${num(r.members.city)} accounts in ${r.city.name} (Home Ground or profile city) · ${num(r.members.country)} in ${r.segments[1].name}` }),
+          el("div", { class: "small muted", text: `Updated ${r.generated_at} UTC` }), again),
+        ...r.segments.map(seg), creators);
+    };
+    draw(await api("GET", "/admin/city-report?city=kampala"));
   },
 
   async storage(main) {

@@ -826,3 +826,14 @@ async def stream_storage_delete(body: StreamDeleteIn, admin: str = Depends(requi
     if not body.confirm:
         raise HTTPException(400, "Confirm first")
     return await stream_cleanup.delete(get_database(), body.uids, admin)
+
+
+@router.get("/city-report")
+async def city_report(city: str = Query("kampala", max_length=60), fresh: bool = False,
+                      admin: str = Depends(require_admin)):
+    """Weekly returning users for one city, its country and everyone (see city_report)."""
+    from app.services import city_report as cr
+    try:
+        return await cr.report(get_database(), city.strip().lower(), fresh=fresh)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Unknown city")
