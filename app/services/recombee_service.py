@@ -40,7 +40,7 @@ POOL_SIZE = 32
 
 # ------------------------------------------------------------------ the switch
 
-_switch = {"on": False, "tune": False, "at": -1e9}
+_switch = {"on": False, "tune": False, "eu": False, "at": -1e9}
 _switch_lock = asyncio.Lock()
 
 
@@ -60,6 +60,19 @@ async def tune_on() -> bool:
     return _switch["tune"]
 
 
+def eu_on() -> bool:
+    """Last known value of "recombee_eu" (no database read): the new database
+    answers, and the old one becomes the copy. Only when one is configured."""
+    return _switch["eu"] and new_client is not None
+
+
+def _clients():
+    """(the database that answers, the one writes are copied to or None)."""
+    if eu_on():
+        return new_client, recombee_client
+    return recombee_client, new_client
+
+
 async def refresh_switch() -> bool:
     if time.monotonic() - _switch["at"] < REFRESH_SECONDS:
         return _switch["on"]
@@ -72,6 +85,7 @@ async def refresh_switch() -> bool:
             now = await features.current(get_database())
             _switch["on"] = now.get("recombee_fast") is True
             _switch["tune"] = now.get("recombee_tune") is True
+            _switch["eu"] = now.get("recombee_eu") is True
         except Exception:
             logger.warning("recombee_fast: couldn't read the switch, keeping %s", _switch["on"])
         _switch["at"] = time.monotonic()
@@ -177,6 +191,8 @@ def stats() -> dict:
     return {"since": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(_started)), "fast": fast_on(),
             "region": str(getattr(settings, "RECOMBEE_REGION", "us-west")),
             "moving_to": (str(getattr(settings, "RECOMBEE_NEW_REGION", "")) if new_client is not None else None),
+            "answering": (str(getattr(settings, "RECOMBEE_NEW_REGION", "")) if eu_on()
+                          else str(getattr(settings, "RECOMBEE_REGION", "us-west"))),
             "calls": kinds, "last_errors": list(_errors)[::-1]}
 
 
@@ -195,19 +211,33 @@ async def recombee_send(request):
     so it must run in a worker thread when called from async endpoints.
     """
     fast = await refresh_switch()
+    main, copy = _clients()
     t = time.perf_counter()
     try:
-        if fast:
-            out = await asyncio.get_running_loop().run_in_executor(_pool, recombee_client.send, request)
-        else:
-            out = await asyncio.to_thread(recombee_client.send, request)
+        out = await _run(main, request, fast)
     except Exception as e:
         _count(_kind(request), False, (time.perf_counter() - t) * 1000, e)
-        raise
+        if main is recombee_client or _is_write(request):
+            raise
+        # recombee_eu: a read the new database couldn't answer is asked of the old one.
+        t = time.perf_counter()
+        try:
+            out = await _run(recombee_client, request, fast)
+        except Exception as e2:
+            _count("fallback:" + _kind(request), False, (time.perf_counter() - t) * 1000, e2)
+            raise
+        _count("fallback:" + _kind(request), True, (time.perf_counter() - t) * 1000)
+        return out
     _count(_kind(request), True, (time.perf_counter() - t) * 1000)
-    if new_client is not None and _is_write(request):
-        _mirror(request)
+    if copy is not None and _is_write(request):
+        _mirror(request, copy)
     return out
+
+
+async def _run(client, request, fast: bool):
+    if fast:
+        return await asyncio.get_running_loop().run_in_executor(_pool, client.send, request)
+    return await asyncio.to_thread(client.send, request)
 
 
 # Requests that only read (recommendations, lists): never copied to the new database.
@@ -221,14 +251,17 @@ def _is_write(request) -> bool:
     return not type(request).__name__.startswith(_READ_PREFIXES)
 
 
-def _mirror(request) -> None:
-    """Copy a write that worked on the current database to the new one, in
-    the background, so nothing done during a move is lost."""
+def _mirror(request, client=None) -> None:
+    """Copy a write that worked on the database that answers to the other one,
+    in the background, so both stay complete (during a move, and after
+    recombee_eu, so turning it off loses nothing)."""
+    client = client or new_client
+
     async def go():
         kind = "mirror:" + _kind(request)
         t = time.perf_counter()
         try:
-            await asyncio.get_running_loop().run_in_executor(_pool, new_client.send, request)
+            await asyncio.get_running_loop().run_in_executor(_pool, client.send, request)
             _count(kind, True, (time.perf_counter() - t) * 1000)
         except Exception as e:
             _count(kind, False, (time.perf_counter() - t) * 1000, e)

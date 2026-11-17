@@ -10,7 +10,7 @@ from tests.pressure.test_for_you import rb  # noqa: F401
 pytestmark = pytest.mark.asyncio
 
 KEYS = {"points", "boost", "earnings", "replies", "challenges", "sounds", "city", "leaderboard", "badges",
-        "tv_series", "tv_play", "hashtags", "milestones", "home_ground", "picks", "missions", "creator_stats", "trial_posts", "mentions", "ai_label", "feed_fx", "messages", "profile_plus", "tv_plus", "perf", "small_images", "instant_feed", "gzip_api", "msg_lite", "clear_icons", "more_categories", "content_guide", "tv_strip", "quick_posts", "age_check", "whats_new", "signup_names", "phone_signup", "code_login", "msg_plus", "msg_voice", "flyers", "wide_fill", "quiet_counts", "follow_plus", "dark_nav", "photo_zoom", "photo_full", "places", "upload_retry", "recombee_fast", "recombee_tune", "lean_preload", "loop_cap", "data_saver"}
+        "tv_series", "tv_play", "hashtags", "milestones", "home_ground", "picks", "missions", "creator_stats", "trial_posts", "mentions", "ai_label", "feed_fx", "messages", "profile_plus", "tv_plus", "perf", "small_images", "instant_feed", "gzip_api", "msg_lite", "clear_icons", "more_categories", "content_guide", "tv_strip", "quick_posts", "age_check", "whats_new", "signup_names", "phone_signup", "code_login", "msg_plus", "msg_voice", "flyers", "wide_fill", "quiet_counts", "follow_plus", "dark_nav", "photo_zoom", "photo_full", "places", "upload_retry", "recombee_fast", "recombee_tune", "recombee_eu", "lean_preload", "loop_cap", "data_saver"}
 
 
 async def _features(client):
