@@ -83,6 +83,31 @@ def _ok_user(u: Optional[dict]) -> bool:
         and not u.get("deleted_at") and not home_ground.is_minor(u)
 
 
+_EMAILISH = re.compile(r"@[^@\s]+\.[A-Za-z]{2,}")
+_PHONEISH = re.compile(r"\+?\d[\d\s().-]{6,}\d")
+
+
+def private_text(text) -> bool:
+    """Looks like an email address or a phone number: never shown on the open web."""
+    t = str(text or "")
+    return bool(_EMAILISH.search(t) or _PHONEISH.search(t))
+
+
+def public_handle(username) -> Optional[str]:
+    name = (username or "").strip() if isinstance(username, str) else ""
+    if not name or "/" in name or private_text(name) or "@" in name:
+        return None
+    return name
+
+
+def public_name(display, username) -> str:
+    for cand in (display, username):
+        c = " ".join(str(cand or "").split())
+        if c and not private_text(c) and "@" not in c:
+            return _clip(c, 60)
+    return "Wano creator"
+
+
 def handle_url(username: str) -> str:
     from urllib.parse import quote
     return f"{SITE}/@{quote(username.strip(), safe='')}"
@@ -130,7 +155,7 @@ async def creator(db, username: str) -> Optional[dict]:
     if hit is not None:
         return hit or None
     u = await _find_user(db, username)
-    if not _ok_user(u):
+    if not _ok_user(u) or not public_handle(u.get("username")):
         _store(key, {}, 120)
         return None
     q = {"creator_id": u["_id"], **_visible_post()}
@@ -149,8 +174,8 @@ async def creator(db, username: str) -> Optional[dict]:
     country = (loc.get("country") or "").lower() if isinstance(loc.get("country"), str) else ""
     name = (u.get("username") or "").strip()
     out = {
-        "id": str(u["_id"]), "username": name, "display_name": _clip(u.get("display_name") or name, 60),
-        "profile_picture": _https(u.get("profile_picture")), "bio": _clip(u.get("bio"), 300),
+        "id": str(u["_id"]), "username": name, "display_name": public_name(u.get("display_name"), name),
+        "profile_picture": _https(u.get("profile_picture")), "bio": "" if private_text(u.get("bio")) else _clip(u.get("bio"), 300),
         "followers": followers, "following": int(u.get("following_count") or 0), "posts_count": total,
         "tier": _tier(followers), "country": country if len(country) == 2 else None,
         "country_name": home_ground.COUNTRIES.get(country) if len(country) == 2 else None,
@@ -181,8 +206,8 @@ async def creators_index(db) -> List[dict]:
         async for u in db.users.find({"_id": {"$in": ids[i:i + 1000]}, "is_active": {"$ne": False},
                                       **home_ground.adult_filter()},
                                      {"username": 1, "followers_count": 1, "is_banned": 1, "deleted_at": 1}):
-            name = (u.get("username") or "").strip()
-            if not name or u.get("is_banned") is True or u.get("deleted_at") or "/" in name:
+            name = public_handle(u.get("username"))
+            if not name or u.get("is_banned") is True or u.get("deleted_at"):
                 continue
             out.append({"username": name, "followers": int(u.get("followers_count") or 0),
                         "updated": last[u["_id"]].isoformat() + "Z"})
@@ -201,9 +226,13 @@ async def _adults(db, user_ids: List[str]) -> set:
 
 
 def _person(u: dict) -> dict:
-    name = (u.get("username") or "").strip()
-    return {"username": name, "display_name": _clip(u.get("display_name") or name, 60),
-            "profile_picture": _https(u.get("profile_picture")), "url": handle_url(name) if name else None}
+    """A creator on a public list. Handles that are emails or phone numbers aren't
+    shown; their row links to the app profile page instead."""
+    name = public_handle(u.get("username"))
+    uid = str(u.get("_id") or u.get("id") or "")
+    return {"username": name, "display_name": public_name(u.get("display_name"), name),
+            "profile_picture": _https(u.get("profile_picture")),
+            "url": handle_url(name) if name else (f"{SITE}/u/{uid}" if uid else None)}
 
 
 async def _top_posts(db, country: Optional[str], days: int = 7, limit: int = 12) -> List[dict]:
@@ -244,7 +273,7 @@ async def trending(db, country: Optional[str] = None) -> dict:
     adults = await _adults(db, [r["user"]["id"] for r in rows[:60]])
     creators = []
     for r in rows[:60]:
-        if r["user"]["id"] in adults and (r["user"].get("username") or "").strip():
+        if r["user"]["id"] in adults:
             creators.append({"rank": len(creators) + 1, **_person(r["user"]), "views": r["views"],
                              "likes": r["likes"], "posts": r["posts"]})
         if len(creators) >= 20:

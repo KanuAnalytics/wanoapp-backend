@@ -149,3 +149,20 @@ async def test_PS8_film_status_needs_ref_and_email(client, db):
         await client.post("/api/v1/film-submissions/status", json={"ref": "WTV-000001", "email": "a@b.co", "who": "bot"})
     assert (await client.post("/api/v1/film-submissions/status",
                               json={"ref": ref, "email": "ama@example.com", "who": "bot"})).status_code == 429
+
+
+async def test_PS9_emails_and_phone_numbers_never_shown(client, db):
+    e, _ = await make_user(db, username="jka@gmail.com", display_name="jka@gmail.com")
+    p, _ = await make_user(db, username="Kigula", display_name="Ivan 0785476538", bio="call me +256 785 476 538")
+    ok, _ = await make_user(db, username="ama", display_name="Ama")
+    for u in (e, p, ok):
+        await _scored(db, u, 100)
+    assert (await client.get(f"{P}/creators/jka@gmail.com")).status_code == 404
+    k = (await client.get(f"{P}/creators/Kigula")).json()
+    assert k["display_name"] == "Kigula" and k["bio"] == ""
+    d = (await client.get(f"{P}/trending")).json()
+    text = str(d)
+    assert "gmail" not in text and "0785476538" not in text
+    row = next(c for c in d["creators"] if c["username"] is None)
+    assert row["display_name"] == "Wano creator" and row["url"] == f"https://wanoafrica.com/u/{e}"
+    assert "jka@gmail.com" not in str((await client.get(f"{P}/creators")).json())
