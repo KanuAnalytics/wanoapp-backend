@@ -68,6 +68,8 @@ api_router.include_router(challenges_router, prefix="/challenges", tags=["challe
 api_router.include_router(admin_router, prefix="/admin", tags=["admin"])
 from app.api.v1.get_links import router as get_links_router  # noqa: E402
 api_router.include_router(get_links_router, prefix="/get-links", tags=["growth"])
+from app.api.v1.film_submissions import router as film_submissions_router  # noqa: E402
+api_router.include_router(film_submissions_router, prefix="/film-submissions", tags=["tv"])
 api_router.include_router(hashtags_router, prefix="/hashtags", tags=["hashtags"])
 api_router.include_router(milestones_router, prefix="/milestones", tags=["milestones"])
 api_router.include_router(home_ground_router, prefix="/home-ground", tags=["home-ground"])

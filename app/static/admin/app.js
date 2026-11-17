@@ -128,7 +128,7 @@ $("logout").addEventListener("click", () => logout());
 
 const PAGES = [
   ["overview", "Overview"], ["payouts", "Payouts"], ["pool", "Cash pool"], ["creators", "Creators"],
-  ["kampala", "Kampala growth"], ["moderation", "Reported posts"], ["messagereports", "Reported messages"], ["quickreports", "Reported quick posts"], ["whatsnew", "What's new"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["cities", "Cities"], ["categories", "Categories"], ["tvstrip", "Wano TV strip"], ["flyers", "Local flyers"], ["places", "Places"], ["failedups", "Failed uploads"], ["switches", "Feature switches"], ["updates", "Force update"], ["speed", "Speed"], ["storage", "Video storage"], ["log", "Activity log"],
+  ["kampala", "Kampala growth"], ["moderation", "Reported posts"], ["messagereports", "Reported messages"], ["quickreports", "Reported quick posts"], ["whatsnew", "What's new"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["cities", "Cities"], ["categories", "Categories"], ["films", "Film submissions"], ["tvstrip", "Wano TV strip"], ["flyers", "Local flyers"], ["places", "Places"], ["failedups", "Failed uploads"], ["switches", "Feature switches"], ["updates", "Force update"], ["speed", "Speed"], ["storage", "Video storage"], ["log", "Activity log"],
 ];
 let current = "overview";
 const counts = {};
@@ -877,6 +877,51 @@ const RENDER = {
           el("h3", { text: "Recent", style: "margin-top: 16px;" }),
           ...(history.length ? history.map((d) => el("div", { class: "small", style: "padding: 6px 0;",
             text: `${d.state === "approved" ? "✓" : "✕"} @${d.account.username} · ${d.title || "(no title)"}${d.note ? " — " + d.note : ""}` })) : [el("div", { class: "small muted", text: "No history yet." })]))));
+  },
+
+  async films(main, filter) {
+    const LABEL = { new: "New", reviewing: "Under review", shortlisted: "Shortlisted", selected: "Selected", declined: "Declined", licensed: "Licensed", published: "Published" };
+    const r = await api("GET", "/admin/film-submissions" + (filter ? `?status=${filter}` : ""));
+    counts.films = r.counts.new || 0; drawNav();
+    const tabs = el("div", { class: "tabs" },
+      el("button", { class: filter ? "" : "on", text: "All", onclick: () => RENDER.films(main) }),
+      ...r.statuses.map((s) => el("button", { class: filter === s ? "on" : "", text: `${LABEL[s]} (${num(r.counts[s])})`, onclick: () => RENDER.films(main, s) })));
+    const detail = el("div");
+    const open = async (ref) => {
+      const f = await api("GET", `/admin/film-submissions/${encodeURIComponent(ref)}`);
+      const pick = el("select", {}, ...r.statuses.map((s) => el("option", { value: s, text: LABEL[s], selected: s === f.status })));
+      const note = el("textarea", { rows: 3, placeholder: "Team notes (only the team sees these)" }); note.value = f.note || "";
+      const line = (k, v) => v ? el("div", { style: "margin: 4px 0;" }, el("span", { class: "muted", text: k + ": " }), v) : null;
+      const link = (u) => safeUrl(u) ? el("a", { href: u, target: "_blank", rel: "noopener", text: u }) : u;
+      detail.replaceChildren(el("div", { class: "card" },
+        el("h3", { text: `${f.film_title} · ${f.ref}` }),
+        el("div", { class: "two" },
+          el("div", {},
+            line("Filmmaker", `${f.full_name} · ${f.email}${f.phone ? " · " + f.phone : ""}`),
+            line("From", [f.city, f.country].filter(Boolean).join(", ")),
+            line("Company", f.production_company),
+            line("Film", `${f.category} · ${f.runtime} · ${f.year_completed} · represents ${f.country_represented}`),
+            line("Languages", `${f.languages} · subtitles: ${f.subtitles}`),
+            line("Watch", link(f.viewing_link)), line("Password", f.viewing_password), line("Trailer", f.trailer_link ? link(f.trailer_link) : null),
+            line("Sent", when(f.created_at)),
+            el("p", { style: "white-space: pre-wrap; margin-top: 10px;", text: f.synopsis })),
+          f.poster ? el("img", { src: f.poster, alt: "Poster", style: "max-width: 100%; max-height: 420px; border-radius: 10px;" }) : el("div", { class: "empty", text: "No poster" })),
+        el("div", { class: "row", style: "gap: 8px; margin-top: 12px; align-items: flex-start;" }, pick, note),
+        el("button", { class: "btn", style: "margin-top: 8px;", text: "Save", onclick: async (e) => {
+          if (await act(e.target, () => api("POST", `/admin/film-submissions/${encodeURIComponent(f.ref)}/status`, { status: pick.value, note: note.value }), "Saved")) RENDER.films(main, filter);
+        } }),
+        (f.history || []).length ? el("div", { class: "small muted", style: "margin-top: 8px;", text: f.history.map((h) => `${LABEL[h.status] || h.status} by ${h.by} ${String(h.at).slice(0, 16).replace("T", " ")}`).join(" · ") }) : null));
+      detail.scrollIntoView({ behavior: "smooth" });
+    };
+    const table = r.rows.length ? el("table", {}, el("thead", {}, el("tr", {}, ...["Sent", "Film", "Filmmaker", "Category", "Status", ""].map((h) => el("th", { text: h })))),
+      el("tbody", {}, ...r.rows.map((f) => el("tr", {}, el("td", { text: String(f.created_at || "").slice(0, 10) }),
+        el("td", {}, el("div", { style: "font-weight: 600;", text: f.film_title }), el("div", { class: "small muted", text: f.ref })),
+        el("td", { text: `${f.full_name} · ${f.country}` }), el("td", { text: `${f.category} · ${f.runtime}` }),
+        el("td", { text: LABEL[f.status] || f.status }),
+        el("td", {}, el("button", { class: "btn small secondary", text: "Open", onclick: () => open(f.ref) }))))))
+      : el("div", { class: "empty", text: "No submissions here yet." });
+    main.replaceChildren(...head("Film submissions", "Films sent from wanoafrica.com/tv/submit. Every submission is saved here, even if the email to the team fails. Move each one along: New → Under review → Shortlisted → Selected → Licensed → Published (or Declined)."),
+      tabs, el("div", { class: "card" }, table), detail);
   },
 
   async tvstrip(main) {

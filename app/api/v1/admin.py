@@ -844,3 +844,39 @@ async def get_links_report(days: int = Query(30, ge=1, le=120), admin: str = Dep
     """Taps on creator invite links (wanoafrica.com/get?by=name), per link."""
     from app.services import get_links
     return {"days": days, "rows": await get_links.summary(get_database(), days)}
+
+
+@router.get("/film-submissions")
+async def film_submissions_list(status: Optional[str] = Query(None, max_length=20), admin: str = Depends(require_admin)):
+    """Wano TV film submissions from the website, newest first."""
+    from app.services import film_submissions as fs
+    return await fs.listing(get_database(), status)
+
+
+@router.get("/film-submissions/{ref}")
+async def film_submission_one(ref: str, admin: str = Depends(require_admin)):
+    from app.services import film_submissions as fs
+    row = await fs.get(get_database(), ref[:20])
+    if not row:
+        raise HTTPException(status_code=404, detail="Not found")
+    return row
+
+
+class FilmStatusBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: str = Field(max_length=20)
+    note: Optional[str] = Field(default=None, max_length=2000)
+
+
+@router.post("/film-submissions/{ref}/status")
+async def film_submission_status(ref: str, body: FilmStatusBody, admin: str = Depends(require_admin)):
+    from app.services import film_submissions as fs
+    db = get_database()
+    try:
+        row = await fs.set_status(db, ref[:20], body.status, body.note, admin)
+    except fs.Invalid as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not row:
+        raise HTTPException(status_code=404, detail="Not found")
+    await admin_log.record(db, admin, "film_submission_status", {"ref": row["ref"], "status": body.status, "title": row["film_title"]})
+    return row
