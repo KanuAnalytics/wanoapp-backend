@@ -1,0 +1,428 @@
+"""Data for wanoafrica.com's public pages (Nov 2026).
+
+Everything here is what anyone could already see in the app without logging in,
+shaped for the website and cached, with one extra rule: the open web never shows
+an under-18's name, face or posts (home_ground.is_minor), and banned, deleted or
+deactivated accounts don't exist here.
+
+- creator(username)       wanoafrica.com/@username
+- creators_index()        the creator pages in the sitemap
+- trending(country)       wanoafrica.com/trending
+- city(city_id)           wanoafrica.com/<city>
+- signups, enquiries and account-deletion requests sent from the website,
+  saved here (admin pages list them), rate-limited per sender.
+"""
+
+import hashlib
+import re
+import secrets
+import time
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional
+
+from bson import ObjectId
+from pymongo.errors import DuplicateKeyError
+
+from app.services import home_ground
+
+SITE = "https://wanoafrica.com"
+CACHE_SECONDS = 600
+INDEX_CACHE_SECONDS = 6 * 3600
+POSTS_ON_PROFILE = 12
+INDEX_MAX = 3000
+PER_SENDER_HOUR = 5
+EMAIL = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,190}\.[A-Za-z]{2,24}$")
+USERNAME_MAX = 60
+SITE_CITIES = ("kampala", "lagos", "nairobi", "accra", "johannesburg", "london")
+COUNTRIES = ("ug", "ng", "ke", "gh", "za", "tz", "cd", "cm", "rw", "gb", "us")
+
+_cache: Dict[tuple, tuple] = {}
+
+
+class Invalid(ValueError):
+    pass
+
+
+class TooMany(Exception):
+    pass
+
+
+def clear_cache():
+    _cache.clear()
+
+
+def _cached(key, seconds=CACHE_SECONDS):
+    hit = _cache.get(key)
+    return hit[1] if hit and hit[0] > time.monotonic() else None
+
+
+def _store(key, value, seconds=CACHE_SECONDS):
+    if len(_cache) > 5000:
+        _cache.clear()
+    _cache[key] = (time.monotonic() + seconds, value)
+    return value
+
+
+def _https(u) -> Optional[str]:
+    return u if isinstance(u, str) and u.startswith("https://") and len(u) <= 2048 else None
+
+
+def _clip(text, n: int) -> str:
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= n else text[: n - 1].rstrip() + "…"
+
+
+def _visible_post() -> dict:
+    return {"is_active": True, "privacy": "public", "isReadyToStream": {"$ne": False},
+            "status": {"$nin": ["scheduled", "publishing", "cancelled"]},
+            "moderation.state": {"$nin": ["held", "removed"]}}
+
+
+def _ok_user(u: Optional[dict]) -> bool:
+    return bool(u) and u.get("is_active") is not False and u.get("is_banned") is not True \
+        and not u.get("deleted_at") and not home_ground.is_minor(u)
+
+
+def handle_url(username: str) -> str:
+    from urllib.parse import quote
+    return f"{SITE}/@{quote(username.strip(), safe='')}"
+
+
+def _post(v: dict) -> dict:
+    from app.services import thumbnails
+    photo = bool(v.get("images")) and (v.get("media_type") == "photo" or v.get("type") == "photo" or not v.get("urls"))
+    return {"id": str(v["_id"]), "title": _clip(v.get("title") or v.get("description"), 90),
+            "thumbnail": _https(thumbnails.best_thumbnail(v)), "views": int(v.get("views_count") or 0),
+            "likes": int(v.get("likes_count") or 0), "photo": photo, "url": f"{SITE}/v/{v['_id']}",
+            "created_at": (v.get("published_at") or v.get("created_at")).isoformat() + "Z"
+            if isinstance(v.get("published_at") or v.get("created_at"), datetime) else None}
+
+
+def _tier(followers: int) -> Optional[str]:
+    from app.services import milestones
+    label = None
+    for at, _k, name in milestones.TIERS:
+        if followers >= at:
+            label = name
+    return label
+
+
+USER_FIELDS = {"username": 1, "display_name": 1, "profile_picture": 1, "bio": 1, "followers_count": 1,
+               "following_count": 1, "is_active": 1, "is_banned": 1, "deleted_at": 1, "date_of_birth": 1,
+               "localization": 1, "created_at": 1, "verified": 1, "is_verified": 1, "house_account": 1}
+
+
+async def _find_user(db, username: str) -> Optional[dict]:
+    name = (username or "").strip()
+    if not name or len(name) > USERNAME_MAX:
+        return None
+    # Usernames are stored as typed (some with a trailing space); match those exactly, then any case.
+    u = await db.users.find_one({"username": {"$in": [name, name + " "]}}, USER_FIELDS)
+    if not u:
+        u = await db.users.find_one({"username": {"$in": [name, name + " "]}}, USER_FIELDS,
+                                    collation={"locale": "en", "strength": 2})
+    return u
+
+
+async def creator(db, username: str) -> Optional[dict]:
+    key = ("creator", (username or "").strip().lower())
+    hit = _cached(key)
+    if hit is not None:
+        return hit or None
+    u = await _find_user(db, username)
+    if not _ok_user(u):
+        _store(key, {}, 120)
+        return None
+    q = {"creator_id": u["_id"], **_visible_post()}
+    posts = await db.videos.find(q, {"title": 1, "description": 1, "urls": 1, "images": 1, "thumbnail": 1,
+                                     "thumbnails": 1, "views_count": 1, "likes_count": 1, "created_at": 1,
+                                     "published_at": 1, "media_type": 1, "type": 1, "stream_uid": 1}) \
+        .sort("created_at", -1).limit(POSTS_ON_PROFILE).to_list(POSTS_ON_PROFILE)
+    total = await db.videos.count_documents(q, limit=10_000)
+    from app.services import leaderboard
+    try:
+        badges = await leaderboard.badges_of(db, u["_id"])
+    except Exception:
+        badges = []
+    followers = int(u.get("followers_count") or 0)
+    loc = u.get("localization") if isinstance(u.get("localization"), dict) else {}
+    country = (loc.get("country") or "").lower() if isinstance(loc.get("country"), str) else ""
+    name = (u.get("username") or "").strip()
+    out = {
+        "id": str(u["_id"]), "username": name, "display_name": _clip(u.get("display_name") or name, 60),
+        "profile_picture": _https(u.get("profile_picture")), "bio": _clip(u.get("bio"), 300),
+        "followers": followers, "following": int(u.get("following_count") or 0), "posts_count": total,
+        "tier": _tier(followers), "country": country if len(country) == 2 else None,
+        "country_name": home_ground.COUNTRIES.get(country) if len(country) == 2 else None,
+        "badges": [{"label": b.get("label"), "kind": b.get("kind")} for b in (badges or [])[:6]
+                   if isinstance(b, dict) and b.get("label")],
+        "verified": bool(u.get("house_account")),
+        "posts": [_post(v) for v in posts], "url": handle_url(name),
+        "app_link": f"{SITE}/u/{u['_id']}",
+    }
+    return _store(key, out)
+
+
+async def creators_index(db) -> List[dict]:
+    """Creators with at least one public post, most followed first (adults only)."""
+    key = ("index",)
+    hit = _cached(key)
+    if hit is not None:
+        return hit
+    since = datetime.utcnow() - timedelta(days=365)
+    rows = await db.videos.aggregate([
+        {"$match": {**_visible_post(), "created_at": {"$gte": since}}},
+        {"$group": {"_id": "$creator_id", "last": {"$max": "$created_at"}}},
+    ], maxTimeMS=20000).to_list(None)
+    last = {r["_id"]: r["last"] for r in rows if isinstance(r["_id"], ObjectId)}
+    out = []
+    ids = list(last)
+    for i in range(0, len(ids), 1000):
+        async for u in db.users.find({"_id": {"$in": ids[i:i + 1000]}, "is_active": {"$ne": False},
+                                      **home_ground.adult_filter()},
+                                     {"username": 1, "followers_count": 1, "is_banned": 1, "deleted_at": 1}):
+            name = (u.get("username") or "").strip()
+            if not name or u.get("is_banned") is True or u.get("deleted_at") or "/" in name:
+                continue
+            out.append({"username": name, "followers": int(u.get("followers_count") or 0),
+                        "updated": last[u["_id"]].isoformat() + "Z"})
+    out.sort(key=lambda r: (-r["followers"], r["username"].lower()))
+    return _store(key, out[:INDEX_MAX], INDEX_CACHE_SECONDS)
+
+
+async def _adults(db, user_ids: List[str]) -> set:
+    oids = [ObjectId(i) for i in user_ids if ObjectId.is_valid(i)]
+    ok = set()
+    async for u in db.users.find({"_id": {"$in": oids}}, {"date_of_birth": 1, "is_active": 1, "is_banned": 1,
+                                                         "deleted_at": 1}):
+        if _ok_user(u):
+            ok.add(str(u["_id"]))
+    return ok
+
+
+def _person(u: dict) -> dict:
+    name = (u.get("username") or "").strip()
+    return {"username": name, "display_name": _clip(u.get("display_name") or name, 60),
+            "profile_picture": _https(u.get("profile_picture")), "url": handle_url(name) if name else None}
+
+
+async def _top_posts(db, country: Optional[str], days: int = 7, limit: int = 12) -> List[dict]:
+    q = {**_visible_post(), "created_at": {"$gte": datetime.utcnow() - timedelta(days=days)}}
+    if country:
+        q["country"] = {"$in": [country.upper(), country.lower()]}
+    vids = await db.videos.find(q).sort("views_count", -1).limit(limit * 3).to_list(limit * 3)
+    adults = await _adults(db, [str(v.get("creator_id")) for v in vids])
+    users = {u["_id"]: u async for u in db.users.find(
+        {"_id": {"$in": [ObjectId(a) for a in adults]}}, {"username": 1, "display_name": 1, "profile_picture": 1})}
+    out = []
+    for v in vids:
+        u = users.get(v.get("creator_id"))
+        if not u:
+            continue
+        p = _post(v)
+        if not p["thumbnail"]:
+            continue
+        out.append({**p, "creator": _person(u)})
+        if len(out) >= limit:
+            break
+    return out
+
+
+async def trending(db, country: Optional[str] = None) -> dict:
+    from app.services import leaderboard
+    cc = country.lower() if country and country.lower() in COUNTRIES else None
+    key = ("trending", cc)
+    hit = _cached(key)
+    if hit is not None:
+        return hit
+    start = leaderboard.week_start(leaderboard._utcnow())
+    rows = await leaderboard.ranking(db, start, cc)
+    if len(rows) < 5:   # early in the week: last week's board, if it had more
+        prev = await leaderboard.ranking(db, leaderboard.week_start(leaderboard._utcnow(), back=1), cc)
+        if len(prev) > len(rows):
+            rows = prev
+    adults = await _adults(db, [r["user"]["id"] for r in rows[:60]])
+    creators = []
+    for r in rows[:60]:
+        if r["user"]["id"] in adults and (r["user"].get("username") or "").strip():
+            creators.append({"rank": len(creators) + 1, **_person(r["user"]), "views": r["views"],
+                             "likes": r["likes"], "posts": r["posts"]})
+        if len(creators) >= 20:
+            break
+    from app.api.v1.music import trending_sounds
+    try:
+        sounds_raw = await trending_sounds(country=cc, limit=10, current_user=None)
+    except Exception:
+        sounds_raw = []
+    sounds = [{"title": _clip((s.get("sound") or {}).get("title"), 80), "artist": _clip((s.get("sound") or {}).get("artist"), 60),
+               "creators": s.get("creators", 0), "posts": s.get("posts", 0),
+               "cover": _https((s.get("cover") or {}).get("thumbnail"))} for s in sounds_raw
+              if (s.get("sound") or {}).get("title")]
+    out = {"country": cc, "country_name": home_ground.COUNTRIES.get(cc) if cc else None,
+           "week_start": start.isoformat() + "Z", "creators": creators, "sounds": sounds,
+           "posts": await _top_posts(db, cc), "countries": [{"id": c, "name": home_ground.COUNTRIES.get(c, c.upper())}
+                                                            for c in COUNTRIES]}
+    return _store(key, out)
+
+
+async def city(db, city_id: str) -> Optional[dict]:
+    from app.services import leaderboard
+    await home_ground.load_custom(db)
+    place = home_ground.CITY.get(city_id)
+    if not place or city_id not in SITE_CITIES:
+        return None
+    key = ("city", city_id)
+    hit = _cached(key)
+    if hit is not None:
+        return hit
+    start = leaderboard.week_start(leaderboard._utcnow())
+    week = await home_ground._week(db, start)
+    rows = home_ground.board_rows(week, city=city_id)
+    if len(rows) < 3:
+        prev = home_ground.board_rows(await home_ground._week(db, leaderboard.week_start(leaderboard._utcnow(), back=1)),
+                                      city=city_id)
+        if len(prev) > len(rows):
+            rows = prev
+    adults = await _adults(db, [r["user"]["id"] for r in rows[:30]])
+    creators = [{"rank": i + 1, **_person(r["user"]), "views": r["views"]}
+                for i, r in enumerate([r for r in rows[:30] if r["user"]["id"] in adults][:10])]
+    out = {"id": city_id, "name": place["name"], "country": place["country"],
+           "country_name": home_ground.COUNTRIES.get(place["country"]), "creators": creators,
+           "posts": await _top_posts(db, place["country"], days=14, limit=8)}
+    return _store(key, out)
+
+
+# ---------------------------------------------------------------- things sent from the website
+
+def _who(who) -> str:
+    return who[:64] if isinstance(who, str) else ""
+
+
+async def _limit(db, coll: str, who: str, now: datetime):
+    if who and await db[coll].count_documents({"who": who, "created_at": {"$gte": now - timedelta(hours=1)}},
+                                              limit=PER_SENDER_HOUR) >= PER_SENDER_HOUR:
+        raise TooMany()
+
+
+def _text(data: dict, key: str, n: int, required: bool = False) -> str:
+    v = data.get(key)
+    v = " ".join(v.split()) if isinstance(v, str) and key not in ("message", "reason") else (v.strip() if isinstance(v, str) else "")
+    if required and not v:
+        raise Invalid(f"Please fill in {key.replace('_', ' ')}")
+    if len(v) > n:
+        raise Invalid(f"{key.replace('_', ' ').capitalize()} is too long")
+    return v
+
+
+def _email(data: dict, key: str = "email", required: bool = True) -> str:
+    e = _text(data, key, 254, required).lower()
+    if e and not EMAIL.match(e):
+        raise Invalid("Please enter a valid email address")
+    return e
+
+
+INTERESTS = ("wano_tv", "creators", "news")
+
+
+async def subscribe(db, data: dict, now: Optional[datetime] = None) -> dict:
+    now = now or datetime.utcnow()
+    email = _email(data)
+    who = _who(data.get("who"))
+    interests = [i for i in (data.get("interests") or []) if i in INTERESTS] if isinstance(data.get("interests"), list) else []
+    source = _text(data, "source", 40)
+    existing = await db.newsletter.find_one({"_id": email})
+    if existing:
+        upd = {"interests": sorted(set(existing.get("interests") or []) | set(interests or ["wano_tv"]))}
+        if existing.get("unsubscribed_at"):
+            upd["resubscribed_at"] = now
+        await db.newsletter.update_one({"_id": email}, {"$set": upd, "$unset": {"unsubscribed_at": ""}})
+        return {"subscribed": True, "new": False}
+    await _limit(db, "newsletter", who, now)
+    try:
+        await db.newsletter.insert_one({"_id": email, "interests": interests or ["wano_tv"], "source": source,
+                                        "token": secrets.token_urlsafe(24), "who": who, "created_at": now})
+    except DuplicateKeyError:
+        pass
+    return {"subscribed": True, "new": True}
+
+
+async def unsubscribe(db, token: str) -> bool:
+    if not isinstance(token, str) or not (16 <= len(token) <= 64):
+        return False
+    r = await db.newsletter.update_one({"token": token}, {"$set": {"unsubscribed_at": datetime.utcnow()}})
+    return r.matched_count == 1
+
+
+ENQUIRY_KINDS = ("advertise", "press", "partner")
+
+
+async def enquiry(db, data: dict, now: Optional[datetime] = None) -> dict:
+    now = now or datetime.utcnow()
+    kind = data.get("kind") if data.get("kind") in ENQUIRY_KINDS else None
+    if not kind:
+        raise Invalid("Unknown enquiry")
+    doc = {"kind": kind, "name": _text(data, "name", 100, True), "company": _text(data, "company", 120),
+           "email": _email(data), "phone": _text(data, "phone", 40), "country": _text(data, "country", 60),
+           "budget": _text(data, "budget", 60), "message": _text(data, "message", 3000, True),
+           "who": _who(data.get("who")), "status": "new", "created_at": now}
+    await _limit(db, "site_enquiries", doc["who"], now)
+    res = await db.site_enquiries.insert_one(doc)
+    return {"ref": str(res.inserted_id)}
+
+
+async def deletion_request(db, data: dict, now: Optional[datetime] = None) -> dict:
+    """Someone who can't open the app asks for their account to be deleted. The
+    team checks it's really their account before deleting (Admin > Account deletion)."""
+    now = now or datetime.utcnow()
+    doc = {"account": _text(data, "account", 120, True), "email": _email(data),
+           "reason": _text(data, "reason", 1000), "who": _who(data.get("who")), "status": "new", "created_at": now}
+    await _limit(db, "deletion_requests", doc["who"], now)
+    ref = "DEL-" + hashlib.sha1(f"{doc['email']}{now.timestamp()}".encode()).hexdigest()[:8].upper()
+    doc["ref"] = ref
+    await db.deletion_requests.insert_one(doc)
+    return {"ref": ref}
+
+
+# ---------------------------------------------------------------- admin
+
+def _row(d: dict) -> dict:
+    out = {k: v for k, v in d.items() if k not in ("who", "token")}
+    out["id"] = str(out.pop("_id"))
+    for k, v in list(out.items()):
+        if isinstance(v, datetime):
+            out[k] = v.isoformat()
+    return out
+
+
+async def admin_list(db, coll: str, limit: int = 300) -> dict:
+    rows = [_row(d) async for d in db[coll].find({}).sort("created_at", -1).limit(limit)]
+    counts = {}
+    if coll == "newsletter":
+        counts = {"subscribed": await db.newsletter.count_documents({"unsubscribed_at": {"$exists": False}}),
+                  "unsubscribed": await db.newsletter.count_documents({"unsubscribed_at": {"$exists": True}})}
+    else:
+        counts = {"new": await db[coll].count_documents({"status": "new"})}
+    return {"rows": rows, "counts": counts}
+
+
+async def admin_set_status(db, coll: str, item_id: str, status_: str, admin: str) -> bool:
+    if status_ not in ("new", "done", "rejected"):
+        raise Invalid("Status must be new, done or rejected")
+    q = {"ref": item_id} if coll == "deletion_requests" else (
+        {"_id": ObjectId(item_id)} if ObjectId.is_valid(item_id) else None)
+    if q is None:
+        return False
+    r = await db[coll].update_one(q, {"$set": {"status": status_, "status_by": admin, "status_at": datetime.utcnow()}})
+    return r.matched_count == 1
+
+
+async def newsletter_csv(db) -> str:
+    lines = ["email,interests,source,joined"]
+    async for d in db.newsletter.find({"unsubscribed_at": {"$exists": False}}).sort("created_at", 1):
+        def esc(s):
+            s = str(s or "")
+            s = "'" + s if s[:1] in "=+-@" else s
+            return '"' + s.replace('"', '""') + '"'
+        lines.append(",".join([esc(d["_id"]), esc(" ".join(d.get("interests") or [])), esc(d.get("source")),
+                               esc(d["created_at"].date().isoformat() if isinstance(d.get("created_at"), datetime) else "")]))
+    return "\n".join(lines) + "\n"

@@ -128,7 +128,7 @@ $("logout").addEventListener("click", () => logout());
 
 const PAGES = [
   ["overview", "Overview"], ["payouts", "Payouts"], ["pool", "Cash pool"], ["creators", "Creators"],
-  ["kampala", "Kampala growth"], ["moderation", "Reported posts"], ["messagereports", "Reported messages"], ["quickreports", "Reported quick posts"], ["whatsnew", "What's new"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["cities", "Cities"], ["categories", "Categories"], ["films", "Film submissions"], ["tvtitles", "Wano TV titles"], ["tvnumbers", "Wano TV numbers"], ["tvstrip", "Wano TV strip"], ["flyers", "Local flyers"], ["places", "Places"], ["failedups", "Failed uploads"], ["switches", "Feature switches"], ["updates", "Force update"], ["speed", "Speed"], ["storage", "Video storage"], ["log", "Activity log"],
+  ["kampala", "Kampala growth"], ["moderation", "Reported posts"], ["messagereports", "Reported messages"], ["quickreports", "Reported quick posts"], ["whatsnew", "What's new"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["cities", "Cities"], ["categories", "Categories"], ["films", "Film submissions"], ["tvtitles", "Wano TV titles"], ["tvnumbers", "Wano TV numbers"], ["tvstrip", "Wano TV strip"], ["siteenq", "Website enquiries"], ["sitemail", "Mailing list"], ["sitedel", "Account deletion"], ["flyers", "Local flyers"], ["places", "Places"], ["failedups", "Failed uploads"], ["switches", "Feature switches"], ["updates", "Force update"], ["speed", "Speed"], ["storage", "Video storage"], ["log", "Activity log"],
 ];
 let current = "overview";
 const counts = {};
@@ -968,6 +968,56 @@ const RENDER = {
           el("td", { text: x.avg_pct === null ? "–" : x.avg_pct + "%" }), el("td", { text: num(x.my_list) }), el("td", { text: num(x.loves) }),
           el("td", { text: num(x.reminders) }), el("td", { text: num(x.downloads) }), el("td", { text: `${num(x.strip_shown)} → ${num(x.strip_taps)}` })))))
         : el("div", { class: "empty", text: "No titles yet." })));
+  },
+
+  async siteenq(main) {
+    const r = await api("GET", "/admin/site/enquiries");
+    counts.siteenq = r.counts.new || 0; drawNav();
+    const KIND = { advertise: "Advertising", press: "Press", partner: "Partnership" };
+    main.replaceChildren(...head("Website enquiries", "Advertising, press and partnership messages sent from wanoafrica.com. Every one is saved here, even if the email to the team fails."),
+      el("div", { class: "card" }, r.rows.length ? el("table", {}, el("thead", {}, el("tr", {}, ...["Sent", "Type", "From", "Message", "Status", ""].map((h) => el("th", { text: h })))),
+        el("tbody", {}, ...r.rows.map((x) => el("tr", {}, el("td", { class: "small", text: when(x.created_at) }), el("td", { text: KIND[x.kind] || x.kind }),
+          el("td", {}, el("div", { style: "font-weight: 600;", text: x.name + (x.company ? " · " + x.company : "") }),
+            el("div", { class: "small muted", text: [x.email, x.phone, x.country, x.budget ? "Budget: " + x.budget : ""].filter(Boolean).join(" · ") })),
+          el("td", { class: "small", style: "white-space: pre-wrap; max-width: 420px;", text: x.message }),
+          el("td", { text: x.status }),
+          el("td", {}, x.status === "new" ? el("button", { class: "btn small secondary", text: "Mark done", onclick: async (e) => {
+            if (await act(e.target, () => api("POST", `/admin/site/enquiries/${x.id}/status`, { status: "done" }), "Done")) RENDER.siteenq(main);
+          } }) : null))))) : el("div", { class: "empty", text: "No enquiries yet." })));
+  },
+
+  async sitemail(main) {
+    const r = await api("GET", "/admin/site/newsletter");
+    const dl = el("button", { class: "btn", text: "Download the list (CSV)", onclick: async (e) => {
+      e.target.disabled = true;
+      try {
+        const res = await fetch(API + "/admin/site/newsletter.csv", { headers: { Authorization: "Bearer " + token } });
+        if (!res.ok) throw new Error("Couldn't download (" + res.status + ")");
+        const url = URL.createObjectURL(await res.blob());
+        const a = el("a", { href: url, download: "wano-mailing-list.csv" }); document.body.append(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+      } catch (err) { toast(err.message, true); } finally { e.target.disabled = false; }
+    } });
+    main.replaceChildren(...head("Mailing list", "People who signed up on wanoafrica.com for news about new films on Wano TV. Each email they get must include their unsubscribe link: wanoafrica.com/unsubscribe?token=…"),
+      el("div", { class: "card" }, el("div", { class: "row space" }, el("h3", { text: `${num(r.counts.subscribed)} subscribed · ${num(r.counts.unsubscribed)} unsubscribed` }), dl),
+        r.rows.length ? el("table", {}, el("thead", {}, el("tr", {}, ...["Email", "Interests", "From page", "Joined", ""].map((h) => el("th", { text: h })))),
+          el("tbody", {}, ...r.rows.slice(0, 200).map((x) => el("tr", {}, el("td", { text: x.id }), el("td", { text: (x.interests || []).join(", ") }),
+            el("td", { text: x.source || "" }), el("td", { class: "small", text: when(x.created_at) }),
+            el("td", { class: "small muted", text: x.unsubscribed_at ? "unsubscribed" : "" })))))
+          : el("div", { class: "empty", text: "Nobody yet." })));
+  },
+
+  async sitedel(main) {
+    const r = await api("GET", "/admin/site/deletion");
+    counts.sitedel = r.counts.new || 0; drawNav();
+    main.replaceChildren(...head("Account deletion requests", "From wanoafrica.com/help/delete-account, for people who can't delete their account in the app (Profile > Settings > Delete account). Before deleting, check the request comes from the account's own email or phone: reply to them first. Google Play and the App Store require this page."),
+      el("div", { class: "card" }, r.rows.length ? el("table", {}, el("thead", {}, el("tr", {}, ...["Sent", "Ref", "Account", "Reply to", "Reason", "Status", ""].map((h) => el("th", { text: h })))),
+        el("tbody", {}, ...r.rows.map((x) => el("tr", {}, el("td", { class: "small", text: when(x.created_at) }), el("td", { text: x.ref }),
+          el("td", { text: x.account }), el("td", { text: x.email }), el("td", { class: "small", text: x.reason || "" }), el("td", { text: x.status }),
+          el("td", {}, x.status === "new" ? el("div", { class: "row", style: "gap: 6px;" },
+            el("button", { class: "btn small secondary", text: "Done", onclick: async (e) => { if (await act(e.target, () => api("POST", `/admin/site/deletion/${x.ref}/status`, { status: "done" }), "Marked done")) RENDER.sitedel(main); } }),
+            el("button", { class: "btn small secondary", text: "Not theirs", onclick: async (e) => { if (await act(e.target, () => api("POST", `/admin/site/deletion/${x.ref}/status`, { status: "rejected" }), "Marked")) RENDER.sitedel(main); } })) : null)))))
+        : el("div", { class: "empty", text: "No requests." })));
   },
 
   async tvstrip(main) {

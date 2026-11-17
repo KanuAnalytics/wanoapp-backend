@@ -123,3 +123,37 @@ async def set_status(db, ref: str, status: str, note: Optional[str], admin: str,
         {"_id": ref}, {"$set": upd, "$push": {"history": {"status": status, "by": admin, "at": now.isoformat()}}},
         projection={"poster": 0}, return_document=True)
     return _row(r) if r else None
+
+
+# What a filmmaker sees at wanoafrica.com/tv/status (they type their reference and email).
+PUBLIC_LABELS = {
+    "new": ("Received", "We have your film. Our team will start reviewing it soon."),
+    "reviewing": ("Under review", "Our team is watching your film."),
+    "shortlisted": ("Shortlisted", "Your film made our shortlist. We'll be in touch by email."),
+    "selected": ("Selected", "We'd love to have your film on Wano TV. Check your email for the next steps."),
+    "licensed": ("Agreement signed", "Your agreement is in place. We're preparing your film for Wano TV."),
+    "published": ("On Wano TV", "Your film is live on Wano TV."),
+    "declined": ("Not selected this time", "Thank you for sending your film. You're welcome to submit other work."),
+}
+_REF = re.compile(r"^WTV-\d{6}$")
+
+
+async def public_status(db, ref: str, email: str) -> Optional[dict]:
+    """Status for the filmmaker, only when the reference and email both match."""
+    ref = (ref or "").strip().upper()
+    email = (email or "").strip().lower()
+    if not _REF.match(ref) or not _EMAIL.match(email) or len(email) > 200:
+        return None
+    d = await db.film_submissions.find_one({"_id": ref}, {"email": 1, "status": 1, "film_title": 1,
+                                                           "created_at": 1, "updated_at": 1})
+    if not d or (d.get("email") or "").strip().lower() != email:
+        return None
+    status = d.get("status", "new")
+    label, text = PUBLIC_LABELS.get(status, PUBLIC_LABELS["new"])
+    steps = ["new", "reviewing", "selected", "licensed", "published"]
+    return {"ref": ref, "film_title": d.get("film_title"), "status": status, "label": label, "text": text,
+            "step": steps.index(status) if status in steps else (1 if status == "shortlisted" else None),
+            "steps": ["Received", "Under review", "Selected", "Agreement signed", "On Wano TV"],
+            "submitted": d["created_at"].date().isoformat() if d.get("created_at") else None,
+            "updated": (d.get("updated_at") or d.get("created_at")).date().isoformat()
+            if (d.get("updated_at") or d.get("created_at")) else None}

@@ -196,6 +196,13 @@ async def create_indexes():
         # Wano TV strip: per-person event cap (TTL) and daily counts per film (kept 90 days).
         (d.tv_strip_limits, [("at", 1)], {"expireAfterSeconds": 2 * 24 * 3600}),
         (d.tv_strip_daily, [("day", 1)], {"expireAfterSeconds": 90 * 24 * 3600}),
+        # Website: mailing list, enquiries, account-deletion requests.
+        (d.newsletter, [("token", 1)], {"unique": True, "sparse": True}),
+        (d.newsletter, [("who", 1), ("created_at", -1)], {}),
+        (d.site_enquiries, [("who", 1), ("created_at", -1)], {}),
+        (d.site_enquiries, [("created_at", -1)], {}),
+        (d.deletion_requests, [("who", 1), ("created_at", -1)], {}),
+        (d.deletion_requests, [("ref", 1)], {"unique": True}),
         # Wano TV round 3: hearts, reminders, downloads, clips.
         (d.tv_loves, [("title_id", 1)], {}),
         (d.tv_loves, [("user_id", 1)], {}),

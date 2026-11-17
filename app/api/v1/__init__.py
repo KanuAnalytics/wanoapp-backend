@@ -67,6 +67,8 @@ api_router.include_router(creators_router, prefix="/creators", tags=["creators"]
 api_router.include_router(leaderboard_router, prefix="/leaderboard", tags=["leaderboard"])
 api_router.include_router(points_router, prefix="/points", tags=["points"])
 api_router.include_router(challenges_router, prefix="/challenges", tags=["challenges"])
+from app.api.v1.admin_site import router as admin_site_router  # noqa: E402
+api_router.include_router(admin_site_router, prefix="/admin/site", tags=["admin"])
 from app.api.v1.admin_tv import router as admin_tv_router  # noqa: E402
 api_router.include_router(admin_tv_router, prefix="/admin/tv", tags=["admin"])
 api_router.include_router(admin_router, prefix="/admin", tags=["admin"])
@@ -74,6 +76,8 @@ from app.api.v1.get_links import router as get_links_router  # noqa: E402
 api_router.include_router(get_links_router, prefix="/get-links", tags=["growth"])
 from app.api.v1.film_submissions import router as film_submissions_router  # noqa: E402
 api_router.include_router(film_submissions_router, prefix="/film-submissions", tags=["tv"])
+from app.api.v1.public_site import router as public_site_router  # noqa: E402
+api_router.include_router(public_site_router, prefix="/public", tags=["website"])
 api_router.include_router(hashtags_router, prefix="/hashtags", tags=["hashtags"])
 api_router.include_router(milestones_router, prefix="/milestones", tags=["milestones"])
 api_router.include_router(home_ground_router, prefix="/home-ground", tags=["home-ground"])
