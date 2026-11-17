@@ -279,7 +279,8 @@ async def admin_wano_tv(body: WanoTvIn, admin: str = Depends(require_admin)):
 async def admin_tv_strip(days: int = Query(7, ge=1, le=90), admin: str = Depends(require_admin)):
     """Wano TV strip: shown, taps and closes per film over the last days."""
     from app.services import tv_strip
-    return {"items": await tv_strip.stats(get_database(), days), "rules": tv_strip.RULES}
+    db = get_database()
+    return {"items": await tv_strip.stats(db, days), "rules": await tv_strip.rules(db)}
 
 
 @router.get("/category-requests")

@@ -57,11 +57,44 @@ def _https(u) -> Optional[str]:
     return u if isinstance(u, str) and u.startswith("https://") and len(u) <= 2048 else None
 
 
+# Admin can tune the rules (Admin > Wano TV strip) within these bounds.
+RULE_BOUNDS = {
+    "after_portion": (0.0, 1.0), "min_posts": (0, 50), "gap_posts": (1, 100), "max_per_session": (0, 20),
+    "show_seconds": (2, 30), "closes_per_week": (1, 50),
+}
+
+
+async def rules(db) -> dict:
+    doc = await db.tv_settings.find_one({"_id": "strip"}) or {}
+    out = dict(RULES)
+    for k, (lo, hi) in RULE_BOUNDS.items():
+        v = doc.get(k)
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and lo <= v <= hi:
+            out[k] = type(RULES[k])(v)
+    return out
+
+
+async def set_rules(db, changes: dict) -> dict:
+    clean = {}
+    for k, v in (changes or {}).items():
+        if k not in RULE_BOUNDS:
+            raise ValueError(f"Unknown rule {k}")
+        lo, hi = RULE_BOUNDS[k]
+        if not isinstance(v, (int, float)) or isinstance(v, bool) or not lo <= v <= hi:
+            raise ValueError(f"{k} must be between {lo} and {hi}")
+        clean[k] = type(RULES[k])(v)
+    if clean:
+        await db.tv_settings.update_one({"_id": "strip"}, {"$set": clean}, upsert=True)
+    return await rules(db)
+
+
 async def config(db, viewer: Optional[str], today: Optional[date] = None) -> dict:
-    from app.services import small_images
+    from app.services import small_images, tv_more
     today = today or datetime.utcnow().date()
     docs = await db.tv_titles.find({"is_active": True}, {"title": 1, "type": 1, "poster": 1, "release_date": 1,
-                                                         "featured": 1, "trailer": 1}).to_list(200)
+                                                         "featured": 1, "trailer": 1, "age_rating": 1}).to_list(200)
+    age = await tv_more.viewer_age(db, viewer)
+    docs = [d for d in docs if tv_more.allowed(d, age)]
 
     def rel(d):
         r = d.get("release_date")
@@ -80,7 +113,7 @@ async def config(db, viewer: Optional[str], today: Optional[date] = None) -> dic
             break
     creators = [str(u["_id"]) async for u in db.users.find({"house_account": True, "is_active": {"$ne": False}},
                                                            {"_id": 1}).limit(50)]
-    return {"titles": titles, "creators": creators, "rules": dict(RULES)}
+    return {"titles": titles, "creators": creators, "rules": await rules(db)}
 
 
 async def record(db, who: str, title_id: str, kind: str, now: Optional[datetime] = None) -> bool:

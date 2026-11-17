@@ -60,6 +60,8 @@ class TvEpisode(BaseModel):
     thumbnail: Optional[str] = None
     video_url: str
     captions: List[TvCaption] = Field(default_factory=list)
+    # tv_downloads: an offline copy can be saved.
+    downloadable: bool = False
 
 
 class TvSeason(BaseModel):
@@ -111,6 +113,10 @@ class TvTitleResponse(BaseModel):
     # Wano users credited on the title ("Meet the Makers"): makers stored on the
     # title first, then credited people who have a Wano account.
     makers: List[TvMaker] = Field(default_factory=list)
+    # tv_loves: how many people put a heart on it.
+    loves: int = 0
+    # tv_downloads: an offline copy can be saved.
+    downloadable: bool = False
 
 
 class TvGenreResponse(BaseModel):

@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, R
 from app.api.deps import get_current_active_user, get_optional_active_user
 from app.core.database import get_database
 from app.models.tv import TvEpisode, TvGenreResponse, TvMaker, TvSeason, TvTitleResponse, TvWatchResponse
-from app.services import recommendations, tv_popularity, tv_stream
+from app.services import recommendations, tv_cf, tv_more, tv_popularity, tv_stream
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +48,43 @@ def _sign_captions(caps, title_id: str, viewer: str, folder: Optional[str]) -> l
     return out
 
 
+def _cf_url(src: dict) -> Optional[str]:
+    """A Cloudflare Stream film's signed link (made ahead by _warm_cf), or None."""
+    uid = src.get("cf_uid")
+    if not tv_cf.valid_uid(uid):
+        return None
+    if src.get("cf_ready") is not True:
+        raise ValueError("film still processing")
+    hit = tv_cf._tokens.get((uid, False))
+    if not hit:
+        raise ValueError("film link not signed")
+    return tv_cf.MANIFEST.format(hit[0])
+
+
+async def _warm_cf(docs: List[dict]) -> None:
+    """Signs every Cloudflare film in these titles (cached for hours)."""
+    import asyncio
+    uids = set()
+    for d in docs:
+        if tv_cf.valid_uid(d.get("cf_uid")) and d.get("cf_ready") is True:
+            uids.add(d["cf_uid"])
+        for s in d.get("seasons") or []:
+            for e in (s.get("episodes") or []) if isinstance(s, dict) else []:
+                if isinstance(e, dict) and tv_cf.valid_uid(e.get("cf_uid")) and e.get("cf_ready") is True:
+                    uids.add(e["cf_uid"])
+    for uid in uids:
+        try:
+            await asyncio.to_thread(tv_cf.token, uid)
+        except Exception as e:  # one film Cloudflare won't sign shouldn't empty the catalogue
+            logger.warning("Couldn't sign Cloudflare film %s: %s", uid, e)
+
+
 def _protect(data: dict, viewer: str) -> dict:
     """Films on our Spaces get an expiring signed link instead of the public file."""
+    cf = _cf_url(data)
+    if cf:
+        data["video_url"] = cf
+        return data
     folder = tv_stream.own_folder(data)
     key = tv_stream.spaces_key(data.get("video_url"))
     if key:
@@ -75,7 +110,11 @@ def _episodes(data: dict, viewer: str) -> None:
         for ep in season.get("episodes") or []:
             if not isinstance(ep, dict) or ep.get("id") in seen:
                 continue
-            url, ok = _sign(ep.get("video_url"), data["id"], viewer, folder)
+            try:
+                cf = _cf_url(ep)
+            except ValueError:
+                continue
+            url, ok = (cf, True) if cf else _sign(ep.get("video_url"), data["id"], viewer, folder)
             if not ok:
                 logger.warning("Episode %s of %s points outside its title", ep.get("id"), data["id"])
                 continue
@@ -239,11 +278,35 @@ async def get_titles(current_user: Optional[str] = Depends(get_optional_active_u
     """Every active title, most popular first. Logged out: send authenticated=false."""
     db = get_database()
     docs = await db.tv_titles.find({"is_active": True}).to_list(length=None)
+    age = await tv_more.viewer_age(db, current_user)
+    docs = [d for d in docs if tv_more.allowed(d, age)]
+    await _warm_cf(docs)
     played = await tv_popularity.scores(db)
     docs.sort(key=lambda d: (-tv_popularity.score(d, played), str(d["_id"])))
     profiles = await _profiles(db, docs)
-    titles = (_title_response(doc, current_user or "anon", profiles, played) for doc in docs)
-    return [t for t in titles if t is not None]
+    titles = [t for t in (_title_response(doc, current_user or "anon", profiles, played) for doc in docs)
+              if t is not None]
+    if await tv_more.on(db, "tv_loves"):
+        counts = await tv_more.love_counts(db)
+        for t in titles:
+            t.loves = counts.get(ObjectId(t.id), 0)
+    if await tv_more.on(db, "tv_downloads"):
+        by_id = {str(d["_id"]): d for d in docs}
+        for t in titles:
+            d = by_id.get(t.id) or {}
+            t.downloadable = tv_more.downloadable(d)
+            for season in t.seasons:
+                for e in season.episodes:
+                    e.downloadable = tv_more.downloadable(_raw_episode(d, e.id))
+    return titles
+
+
+def _raw_episode(doc: dict, ep_id: str) -> dict:
+    for s in doc.get("seasons") or []:
+        for e in (s.get("episodes") or []) if isinstance(s, dict) else []:
+            if isinstance(e, dict) and e.get("id") == ep_id:
+                return e
+    return {}
 
 
 @router.get("/stream/{token}/{path:path}", include_in_schema=False)
@@ -317,6 +380,9 @@ async def get_history(current_user: str = Depends(get_current_active_user)):
     docs = await db.tv_titles.find(
         {"_id": {"$in": title_ids}, "is_active": True}
     ).to_list(length=None)
+    age = await tv_more.viewer_age(db, current_user)
+    docs = [d for d in docs if tv_more.allowed(d, age)]
+    await _warm_cf(docs)
     by_id = {doc["_id"]: doc for doc in docs}
     profiles = await _profiles(db, docs)
 

@@ -196,6 +196,15 @@ async def create_indexes():
         # Wano TV strip: per-person event cap (TTL) and daily counts per film (kept 90 days).
         (d.tv_strip_limits, [("at", 1)], {"expireAfterSeconds": 2 * 24 * 3600}),
         (d.tv_strip_daily, [("day", 1)], {"expireAfterSeconds": 90 * 24 * 3600}),
+        # Wano TV round 3: hearts, reminders, downloads, clips.
+        (d.tv_loves, [("title_id", 1)], {}),
+        (d.tv_loves, [("user_id", 1)], {}),
+        (d.tv_reminders, [("title_id", 1), ("sent", 1)], {}),
+        (d.tv_reminders, [("user_id", 1), ("sent", 1)], {}),
+        (d.tv_downloads, [("title_id", 1)], {}),
+        (d.tv_download_limits, [("at", 1)], {"expireAfterSeconds": 2 * 24 * 3600}),
+        (d.tv_clips, [("title_id", 1)], {}),
+        (d.tv_titles, [("status", 1)], {}),
         (d.message_reports, [("status", 1), ("created_at", -1)], {}),
         # Quick posts: records kept 3 days past their 24 h (for reports); seen marks and limits 2 days.
         (d.quick_posts, [("expires_at", 1)], {"expireAfterSeconds": 3 * 24 * 3600}),

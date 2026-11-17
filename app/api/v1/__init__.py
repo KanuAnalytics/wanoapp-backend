@@ -60,11 +60,15 @@ from app.api.v1.perf import router as perf_router  # noqa: E402
 api_router.include_router(perf_router, prefix="/perf", tags=["speed"])
 from app.api.v1.tv_plus import router as tv_plus_router  # noqa: E402
 api_router.include_router(tv_plus_router, prefix="/tv/plus", tags=["wano-tv"])
+from app.api.v1.tv_more import router as tv_more_router  # noqa: E402
+api_router.include_router(tv_more_router, prefix="/tv/more", tags=["wano-tv"])
 api_router.include_router(tv_router, prefix="/tv", tags=["wano-tv"])
 api_router.include_router(creators_router, prefix="/creators", tags=["creators"])
 api_router.include_router(leaderboard_router, prefix="/leaderboard", tags=["leaderboard"])
 api_router.include_router(points_router, prefix="/points", tags=["points"])
 api_router.include_router(challenges_router, prefix="/challenges", tags=["challenges"])
+from app.api.v1.admin_tv import router as admin_tv_router  # noqa: E402
+api_router.include_router(admin_tv_router, prefix="/admin/tv", tags=["admin"])
 api_router.include_router(admin_router, prefix="/admin", tags=["admin"])
 from app.api.v1.get_links import router as get_links_router  # noqa: E402
 api_router.include_router(get_links_router, prefix="/get-links", tags=["growth"])

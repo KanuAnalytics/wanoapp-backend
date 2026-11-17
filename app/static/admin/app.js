@@ -128,7 +128,7 @@ $("logout").addEventListener("click", () => logout());
 
 const PAGES = [
   ["overview", "Overview"], ["payouts", "Payouts"], ["pool", "Cash pool"], ["creators", "Creators"],
-  ["kampala", "Kampala growth"], ["moderation", "Reported posts"], ["messagereports", "Reported messages"], ["quickreports", "Reported quick posts"], ["whatsnew", "What's new"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["cities", "Cities"], ["categories", "Categories"], ["films", "Film submissions"], ["tvstrip", "Wano TV strip"], ["flyers", "Local flyers"], ["places", "Places"], ["failedups", "Failed uploads"], ["switches", "Feature switches"], ["updates", "Force update"], ["speed", "Speed"], ["storage", "Video storage"], ["log", "Activity log"],
+  ["kampala", "Kampala growth"], ["moderation", "Reported posts"], ["messagereports", "Reported messages"], ["quickreports", "Reported quick posts"], ["whatsnew", "What's new"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["cities", "Cities"], ["categories", "Categories"], ["films", "Film submissions"], ["tvtitles", "Wano TV titles"], ["tvnumbers", "Wano TV numbers"], ["tvstrip", "Wano TV strip"], ["flyers", "Local flyers"], ["places", "Places"], ["failedups", "Failed uploads"], ["switches", "Feature switches"], ["updates", "Force update"], ["speed", "Speed"], ["storage", "Video storage"], ["log", "Activity log"],
 ];
 let current = "overview";
 const counts = {};
@@ -210,6 +210,13 @@ const FEATURES = {
   recombee_eu: ["For You from Europe (Recombee)", "For You asks the new EU Recombee database (about 4x faster from our server) instead of the US one. Every write still goes to both, so turning it off goes straight back with nothing lost. If the EU database can't answer, the US one does. Check: GET /api/v1/recombee/health (answering: eu-west). Works for every app version."],
   lean_preload: ["Lighter preloading (iPhone)", "iPhones load the next 2 videos instead of 5, and read only about 10 seconds ahead in a video. About half the minutes Cloudflare billed in November were never watched. Android already loads 2. Needs app 2.3.43."],
   loop_cap: ["Stop after 3 loops", "A video plays 3 times, then pauses with the play button up (a tap plays 3 more). Each loop was downloaded and billed again: short clips were billed 1.46 full plays per view. Watch the For You report after turning it on. Needs app 2.3.43."],
+  tv_age_gate: ["Wano TV: age ratings", "Titles rated above someone's age (16+, 18+…) are left out of Wano TV, History, the feed strip and downloads for accounts whose birthday makes them under that age. Unknown birthdays count as adult. Server only: works for every app version."],
+  tv_loves: ["Wano TV: hearts", "A heart on each title, with the count. Needs the next app build."],
+  tv_coming_soon: ["Wano TV: Coming soon", "Titles set to Coming soon in Wano TV titles show in their own row with Remind me; going Live sends those people a notification. Needs the next app build."],
+  tv_clips: ["Wano TV: clips in the feed", "Feed posts linked to a title (Wano TV titles > Clips) show a Watch the full film button. Needs the next app build."],
+  tv_downloads: ["Wano TV: downloads", "Download a film to watch with no data (signed-in people, 20 a day, kept 30 days in the app). Only titles with an offline copy. Needs the next app build."],
+  tv_pip: ["Wano TV: picture in picture", "A film keeps playing in a small window when you leave the app or check a message. Needs the next app build."],
+  tv_player_plus: ["Wano TV: player extras", "Choose the subtitle language, and when a film ends suggest another one (series already roll into the next episode). Needs the next app build."],
   data_saver: ["Data saver on mobile data", "On mobile data, videos play in standard quality (about 480p, at most ~22 MB a minute instead of up to 61 MB); people can turn on \"HD on mobile data\" in Settings. Wi-Fi is unchanged. Doesn't change the Cloudflare bill. Needs app 2.3.43."],
   small_images: ["Small pictures", "The app loads small copies of pictures (avatars ~10 KB instead of up to 2 MB). Turn on once the Speed page shows the copies are done."],
   trial_posts: ["Trial posts", "Creators can post without telling followers, then share it later."],
@@ -924,6 +931,45 @@ const RENDER = {
       tabs, el("div", { class: "card" }, table), detail);
   },
 
+  async tvtitles(main, openId) {
+    const r = await api("GET", "/admin/tv/titles");
+    const STATUS = { live: "Live", hidden: "Hidden", coming_soon: "Coming soon" };
+    const detail = el("div");
+    const table = r.items.length ? el("table", {}, el("thead", {}, el("tr", {}, ...["", "Title", "Status", "Film", "Subtitles", "Ready?", ""].map((h) => el("th", { text: h })))),
+      el("tbody", {}, ...r.items.map((t) => el("tr", {},
+        el("td", {}, safeUrl(t.poster) ? el("img", { src: t.poster, alt: "", style: "width: 40px; height: 60px; object-fit: cover; border-radius: 4px;" }) : null),
+        el("td", {}, el("div", { style: "font-weight: 600;", text: t.title }), el("div", { class: "small muted", text: `${t.type === "series" ? `Series · ${t.episodes} episodes` : "Film"} · ${t.age_rating || ""}` })),
+        el("td", { text: STATUS[t.status] + (t.status === "coming_soon" && t.coming_at ? ` (${t.coming_at})` : "") }),
+        el("td", { text: t.film === "cloudflare" ? "Cloudflare" : t.film === "spaces" ? "Spaces" : (t.episodes ? "In episodes" : "—") }),
+        el("td", { text: String(t.captions) }),
+        el("td", { class: "small", text: t.problems.length ? `${t.problems.length} to fix` : "✓" }),
+        el("td", {}, el("button", { class: "btn small secondary", text: "Open", onclick: () => tvEditor(main, detail, t.id) }))))))
+      : el("div", { class: "empty", text: "No titles yet." });
+    main.replaceChildren(...head("Wano TV titles", "Add and edit what's on Wano TV. A new title starts Hidden; it can only go Live once everything the app needs is there. Films can be uploaded straight to Cloudflare from here, or keep using a film already on Spaces by pasting its master.m3u8 link."),
+      el("div", { class: "row", style: "gap: 8px; margin-bottom: 12px;" }, el("button", { class: "btn", text: "New title", onclick: () => tvEditor(main, detail, null) })),
+      el("div", { class: "card" }, table), detail);
+    if (openId) tvEditor(main, detail, openId);
+  },
+
+  async tvnumbers(main, days) {
+    days = days || 30;
+    const r = await api("GET", `/admin/tv/stats?days=${days}`);
+    const tabs = el("div", { class: "tabs" }, ...[7, 30, 60].map((d) => el("button", { class: d === days ? "on" : "", text: `${d} days`, onclick: () => RENDER.tvnumbers(main, d) })));
+    const max = Math.max(1, ...r.by_day.map((d) => d.plays));
+    const bars = el("div", { style: "display: flex; align-items: flex-end; gap: 2px; height: 90px; margin: 8px 0;" },
+      ...r.by_day.map((d) => el("div", { title: `${d.day}: ${d.plays} plays`, style: `flex: 1; background: var(--primary); opacity: .8; border-radius: 2px 2px 0 0; height: ${Math.max(2, Math.round(d.plays / max * 88))}px;` })));
+    const H = ["Title", "Plays", "Started", "Finished", "Avg watched", "My List", "Hearts", "Reminders", "Downloads", "Strip shown → taps"];
+    main.replaceChildren(...head("Wano TV numbers", "Plays count once per person per title per day (signed in or not). Started, finished and how far people get come from signed-in viewers. Plays are kept 60 days."),
+      tabs,
+      el("div", { class: "card" }, el("div", { class: "row space" }, el("h3", { text: `${num(r.total_plays)} plays` }), el("div", { class: "small muted", text: `${num(r.people_started)} people have ever started a title` })), bars),
+      el("div", { class: "card" }, r.items.length ? el("table", {}, el("thead", {}, el("tr", {}, ...H.map((h) => el("th", { text: h })))),
+        el("tbody", {}, ...r.items.map((x) => el("tr", {}, el("td", { text: x.title + (x.status !== "live" ? ` (${x.status.replace("_", " ")})` : "") }),
+          el("td", { text: num(x.plays) }), el("td", { text: num(x.started) }), el("td", { text: num(x.finished) }),
+          el("td", { text: x.avg_pct === null ? "–" : x.avg_pct + "%" }), el("td", { text: num(x.my_list) }), el("td", { text: num(x.loves) }),
+          el("td", { text: num(x.reminders) }), el("td", { text: num(x.downloads) }), el("td", { text: `${num(x.strip_shown)} → ${num(x.strip_taps)}` })))))
+        : el("div", { class: "empty", text: "No titles yet." })));
+  },
+
   async tvstrip(main) {
     const r = await api("GET", "/admin/tv-strip?days=7");
     const pct = (x) => (x === null || x === undefined ? "–" : `${Math.round(x * 100)}%`);
@@ -933,7 +979,8 @@ const RENDER = {
         el("tbody", {}, ...r.items.map((x) => el("tr", {}, el("td", { text: x.title }), el("td", { text: num(x.shown) }),
           el("td", { text: num(x.tap) }), el("td", { text: num(x.close) }), el("td", { text: pct(x.tap_rate) }),
           el("td", { text: pct(x.close_rate) }))))) : el("div", { class: "empty", text: "Nothing shown yet." }),
-        el("div", { class: "small muted", style: "margin-top: 10px;", text: `Rules: after ${Math.round(r.rules.after_portion * 100)}% of a video, never in the first ${r.rules.min_posts} posts, ${r.rules.gap_posts}+ posts apart, at most ${r.rules.max_per_session} a session, ${r.rules.show_seconds} s on screen, none for a week after ${r.rules.closes_per_week} closes.` })));
+        el("div", { class: "small muted", style: "margin-top: 10px;", text: `Rules: after ${Math.round(r.rules.after_portion * 100)}% of a video, never in the first ${r.rules.min_posts} posts, ${r.rules.gap_posts}+ posts apart, at most ${r.rules.max_per_session} a session, ${r.rules.show_seconds} s on screen, none for a week after ${r.rules.closes_per_week} closes.` })),
+      stripRulesCard(r.rules, () => RENDER.tvstrip(main)));
   },
 
   async categories(main) {
@@ -1183,6 +1230,251 @@ const RENDER = {
         el("td", { class: "small muted", text: "@" + (r.admin.username || r.admin.id) }))))) : el("div", { class: "empty", text: "Nothing yet." })));
   },
 };
+
+
+// ------------------------------------------------------------ Wano TV titles editor
+
+async function apiForm(path, form) {
+  let r;
+  try { r = await fetch(API + path, { method: "POST", headers: { "Authorization": "Bearer " + token }, body: form }); }
+  catch (e) { throw new ApiError(0, "Can't reach the server. Check your internet."); }
+  let data = null;
+  try { data = await r.json(); } catch (e) { data = null; }
+  if (!r.ok) { let m = data && data.detail; if (Array.isArray(m)) m = m.map((d) => d.msg).join("; "); throw new ApiError(r.status, m || "Upload failed (" + r.status + ")"); }
+  return data;
+}
+
+// Resumable upload to Cloudflare Stream (tus), 50 MB at a time, retrying a broken chunk.
+async function tusUpload(url, file, onPct) {
+  const CHUNK = 50 * 1024 * 1024;
+  let offset = 0, tries = 0;
+  while (offset < file.size) {
+    try {
+      const r = await fetch(url, { method: "PATCH", headers: { "Tus-Resumable": "1.0.0", "Upload-Offset": String(offset),
+        "Content-Type": "application/offset+octet-stream" }, body: file.slice(offset, offset + CHUNK) });
+      if (!r.ok) throw new Error("Cloudflare said " + r.status);
+      offset = Number(r.headers.get("Upload-Offset")) || Math.min(file.size, offset + CHUNK);
+      tries = 0;
+      onPct(Math.round(offset / file.size * 100));
+    } catch (e) {
+      if (++tries > 6) throw new Error("The upload kept failing: " + e.message + ". Press Upload again to retry.");
+      await new Promise((ok) => setTimeout(ok, 2000 * tries));
+      try {
+        const h = await fetch(url, { method: "HEAD", headers: { "Tus-Resumable": "1.0.0" } });
+        const o = Number(h.headers.get("Upload-Offset"));
+        if (Number.isFinite(o)) offset = o;
+      } catch (e2) { /* try the same chunk again */ }
+    }
+  }
+}
+
+function readText(file) {
+  return new Promise((ok, bad) => { const fr = new FileReader(); fr.onload = () => ok(String(fr.result || "")); fr.onerror = () => bad(new Error("Couldn't read the file")); fr.readAsText(file); });
+}
+
+function stripRulesCard(rules, done) {
+  const LABELS = [["after_portion", "Show after this share of a video (0-1)", 0.05], ["min_posts", "Not in the first … posts", 1], ["gap_posts", "Posts between two strips", 1],
+    ["max_per_session", "Most per session", 1], ["show_seconds", "Seconds on screen", 1], ["closes_per_week", "Closes before it stops for a week", 1]];
+  const inputs = {};
+  return el("div", { class: "card" }, el("h3", { text: "Change the rules" }),
+    el("p", { class: "small muted", text: "Takes effect the next time each app opens. No app update needed." }),
+    el("div", { class: "two" }, ...LABELS.map(([k, label, step]) => { inputs[k] = el("input", { type: "number", step, value: rules[k] }); return el("label", { class: "field" }, el("span", { text: label }), inputs[k]); })),
+    el("button", { class: "btn", text: "Save rules", onclick: async (e) => {
+      const body = {};
+      for (const [k] of LABELS) body[k] = k === "after_portion" ? Number(inputs[k].value) : Math.round(Number(inputs[k].value));
+      if (await act(e.target, () => api("POST", "/admin/tv/strip-rules", body), "Rules saved")) done();
+    } }));
+}
+
+async function tvEditor(main, box, id) {
+  const t = id ? await api("GET", `/admin/tv/titles/${id}`) : { type: "movie", status: "hidden", genres: [], credits: { distributor: "Wano TV", cast: [], people: [] }, trailer: {}, captions: [], seasons: [], problems: [], clips: [] };
+  const reload = () => tvEditor(main, box, t.id);
+  const inp = (v, attrs) => { const i = el("input", { type: "text", ...(attrs || {}) }); i.value = v === undefined || v === null ? "" : v; return i; };
+  const area = (v, rows) => { const a = el("textarea", { rows: rows || 3 }); a.value = v || ""; return a; };
+  const f = {
+    title: inp(t.title, { maxlength: 120 }), slug: inp(t.slug, { maxlength: 80, placeholder: "e.g. one-field (the web address)" }),
+    type: el("select", {}, el("option", { value: "movie", text: "Film", selected: t.type !== "series" }), el("option", { value: "series", text: "Series", selected: t.type === "series" })),
+    genres: inp((t.genres || []).join(", "), { placeholder: "Documentary, Drama" }), year: inp(t.year || new Date().getFullYear(), { type: "number" }),
+    release_date: inp(t.release_date ? String(t.release_date).slice(0, 10) : "", { type: "date" }), duration_minutes: inp(t.duration_minutes || 0, { type: "number" }),
+    age_rating: inp(t.age_rating || "All", { maxlength: 10, placeholder: "All, 13+, 16+, 18+" }), description: inp(t.description, { maxlength: 300, placeholder: "One line" }),
+    synopsis: area(t.synopsis, 5), poster: inp(t.poster), backdrop: inp(t.backdrop), thumb: inp((t.trailer || {}).thumbnail),
+    trailer: inp((t.trailer || {}).video_url, { placeholder: "https://… (public trailer link)" }), trailer_s: inp((t.trailer || {}).duration_seconds || 0, { type: "number" }),
+    director: inp((t.credits || {}).director), cast: inp(((t.credits || {}).cast || []).join(", ")), production: inp((t.credits || {}).production),
+    distributor: inp((t.credits || {}).distributor || "Wano TV"),
+    people: area(((t.credits || {}).people || []).map((p) => [p.name, p.role, p.username ? "@" + p.username : ""].filter(Boolean).join(" | ")).join("\n"), 4),
+    video_url: inp(t.cf_uid ? "" : t.video_url, { placeholder: t.cf_uid ? "Film uploaded to Cloudflare (paste a Spaces link to replace it)" : "https://…/wano-tv/<folder>/master.m3u8" }),
+    featured: el("input", { type: "checkbox" }), popularity: inp(t.popularity || 0, { type: "number" }), coming_at: inp(t.coming_at || "", { type: "date" }),
+  };
+  f.featured.checked = !!t.featured;
+  const field = (label, node, hint) => el("label", { class: "field" }, el("span", { text: label }), node, hint ? el("div", { class: "small muted", text: hint }) : null);
+  const picture = (label, input) => {
+    const file = el("input", { type: "file", accept: ".jpg,.jpeg,.png,.webp" });
+    file.onchange = async () => {
+      if (!t.id) { toast("Save the title first, then add pictures", true); return; }
+      const fd = new FormData(); fd.append("file", file.files[0]);
+      const out = await act(null, () => apiForm(`/admin/tv/titles/${t.id}/art-file`, fd), "Uploaded: press Save");
+      if (out) input.value = out.url;
+    };
+    return field(label, el("div", {}, input, el("div", { style: "margin-top: 4px;" }, file)));
+  };
+  const body = () => ({
+    slug: f.slug.value.trim(), title: f.title.value.trim(), type: f.type.value,
+    genres: f.genres.value.split(",").map((g) => g.trim()).filter(Boolean), year: Number(f.year.value) || 0,
+    release_date: f.release_date.value || null, duration_minutes: Number(f.duration_minutes.value) || 0, age_rating: f.age_rating.value.trim() || "All",
+    description: f.description.value.trim(), synopsis: f.synopsis.value.trim(), poster: f.poster.value.trim(), backdrop: f.backdrop.value.trim(),
+    trailer: { thumbnail: f.thumb.value.trim(), video_url: f.trailer.value.trim(), duration_seconds: Number(f.trailer_s.value) || 0 },
+    credits: { director: f.director.value.trim(), production: f.production.value.trim(), distributor: f.distributor.value.trim(),
+      cast: f.cast.value.split(",").map((c) => c.trim()).filter(Boolean),
+      people: f.people.value.split("\n").map((l) => l.split("|").map((x) => x.trim())).filter((p) => p[0] && p[1])
+        .map((p) => ({ name: p[0], role: p[1], username: (p[2] || "").replace(/^@/, "") })) },
+    video_url: f.video_url.value.trim() || (t.cf_uid ? t.video_url : ""), featured: f.featured.checked,
+    popularity: Number(f.popularity.value) || 0, coming_at: f.coming_at.value || null,
+  });
+  const save = el("button", { class: "btn", text: t.id ? "Save" : "Create (Hidden)", onclick: async (e) => {
+    const out = await act(e.target, () => t.id ? api("PUT", `/admin/tv/titles/${t.id}`, body()) : api("POST", "/admin/tv/titles", body()), "Saved");
+    if (out) RENDER.tvtitles(main, out.id);
+  } });
+
+  const sections = [];
+  if (t.id) {
+    // Status
+    const statusBtn = (s, label) => el("button", { class: "btn small " + (t.status === s ? "" : "secondary"), text: label, disabled: t.status === s, onclick: async (e) => {
+      const yes = s !== "live" || await confirmBox(`Make "${t.title}" live?`, "It shows in the app for everyone straight away." + (t.status === "coming_soon" ? " Everyone who tapped Remind me gets a notification." : ""), "Go live");
+      if (yes && await act(e.target, () => api("POST", `/admin/tv/titles/${t.id}/status`, { status: s }), "Done")) RENDER.tvtitles(main, t.id);
+    } });
+    const notify = el("button", { class: "btn small secondary", text: t.notified_at ? "Everyone was told " + when(t.notified_at) : "Tell everyone (push)", disabled: !!t.notified_at || t.status !== "live", onclick: async (e) => {
+      if (await confirmBox("Send \"New on Wano TV\" to everyone?", `Everyone with notifications on gets "New on Wano TV: ${t.title}" (not people in their night hours, and not under-age accounts for rated titles). This can only be done once per title.`, "Send"))
+        if (await act(e.target, () => api("POST", `/admin/tv/titles/${t.id}/notify`), "Sending")) reload();
+    } });
+    sections.push(el("div", { class: "card" }, el("h3", { text: "Status" }),
+      el("div", { class: "row", style: "gap: 8px; flex-wrap: wrap;" }, statusBtn("live", "Live"), statusBtn("coming_soon", "Coming soon"), statusBtn("hidden", "Hidden"), notify),
+      t.problems.length ? el("ul", { class: "small", style: "color: #b42318; margin-top: 10px;" }, ...t.problems.map((p) => el("li", { text: p }))) : el("p", { class: "small muted", text: "Ready: the app can show this title." })));
+
+    sections.push(filmCard(t, null, reload));
+
+    if (t.type === "series") sections.push(episodesCard(t, reload));
+
+    // Clips in the feed
+    const vid = el("input", { type: "text", placeholder: "Post link, e.g. https://wanoafrica.com/v/…" });
+    sections.push(el("div", { class: "card" }, el("h3", { text: "Clips in the feed" }),
+      el("p", { class: "small muted", text: "Feed posts from this title. With the \"Clips: Watch the full film\" switch on, they show a button that opens the title." }),
+      ...(t.clips || []).map((c) => el("div", { class: "row space small", style: "padding: 4px 0;" }, el("a", { href: postLink(c), target: "_blank", rel: "noopener", text: c }),
+        el("button", { class: "btn small secondary", text: "Remove", onclick: async (e) => { if (await act(e.target, () => api("DELETE", `/admin/tv/clips/${c}`), "Removed")) reload(); } }))),
+      el("div", { class: "row", style: "gap: 8px; margin-top: 8px;" }, vid, el("button", { class: "btn small", text: "Link post", onclick: async (e) => {
+        if (vid.value.trim() && await act(e.target, () => api("POST", `/admin/tv/titles/${t.id}/clips`, { video: vid.value.trim() }), "Linked")) reload();
+      } }))));
+  }
+
+  box.replaceChildren(el("div", { class: "card" }, el("h3", { text: t.id ? `Edit: ${t.title}` : "New title" }),
+    el("div", { class: "two" },
+      el("div", {}, field("Title", f.title), field("Web address (slug)", f.slug, "wanoafrica.com/tv/<this>. Lower case and dashes."),
+        field("Kind", f.type), field("Genres", f.genres, "Comma separated. Not \"Series\" or \"Film\"."),
+        el("div", { class: "row", style: "gap: 8px;" }, field("Year", f.year), field("Release date", f.release_date), field("Minutes", f.duration_minutes), field("Rating", f.age_rating)),
+        field("One-line description", f.description), field("Story (synopsis)", f.synopsis),
+        field("Coming soon date (optional)", f.coming_at, "Shown on the Coming soon row."),
+        el("label", { class: "row", style: "gap: 8px; margin: 8px 0;" }, f.featured, el("span", { text: "Featured (top of Wano TV)" })), field("Popularity boost (0-1000)", f.popularity)),
+      el("div", {}, picture("Poster (portrait)", f.poster), picture("Landscape picture", f.backdrop), picture("Trailer picture", f.thumb),
+        field("Trailer link", f.trailer), field("Trailer length (seconds)", f.trailer_s),
+        field("Director", f.director), field("Cast", f.cast, "Comma separated"), field("Production", f.production), field("Distributor", f.distributor),
+        field("Credits with Wano profiles", f.people, "One per line: Name | Role | @username (the @username links their Wano profile)"),
+        t.type === "series" ? null : field("Film on Spaces (optional)", f.video_url, "Or upload the film below, after saving."))),
+    save), ...sections);
+  box.scrollIntoView({ behavior: "smooth" });
+}
+
+// Film, subtitles and offline copy, for a title (ep = null) or one episode.
+function filmCard(t, ep, reload) {
+  const src = ep || t;
+  const q = ep ? `?episode=${ep.id}` : "";
+  const status = el("div", { class: "small muted" });
+  const what = src.cf_uid ? (src.cf_ready ? "Film on Cloudflare: ready" : "Film on Cloudflare: processing (press Check)") : src.video_url ? "Film on Spaces" : "No film yet";
+  const file = el("input", { type: "file", accept: "video/*,.mp4,.mov,.mkv" });
+  const upload = el("button", { class: "btn small", text: "Upload film to Cloudflare", onclick: async (e) => {
+    const fl = file.files[0];
+    if (!fl) { toast("Pick the film file first", true); return; }
+    e.target.disabled = true;
+    try {
+      const up = await api("POST", `/admin/tv/titles/${t.id}/film${q}`, { filename: fl.name, size: fl.size });
+      await tusUpload(up.upload_url, fl, (p) => { status.textContent = `Uploading… ${p}% (keep this tab open)`; });
+      status.textContent = "Uploaded. Cloudflare is preparing it: press Check in a few minutes.";
+      toast("Film uploaded");
+    } catch (err) { status.textContent = ""; toast(err.message, true); }
+    finally { e.target.disabled = false; }
+  } });
+  const check = src.cf_uid || src.download_cf_uid ? el("button", { class: "btn small secondary", text: "Check film", onclick: async (e) => {
+    const out = await act(e.target, () => api("POST", `/admin/tv/titles/${t.id}/film/check${q}`));
+    if (out) { toast(out.ready === null ? (out.download && out.download.ready ? "Offline copy ready" : "Offline copy still processing") : out.ready ? "Ready to play" : `Still processing${out.pct ? " (" + out.pct + "%)" : ""}`); reload(); }
+  } }) : null;
+  const offFile = el("input", { type: "file", accept: ".mp4,.mov" });
+  const offline = el("button", { class: "btn small secondary", text: src.download_ready ? "Offline copy ✓" : "Make offline copy", onclick: async (e) => {
+    if (src.cf_uid) {
+      const out = await act(e.target, () => api("POST", `/admin/tv/titles/${t.id}/offline${q}`, { filename: "" }));
+      if (out) { toast(out.ready ? "Offline copy ready" : "Cloudflare is making it: press Check film later"); reload(); }
+      return;
+    }
+    const fl = offFile.files[0];
+    if (!fl) { toast("Pick an MP4 of the film first (720p is plenty)", true); return; }
+    e.target.disabled = true;
+    try {
+      const up = await api("POST", `/admin/tv/titles/${t.id}/offline${q}`, { filename: fl.name, size: fl.size });
+      await tusUpload(up.upload_url, fl, (p) => { status.textContent = `Uploading the offline copy… ${p}%`; });
+      status.textContent = "Uploaded. Press Check film in a few minutes to finish it."; toast("Offline copy uploaded"); reload();
+    } catch (err) { status.textContent = ""; toast(err.message, true); }
+    finally { e.target.disabled = false; }
+  } });
+  const lang = el("input", { type: "text", placeholder: "Language code: en, fr, sw, lg", maxlength: 12, style: "width: 170px;" });
+  const label = el("input", { type: "text", placeholder: "Label: English", maxlength: 40, style: "width: 150px;" });
+  const subs = el("input", { type: "file", accept: ".srt,.vtt" });
+  const addSubs = el("button", { class: "btn small secondary", text: "Add subtitles", onclick: async (e) => {
+    if (!subs.files[0] || !lang.value.trim()) { toast("Pick the .srt/.vtt file and type the language code", true); return; }
+    const text = await readText(subs.files[0]);
+    if (await act(e.target, () => api("POST", `/admin/tv/titles/${t.id}/captions${q}`, { language: lang.value.trim().toLowerCase(), label: label.value.trim(), text }), "Subtitles added")) reload();
+  } });
+  return el("div", { class: ep ? "" : "card", style: ep ? "border-top: 1px solid var(--border); padding-top: 10px; margin-top: 10px;" : "" },
+    ep ? el("div", { style: "font-weight: 600;", text: `Episode ${ep.number}: film and subtitles` }) : el("h3", { text: "Film" }),
+    el("p", { class: "small", text: what }),
+    t.type === "series" && !ep ? el("p", { class: "small muted", text: "A series plays its episodes: add the films in Episodes below." }) :
+      el("div", {},
+        el("div", { class: "row", style: "gap: 8px; flex-wrap: wrap;" }, file, upload, check), status,
+        el("div", { class: "small", style: "margin-top: 10px;" }, "Subtitles: ", (src.captions || []).length ? null : "none",
+          ...(src.captions || []).map((c) => el("span", { style: "margin-right: 10px;" }, `${c.label} (${c.language}) `,
+            el("button", { class: "btn small secondary", text: "×", onclick: async (e) => { if (await act(e.target, () => api("DELETE", `/admin/tv/titles/${t.id}/captions/${c.language}${q}`), "Removed")) reload(); } })))),
+        el("div", { class: "row", style: "gap: 8px; flex-wrap: wrap; margin-top: 6px;" }, lang, label, subs, addSubs),
+        el("div", { class: "row", style: "gap: 8px; flex-wrap: wrap; margin-top: 10px;" }, src.cf_uid ? null : offFile, offline,
+          el("span", { class: "small muted", text: "For Download to watch later (Downloads switch)." }))));
+}
+
+function episodesCard(t, reload) {
+  const eps = (t.seasons || []).flatMap((s) => s.episodes || []);
+  const sea = el("input", { type: "number", value: 1, style: "width: 70px;" });
+  const no = el("input", { type: "number", value: (eps.length ? Math.max(...eps.map((e) => e.number)) + 1 : 1), style: "width: 70px;" });
+  const ti = el("input", { type: "text", placeholder: "Episode title", maxlength: 120 });
+  const mins = el("input", { type: "number", placeholder: "Minutes", style: "width: 90px;" });
+  const syn = el("textarea", { rows: 2, placeholder: "What happens (optional)" });
+  const link = el("input", { type: "text", placeholder: "Film on Spaces (optional): https://…/wano-tv/<this title's folder>/…/master.m3u8" });
+  const thumb = el("input", { type: "text", placeholder: "Episode picture link (optional)" });
+  const pic = el("input", { type: "file", accept: ".jpg,.jpeg,.png,.webp" });
+  pic.onchange = async () => { const fd = new FormData(); fd.append("file", pic.files[0]); const out = await act(null, () => apiForm(`/admin/tv/titles/${t.id}/art-file`, fd), "Picture uploaded"); if (out) thumb.value = out.url; };
+  const fill = (e) => { sea.value = e.season; no.value = e.number; ti.value = e.title; mins.value = e.duration_minutes || ""; syn.value = e.synopsis || ""; link.value = e.cf_uid ? "" : (e.video_url || ""); thumb.value = e.thumbnail || ""; ti.focus(); };
+  return el("div", { class: "card" }, el("h3", { text: `Episodes (${eps.length})` }),
+    ...eps.map((e) => el("div", { style: "padding: 8px 0; border-bottom: 1px solid var(--border);" },
+      el("div", { class: "row space" }, el("div", {}, el("strong", { text: `S${e.season} E${e.number} · ${e.title}` }), el("span", { class: "small muted", text: ` · ${e.duration_minutes || "?"} min` })),
+        el("div", { class: "row", style: "gap: 6px;" }, el("button", { class: "btn small secondary", text: "Edit", onclick: () => fill(e) }),
+          el("button", { class: "btn small secondary", text: "Remove", onclick: async (ev) => {
+            if (await confirmBox(`Remove episode ${e.number}?`, "Its film and subtitles stay in storage; only the episode is taken off the title.", "Remove", true))
+              if (await act(ev.target, () => api("DELETE", `/admin/tv/titles/${t.id}/episodes/${e.id}`), "Removed")) reload();
+          } }))),
+      filmCard(t, e, reload))),
+    el("h3", { text: "Add or change an episode", style: "margin-top: 14px;" }),
+    el("div", { class: "row", style: "gap: 8px; flex-wrap: wrap;" }, el("span", { class: "small", text: "Season" }), sea, el("span", { class: "small", text: "Episode" }), no, ti, mins),
+    el("div", { style: "margin-top: 6px;" }, syn), el("div", { style: "margin-top: 6px;" }, link),
+    el("div", { class: "row", style: "gap: 8px; margin-top: 6px;" }, thumb, pic),
+    el("button", { class: "btn small", style: "margin-top: 8px;", text: "Save episode", onclick: async (ev) => {
+      const out = await act(ev.target, () => api("PUT", `/admin/tv/titles/${t.id}/episodes`, { season: Number(sea.value), number: Number(no.value), title: ti.value.trim(),
+        synopsis: syn.value.trim(), duration_minutes: Number(mins.value) || 0, thumbnail: thumb.value.trim(), video_url: link.value.trim() }), "Episode saved: upload its film below it");
+      if (out) reload();
+    } }));
+}
 
 // ------------------------------------------------------------ pieces
 
