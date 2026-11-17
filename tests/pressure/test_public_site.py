@@ -166,3 +166,34 @@ async def test_PS9_emails_and_phone_numbers_never_shown(client, db):
     row = next(c for c in d["creators"] if c["username"] is None)
     assert row["display_name"] == "Wano creator" and row["url"] == f"https://wanoafrica.com/u/{e}"
     assert "jka@gmail.com" not in str((await client.get(f"{P}/creators")).json())
+
+
+async def test_PS10_topic_tag_and_sound_pages_only_when_backed_by_posts(client, db):
+    a, _ = await make_user(db, username="ama")
+    kid, _ = await make_user(db, username="kid", date_of_birth=datetime.utcnow() - timedelta(days=365 * 15))
+    for i in range(7):
+        await make_video(db, a, category="comedy", country="UG", hashtags=["#KampalaComedy", "skits"], views_count=i,
+                         sound={"id": "s1", "title": "Wano Sauti Yetu", "artist": "Wano Band"}, **THUMB)
+    await make_video(db, kid, category="comedy", country="UG", hashtags=["kampalacomedy"], views_count=999,
+                     sound={"id": "s1", "title": "Wano Sauti Yetu"}, **THUMB)
+    for i in range(3):
+        await make_video(db, a, category="music", country="NG", hashtags=["call0785476538"], **THUMB)
+    items = (await client.get(f"{P}/topics")).json()["items"]
+    keys = {(t["topic"], t["country"]) for t in items}
+    assert ("comedy", "ug") in keys and ("comedy", None) in keys and ("music", "ng") not in keys
+    t = (await client.get(f"{P}/topics/comedy?country=ug")).json()
+    assert t["posts_count"] == 8 and len(t["posts"]) == 7 and all(p["creator"]["username"] == "ama" for p in t["posts"])
+    assert t["country_name"] and t["creators"][0]["username"] == "ama"
+    assert (await client.get(f"{P}/topics/music?country=ng")).status_code == 404
+    assert (await client.get(f"{P}/topics/evil")).status_code == 404
+    tags = {x["tag"] for x in (await client.get(f"{P}/tags")).json()["items"]}
+    assert "kampalacomedy" in tags and "skits" in tags and not any("0785" in x for x in tags)
+    tg = (await client.get(f"{P}/tags/KampalaComedy")).json()
+    assert tg["tag"] == "kampalacomedy" and tg["posts_count"] == 8 and "skits" in tg["related"]
+    for bad in ("x", "a" * 80, "$ne", "call0785476538"):
+        assert (await client.get(f"{P}/tags/{bad}")).status_code == 404, bad
+    snd = (await client.get(f"{P}/sounds")).json()["items"]
+    assert snd[0]["id"] == "s1" and snd[0]["posts"] == 8
+    s = (await client.get(f"{P}/sounds/s1")).json()
+    assert s["title"] == "Wano Sauti Yetu" and len(s["posts"]) == 7
+    assert (await client.get(f"{P}/sounds/../etc")).status_code == 404

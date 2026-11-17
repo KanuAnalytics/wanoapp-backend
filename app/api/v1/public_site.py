@@ -78,3 +78,42 @@ async def enquiry(request: Request):
 @router.post("/account-deletion")
 async def account_deletion(request: Request):
     return await _errors(ps.deletion_request)(get_database(), await _json(request))
+
+
+@router.get("/topics")
+async def topics():
+    return {"items": await ps.topics(get_database())}
+
+
+@router.get("/topics/{cat}")
+async def topic(cat: str, country: Optional[str] = Query(None, pattern=r"^[A-Za-z]{2}$")):
+    out = await ps.topic(get_database(), cat[:40], country)
+    if not out:
+        raise HTTPException(status_code=404, detail="Not found")
+    return out
+
+
+@router.get("/tags")
+async def tags():
+    return {"items": await ps.tags(get_database())}
+
+
+@router.get("/tags/{tag}")
+async def tag(tag: str):
+    out = await ps.tag(get_database(), tag[:60])
+    if not out:
+        raise HTTPException(status_code=404, detail="Not found")
+    return out
+
+
+@router.get("/sounds")
+async def sounds():
+    return {"items": await ps.sounds(get_database())}
+
+
+@router.get("/sounds/{sound_id}")
+async def sound(sound_id: str):
+    out = await ps.sound(get_database(), sound_id[:70])
+    if not out:
+        raise HTTPException(status_code=404, detail="Not found")
+    return out

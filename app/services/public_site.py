@@ -455,3 +455,198 @@ async def newsletter_csv(db) -> str:
         lines.append(",".join([esc(d["_id"]), esc(" ".join(d.get("interests") or [])), esc(d.get("source")),
                                esc(d["created_at"].date().isoformat() if isinstance(d.get("created_at"), datetime) else "")]))
     return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------- topic, hashtag and sound pages
+# wanoafrica.com/videos/<topic>/<country>, /tag/<hashtag>, /sound/<id>. A page only
+# exists when enough real public posts back it (MIN_*), so none is empty.
+
+MIN_TOPIC_POSTS = 6
+MIN_TAG_POSTS = 5
+MIN_SOUND_POSTS = 3
+PAGE_POSTS = 24
+LIST_CACHE = 6 * 3600
+_TAG = re.compile(r"^[\wÀ-ɏ]{2,50}$")
+
+
+def _categories() -> Dict[str, str]:
+    from app.services import points
+    return {k: points.MORE_LABELS.get(k, v) for k, v in points.ALL_CATEGORIES.items()}
+
+
+CI = {"locale": "en", "strength": 2}
+
+
+async def _posts_with_creators(db, q: dict, limit: int = PAGE_POSTS, sort=("views_count", -1),
+                               collation=None) -> List[dict]:
+    cur = db.videos.find(q, collation=collation) if collation else db.videos.find(q)
+    vids = await cur.sort([sort, ("_id", -1)]).limit(limit * 3).to_list(limit * 3)
+    adults = await _adults(db, [str(v.get("creator_id")) for v in vids])
+    users = {u["_id"]: u async for u in db.users.find(
+        {"_id": {"$in": [ObjectId(a) for a in adults]}}, {"username": 1, "display_name": 1, "profile_picture": 1})}
+    out = []
+    for v in vids:
+        u = users.get(v.get("creator_id"))
+        if not u:
+            continue
+        p = _post(v)
+        if p["thumbnail"]:
+            out.append({**p, "creator": _person(u)})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _top_creators(posts: List[dict], limit: int = 8) -> List[dict]:
+    agg: Dict[str, dict] = {}
+    for p in posts:
+        c = p.get("creator") or {}
+        key = c.get("url")
+        if not key:
+            continue
+        a = agg.setdefault(key, {**c, "views": 0})
+        a["views"] += p["views"]
+    rows = sorted(agg.values(), key=lambda r: -r["views"])[:limit]
+    return [{"rank": i + 1, **r} for i, r in enumerate(rows)]
+
+
+async def topics(db) -> List[dict]:
+    """Every (topic, country) with enough public posts, and each topic overall."""
+    key = ("topics",)
+    hit = _cached(key)
+    if hit is not None:
+        return hit
+    cats = _categories()
+    rows = await db.videos.aggregate([
+        {"$match": {**_visible_post(), "category": {"$in": list(cats)}}},
+        {"$group": {"_id": {"c": "$category", "k": {"$toLower": {"$ifNull": ["$country", ""]}}}, "n": {"$sum": 1}}},
+    ], maxTimeMS=20000).to_list(None)
+    totals: Dict[str, int] = {}
+    out = []
+    for r in rows:
+        cat, cc = r["_id"]["c"], r["_id"]["k"]
+        totals[cat] = totals.get(cat, 0) + r["n"]
+        if len(cc) == 2 and cc in home_ground.COUNTRIES and r["n"] >= MIN_TOPIC_POSTS:
+            out.append({"topic": cat, "label": cats[cat], "country": cc, "country_name": home_ground.COUNTRIES[cc],
+                        "posts": r["n"]})
+    for cat, n in totals.items():
+        if n >= MIN_TOPIC_POSTS:
+            out.append({"topic": cat, "label": cats[cat], "country": None, "country_name": None, "posts": n})
+    out.sort(key=lambda x: -x["posts"])
+    return _store(key, out, LIST_CACHE)
+
+
+async def topic(db, cat: str, country: Optional[str]) -> Optional[dict]:
+    cats = _categories()
+    cc = (country or "").lower() or None
+    if cat not in cats or (cc and cc not in home_ground.COUNTRIES):
+        return None
+    key = ("topic", cat, cc)
+    hit = _cached(key)
+    if hit is not None:
+        return hit or None
+    q = {**_visible_post(), "category": cat}
+    if cc:
+        q["country"] = {"$in": [cc.upper(), cc]}
+    total = await db.videos.count_documents(q, limit=100_000)
+    if total < MIN_TOPIC_POSTS:
+        _store(key, {}, 1800)
+        return None
+    posts = await _posts_with_creators(db, q)
+    countries = [t for t in await topics(db) if t["topic"] == cat and t["country"]]
+    out = {"topic": cat, "label": cats[cat], "country": cc, "country_name": home_ground.COUNTRIES.get(cc) if cc else None,
+           "posts_count": total, "posts": posts, "creators": _top_creators(posts),
+           "countries": [{"id": t["country"], "name": t["country_name"], "posts": t["posts"]} for t in countries][:20],
+           "related": [{"topic": t["topic"], "label": t["label"]} for t in await topics(db)
+                       if t["country"] == cc and t["topic"] != cat][:10]}
+    return _store(key, out)
+
+
+def clean_tag(tag: str) -> Optional[str]:
+    t = (tag or "").strip().lstrip("#").lower()
+    return t if _TAG.match(t) else None
+
+
+async def tags(db, limit: int = 3000) -> List[dict]:
+    key = ("tags",)
+    hit = _cached(key)
+    if hit is not None:
+        return hit
+    rows = await db.videos.aggregate([
+        {"$match": {**_visible_post(), "hashtags.0": {"$exists": True}}},
+        {"$project": {"hashtags": 1}}, {"$unwind": "$hashtags"},
+        {"$match": {"hashtags": {"$type": "string"}}},
+        {"$group": {"_id": {"$toLower": "$hashtags"}, "n": {"$sum": 1}}},
+        {"$match": {"n": {"$gte": 2}}}, {"$sort": {"n": -1}}, {"$limit": limit * 2},
+    ], maxTimeMS=20000).to_list(limit * 2)
+    merged: Dict[str, int] = {}
+    for r in rows:   # "#Kampala" and "kampala" are one tag
+        t = clean_tag(r["_id"])
+        if t and not private_text(t):
+            merged[t] = merged.get(t, 0) + r["n"]
+    out = [{"tag": t, "posts": n} for t, n in sorted(merged.items(), key=lambda x: -x[1]) if n >= MIN_TAG_POSTS][:limit]
+    return _store(key, out, LIST_CACHE)
+
+
+async def tag(db, raw: str) -> Optional[dict]:
+    t = clean_tag(raw)
+    if not t or private_text(t):
+        return None
+    key = ("tag", t)
+    hit = _cached(key)
+    if hit is not None:
+        return hit or None
+    # Hashtags are stored as typed ("#KampalaComedy", "kampalacomedy"): match any case.
+    q = {**_visible_post(), "hashtags": {"$regex": f"^#?{re.escape(t)}$", "$options": "i"}}
+    total = await db.videos.count_documents(q, limit=100_000)
+    if total < MIN_TAG_POSTS:
+        _store(key, {}, 1800)
+        return None
+    posts = await _posts_with_creators(db, q)
+    rel = await db.videos.aggregate([
+        {"$match": q}, {"$project": {"hashtags": 1}}, {"$limit": 500}, {"$unwind": "$hashtags"},
+        {"$group": {"_id": {"$toLower": "$hashtags"}, "n": {"$sum": 1}}}, {"$sort": {"n": -1}}, {"$limit": 30},
+    ], maxTimeMS=10000).to_list(30)
+    known = {x["tag"] for x in await tags(db)}
+    related = list(dict.fromkeys(c for r in rel if (c := clean_tag(r["_id"])) and c != t and c in known))[:12]
+    out = {"tag": t, "posts_count": total, "posts": posts, "creators": _top_creators(posts), "related": related}
+    return _store(key, out)
+
+
+async def sounds(db, limit: int = 2000) -> List[dict]:
+    key = ("sounds",)
+    hit = _cached(key)
+    if hit is not None:
+        return hit
+    rows = await db.videos.aggregate([
+        {"$match": {**_visible_post(), "sound.id": {"$type": "string"}}},
+        {"$group": {"_id": "$sound.id", "sound": {"$first": "$sound"}, "n": {"$sum": 1}}},
+        {"$match": {"n": {"$gte": MIN_SOUND_POSTS}}}, {"$sort": {"n": -1}}, {"$limit": limit},
+    ], maxTimeMS=20000).to_list(limit)
+    out = []
+    for r in rows:
+        s = r.get("sound") or {}
+        title = _clip(s.get("title"), 90)
+        if title and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", r["_id"] or "") and not private_text(title):
+            out.append({"id": r["_id"], "title": title, "artist": _clip(s.get("artist"), 60), "posts": r["n"]})
+    return _store(key, out, LIST_CACHE)
+
+
+async def sound(db, sid: str) -> Optional[dict]:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", sid or ""):
+        return None
+    key = ("sound", sid)
+    hit = _cached(key)
+    if hit is not None:
+        return hit or None
+    q = {**_visible_post(), "sound.id": sid}
+    total = await db.videos.count_documents(q, limit=100_000)
+    first = await db.videos.find_one(q, {"sound": 1})
+    s = (first or {}).get("sound") or {}
+    if total < MIN_SOUND_POSTS or not s.get("title") or private_text(s.get("title")):
+        _store(key, {}, 1800)
+        return None
+    posts = await _posts_with_creators(db, q)
+    out = {"id": sid, "title": _clip(s.get("title"), 90), "artist": _clip(s.get("artist"), 60), "posts_count": total,
+           "posts": posts, "creators": _top_creators(posts)}
+    return _store(key, out)
