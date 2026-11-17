@@ -837,3 +837,10 @@ async def city_report(city: str = Query("kampala", max_length=60), fresh: bool =
         return await cr.report(get_database(), city.strip().lower(), fresh=fresh)
     except ValueError:
         raise HTTPException(status_code=404, detail="Unknown city")
+
+
+@router.get("/get-links")
+async def get_links_report(days: int = Query(30, ge=1, le=120), admin: str = Depends(require_admin)):
+    """Taps on creator invite links (wanoafrica.com/get?by=name), per link."""
+    from app.services import get_links
+    return {"days": days, "rows": await get_links.summary(get_database(), days)}

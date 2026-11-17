@@ -1037,8 +1037,9 @@ const RENDER = {
   },
 
   async kampala(main) {
-    const draw = (r) => {
+    const draw = (r, links) => {
       const pct = (v) => v == null ? "–" : `${v}%`;
+      const linkOf = (name) => `wanoafrica.com/get?by=${name}`;
       const seg = (s) => el("div", { class: "card" }, el("h3", { text: s.name }),
         el("table", {}, el("thead", {}, el("tr", {}, ...["Week of", "Active", "Came back", "Came back %", "New", "New who came back", "Posted"].map((h) => el("th", { text: h })))),
           el("tbody", {}, ...s.rows.slice().reverse().map((x) => el("tr", {},
@@ -1048,21 +1049,31 @@ const RENDER = {
       const cr = r.creators || [];
       const creators = el("div", { class: "card" }, el("h3", { text: `${r.city.name} creators, last 4 weeks` }),
         el("p", { class: "small muted", text: "Who to thank, feature in Wano Picks and ask to bring friends." }),
-        cr.length ? el("table", {}, el("thead", {}, el("tr", {}, ...["Creator", "Posts", "Views", "Followers"].map((h) => el("th", { text: h })))),
+        cr.length ? el("table", {}, el("thead", {}, el("tr", {}, ...["Creator", "Posts", "Views", "Followers", "Their invite link"].map((h) => el("th", { text: h })))),
           el("tbody", {}, ...cr.map((c) => el("tr", {}, el("td", { text: `@${c.username || c.id}${c.name ? " · " + c.name : ""}` }),
-            el("td", { text: num(c.posts) }), el("td", { text: num(c.views) }), el("td", { text: num(c.followers) })))))
+            el("td", { text: num(c.posts) }), el("td", { text: num(c.views) }), el("td", { text: num(c.followers) }),
+            el("td", { class: "small", text: c.username ? linkOf(String(c.username).toLowerCase()) : "–" })))))
           : el("div", { class: "empty", text: "No posts from this city in the last 4 weeks." }));
+      const lr = (links && links.rows) || [];
+      const linkCard = el("div", { class: "card" }, el("h3", { text: "Invite links, last 30 days" }),
+        el("p", { class: "small muted", text: "Taps on wanoafrica.com/get?by=name. Each phone goes straight to its store; a phone counts once per link per day. Installs from each link show in Play Console (campaign = the name) and App Store Connect (campaign get_name)." }),
+        lr.length ? el("table", {}, el("thead", {}, el("tr", {}, ...["Link", "Android", "iPhone", "Other", "Total", "Last tap"].map((h) => el("th", { text: h })))),
+          el("tbody", {}, ...lr.map((x) => el("tr", {}, el("td", { text: x.by === "none" ? "(no name)" : linkOf(x.by) }),
+            el("td", { text: num(x.android) }), el("td", { text: num(x.ios) }), el("td", { text: num(x.other) }),
+            el("td", { text: num(x.total) }), el("td", { text: x.last })))))
+          : el("div", { class: "empty", text: "No taps yet. Give each creator their own link: wanoafrica.com/get?by=theirname" }));
       const again = el("button", { class: "btn secondary small", text: "Refresh", onclick: async (e) => {
         const out = await act(e.target, () => api("GET", "/admin/city-report?city=kampala&fresh=true"), "Updated");
-        if (out) draw(out);
+        if (out) draw(out, await api("GET", "/admin/get-links").catch(() => null));
       } });
       main.replaceChildren(...head(`${r.city.name} growth`, "The number that matters: people who come back every week, not downloads. Active = signed in and watched, liked, posted or sent a message that week (Monday to Sunday, UTC). Came back % = of last week's active people, how many were active again."),
         el("div", { class: "card" },
           el("div", { text: `${num(r.members.city)} accounts in ${r.city.name} (Home Ground or profile city) · ${num(r.members.country)} in ${r.segments[1].name}` }),
           el("div", { class: "small muted", text: `Updated ${r.generated_at} UTC` }), again),
-        ...r.segments.map(seg), creators);
+        ...r.segments.map(seg), linkCard, creators);
     };
-    draw(await api("GET", "/admin/city-report?city=kampala"));
+    const [rep, links] = await Promise.all([api("GET", "/admin/city-report?city=kampala"), api("GET", "/admin/get-links").catch(() => null)]);
+    draw(rep, links);
   },
 
   async storage(main) {

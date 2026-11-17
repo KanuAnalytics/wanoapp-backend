@@ -69,6 +69,9 @@ async def create_indexes():
         (d.feed_impressions, [("viewer", 1), ("at", -1)], {}),
         (d.feed_impressions, [("viewer", 1), ("video_id", 1), ("at", -1)], {}),
         (d.feed_impressions, [("at", 1)], {"expireAfterSeconds": 30 * 24 * 3600}),
+        # Creator invite links (wanoafrica.com/get): one tap per phone per link per day
+        (d.get_link_seen, [("at", 1)], {"expireAfterSeconds": 2 * 24 * 3600}),
+        (d.get_link_daily, [("day", 1)], {}),
         # Trending: hourly engagement (kept 3 days) and once-per-6h view counting
         (d.video_stats_hourly, [("hour", 1)], {"expireAfterSeconds": 3 * 24 * 3600}),
         (d.video_stats_hourly, [("video_id", 1), ("hour", -1)], {}),
