@@ -637,6 +637,7 @@ from app.services import flyers as flyers_svc  # noqa: E402
 
 
 class FlyerIn(BaseModel):
+    all_viewers: StrictBool = False
     model_config = ConfigDict(extra="forbid")
     business: str = Field(..., max_length=200)
     line: str = Field("", max_length=400)

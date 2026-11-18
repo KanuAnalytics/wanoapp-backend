@@ -132,7 +132,10 @@ async def validate(db, body: dict) -> dict:
     if category not in CATEGORIES:
         raise HTTPException(status_code=422, detail="Pick a category")
     countries = sorted({c.lower() for c in (body.get("countries") or []) if isinstance(c, str)})
-    if not countries or any(c not in hg.COUNTRIES for c in countries):
+    public = body.get("all_viewers") is True
+    if public and (category in ADULTS_ONLY or body.get("cities") or body.get("circle") or body.get("testers_only")):
+        raise HTTPException(status_code=422, detail="All viewers requires an all-ages flyer without city, circle or tester restrictions")
+    if (not countries and not public) or any(c not in hg.COUNTRIES for c in countries):
         raise HTTPException(status_code=422, detail="Pick at least one country")
     cities = sorted({c for c in (body.get("cities") or []) if isinstance(c, str)})
     for c in cities:
@@ -183,7 +186,7 @@ async def validate(db, body: dict) -> dict:
     if cap is not None and (not isinstance(cap, int) or isinstance(cap, bool) or not (1 <= cap <= 10_000_000)):
         raise HTTPException(status_code=422, detail="Views per day must be a number, or empty for no limit")
     motion = {"motion": _motion_url(body["motion"])} if "motion" in body else {}
-    return {**motion, "business": business, "line": line, "category": category, "countries": countries, "cities": cities,
+    return {**motion, "all_viewers": public, "business": business, "line": line, "category": category, "countries": countries, "cities": cities,
             "image": image, "image_small": _https(body.get("image_small")), "button": kind, "button_value": value,
             "starts_at": starts, "ends_at": ends, "daily_cap": cap, "active": body.get("active") is not False,
             "testers": names, "tester_ids": tester_ids, "testers_only": body.get("testers_only") is True,
@@ -219,7 +222,7 @@ async def set_active(db, fid: str, active: bool) -> dict:
 
 
 def _admin_out(d: dict) -> dict:
-    return {"id": str(d["_id"]), "business": d.get("business"), "line": d.get("line"), "category": d.get("category"),
+    return {"id": str(d["_id"]), "all_viewers": d.get("all_viewers") is True, "business": d.get("business"), "line": d.get("line"), "category": d.get("category"),
             "countries": d.get("countries") or [], "cities": d.get("cities") or [], "image": d.get("image"),
             "motion": d.get("motion"), "image_small": d.get("image_small"), "button": d.get("button"), "button_value": d.get("button_value"),
             "starts_at": d.get("starts_at"), "ends_at": d.get("ends_at"), "daily_cap": d.get("daily_cap"),
@@ -372,7 +375,9 @@ def matches(flyer: dict, viewer: dict, now: Optional[datetime] = None) -> bool:
         return True
     if flyer.get("testers_only") is True:
         return False
-    if hg.is_minor(viewer, now):
+    if flyer.get("all_viewers") is True and flyer.get("category") not in ADULTS_ONLY and not flyer.get("cities") and not flyer.get("circle"):
+        return True
+    if not viewer or hg.is_minor(viewer, now):
         return False
     country = hg.country_of(viewer)
     if not country or country not in (flyer.get("countries") or []):
@@ -418,14 +423,16 @@ async def for_viewer(db, viewer_id: Optional[str], now: Optional[datetime] = Non
     from app.services import home_ground as hg, tv_strip
     now = now or _now()
     rules = dict(tv_strip.RULES)
-    if not viewer_id or not ObjectId.is_valid(viewer_id):
-        return {"flyers": [], "rules": rules}
-    await hg.load_custom(db)
-    viewer = await db.users.find_one({"_id": ObjectId(viewer_id)},
-                                     {"localization": 1, "home_ground": 1, "area": 1, "date_of_birth": 1,
-                                      "is_active": 1})
-    if not viewer or viewer.get("is_active") is False:
-        return {"flyers": [], "rules": rules}
+    viewer = {}
+    if viewer_id is not None:
+        if not ObjectId.is_valid(viewer_id):
+            return {"flyers": [], "rules": rules}
+        await hg.load_custom(db)
+        viewer = await db.users.find_one({"_id": ObjectId(viewer_id)},
+                                         {"localization": 1, "home_ground": 1, "area": 1,
+                                          "date_of_birth": 1, "is_active": 1})
+        if not viewer or viewer.get("is_active") is False:
+            return {"flyers": [], "rules": rules}
     picks = [f for f in await _running(db, now) if matches(f, viewer, now)]
     random.shuffle(picks)
     picks.sort(key=lambda f: not is_tester(f, viewer))      # a tester's flyers first

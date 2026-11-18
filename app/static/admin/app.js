@@ -522,6 +522,7 @@ const RENDER = {
       ends: el("input", { type: "datetime-local", value: local(new Date(now.getTime() + 14 * 864e5)) }),
       cap: el("input", { type: "number", min: 1, placeholder: "No limit" }),
       testers: el("input", { type: "text", maxlength: 400, placeholder: "eilmer, nasir" }),
+      allViewers: el("input", { type: "checkbox" }),
       testersOnly: el("input", { type: "checkbox" }),
       file: el("input", { type: "file", accept: "image/jpeg,image/png,image/webp" }),
       active: el("input", { type: "checkbox", checked: true }),
@@ -600,6 +601,7 @@ const RENDER = {
       f.ends.value = x ? local(new Date(x.ends_at + "Z")) : local(new Date(Date.now() + 14 * 864e5));
       f.cap.value = x && x.daily_cap ? x.daily_cap : "";
       f.testers.value = x && x.testers ? x.testers.join(", ") : "";
+      f.allViewers.checked = !!x?.all_viewers;
       f.testersOnly.checked = !!(x && x.testers_only);
       f.active.checked = x ? x.active : true;
       const c = x && x.circle;
@@ -622,12 +624,12 @@ const RENDER = {
         button: f.button.value, button_value: f.button_value.value.trim(), starts_at: s.toISOString(), ends_at: en.toISOString(),
         daily_cap: f.cap.value ? Number(f.cap.value) : null, active: f.active.checked,
         testers: f.testers.value.split(/[\s,]+/).map((t) => t.replace(/^@/, "").trim()).filter(Boolean),
-        testers_only: f.testersOnly.checked,
+        testers_only: f.testersOnly.checked, all_viewers: f.allViewers.checked,
         circle: f.circlePick.value ? { place_id: f.circlePick.value, km: Number(f.circleKm.value) } : null };
       const circleWhere = body.circle ? ` within ${f.circleKm.selectedOptions[0].text} of ${circleLabel[body.circle.place_id] || body.circle.place_id}` : "";
       const where = body.testers_only ? `only the testers: ${body.testers.join(", ")}` : body.cities.length ? body.cities.map((c) => (opt.cities.find((x) => x.id === c) || { name: c }).name).join(", ")
         : body.countries.map((c) => (opt.countries.find((x) => x.id === c) || { name: c }).name).join(", ") + (circleWhere ? "" : " (whole country)");
-      const whereAll = body.testers_only ? where : where + circleWhere;
+      const whereAll = body.all_viewers ? "All viewers, including guests and all ages" : body.testers_only ? where : where + circleWhere;
       if (body.active && !(await confirmBox(editing ? "Save this flyer?" : "Start this flyer?",
         `${body.business}\nShown in: ${whereAll}\n${when(body.starts_at)} to ${when(body.ends_at)}\nOnly while the Local flyers switch is on.`, editing ? "Save" : "Start"))) return;
       const call = editing ? api("PUT", `/admin/flyers/${encodeURIComponent(editing)}`, body) : api("POST", "/admin/flyers", body);
@@ -647,7 +649,7 @@ const RENDER = {
         el("div", { class: "two" }, el("div", { class: "card" }, el("h3", { text: "By place" }), rep.places.length ? t(rep.places, "place", "City / country") : el("div", { class: "empty", text: "Not shown yet." })),
           el("div", { class: "card" }, el("h3", { text: "By day" }), rep.days.length ? t(rep.days, "day", "Day") : el("div", { class: "empty", text: "Not shown yet." }))));
     };
-    main.replaceChildren(...head("Local flyers", "Businesses' flyers in the Wano TV ticket's spot on shorts, marked Sponsored, with a WhatsApp, Call or Visit button. Only people in the countries (and cities) you pick see them; never under-18s; drinks only to people whose birthday shows 18+. Turn on the Local flyers switch for any to show."),
+    main.replaceChildren(...head("Local flyers", "Businesses' flyers in the Wano TV ticket's spot on shorts, marked Sponsored, with a WhatsApp, Call or Visit button. Standard flyers use the countries and cities you pick and exclude under-18s. All-viewer flyers also reach guests and all ages worldwide; drinks only to people whose birthday shows 18+. Turn on the Local flyers switch for any to show."),
       el("div", { class: "two" },
         el("div", { class: "card" }, el("h3", { text: "Make a flyer" }),
           el("label", { class: "field" }, el("span", { text: "Business name (40)" }), f.business),
@@ -656,6 +658,7 @@ const RENDER = {
           el("label", { class: "field" }, el("span", { text: "Optional silent motion strip (MP4, first 10 seconds, 3:1 recommended)" }), motionInput, motionPreview),
           el("button", { class: "btn secondary", text: "Remove motion strip", onclick: clearMotion }),
           el("label", { class: "field" }, el("span", { text: "Category" }), f.category),
+          el("label", { class: "row" }, f.allViewers, el("span", { text: "All viewers worldwide, including guests and under-18s" })),
           el("div", { class: "two", style: "gap: 10px;" },
             el("label", { class: "field" }, el("span", { text: "Countries (Ctrl/Cmd-click for more)" }), f.countries),
             el("label", { class: "field" }, el("span", { text: "Cities (none = whole country)" }), f.cities)),
