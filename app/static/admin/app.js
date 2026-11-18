@@ -479,7 +479,36 @@ const RENDER = {
     const now = new Date();
     let editing = null;
     let image = null;
-    let uploadRevision = 0;
+    let uploadRevision = 0, motionRevision = 0;
+    let motion = null, picturePending = false, motionPending = false;
+    const motionInput = el("input", { type: "file", accept: "video/mp4" });
+    const motionPreview = el("img", { alt: "Motion strip preview", style: "display:none;width:100%;max-width:300px;" });
+    const refreshSave = () => { save.disabled = picturePending || motionPending || !image; };
+    const showMotion = () => {
+      motionPreview.style.display = motion ? "block" : "none";
+      if (motion) motionPreview.src = motion;
+      else motionPreview.removeAttribute("src");
+    };
+    const clearMotion = () => {
+      ++motionRevision;
+      motion = null; motionPending = false; motionInput.value = "";
+      showMotion(); refreshSave();
+    };
+    motionInput.addEventListener("change", async () => {
+      const file = motionInput.files[0];
+      if (!file) return;
+      const revision = ++motionRevision;
+      motionPending = true; refreshSave();
+      const form = new FormData(); form.append("file", file);
+      try {
+        const res = await fetch(API + "/admin/flyers/motion", { method: "POST", headers: { Authorization: "Bearer " + token }, body: form });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Motion upload failed");
+        if (revision !== motionRevision) return;
+        motion = data.motion; showMotion(); toast("Motion strip ready");
+      } catch (e) { if (revision === motionRevision) toast(e.message, true); }
+      finally { if (revision === motionRevision) { motionPending = false; refreshSave(); } }
+    });
     const f = {
       business: el("input", { type: "text", maxlength: 40, placeholder: "Mama Rose Kitchen" }),
       line: el("input", { type: "text", maxlength: 80, placeholder: "Lunch from 10,000 UGX, Kampala Road" }),
@@ -540,7 +569,7 @@ const RENDER = {
       const revision = ++uploadRevision;
       image = null;
       preview.style.display = "none";
-      save.disabled = true;
+      picturePending = true; refreshSave();
       const form = new FormData();
       form.append("file", file);
       try {
@@ -553,10 +582,11 @@ const RENDER = {
         preview.style.display = "block";
         toast("Picture ready");
       } catch (e) { if (revision === uploadRevision) toast(e.message, true); }
-      finally { if (revision === uploadRevision) save.disabled = !image; }
+      finally { if (revision === uploadRevision) { picturePending = false; refreshSave(); } }
     });
     const fill = (x) => {
-      ++uploadRevision;
+      ++uploadRevision; ++motionRevision;
+      picturePending = motionPending = false; motionInput.value = ""; motion = x?.motion || null; showMotion();
       f.file.value = "";
       save.disabled = false;
       editing = x ? x.id : null;
@@ -583,11 +613,12 @@ const RENDER = {
       save.textContent = x ? "Save changes" : "Create flyer";
     };
     const save = el("button", { class: "btn", text: "Create flyer", onclick: async (e) => {
+      if (picturePending || motionPending) return;
       const s = new Date(f.starts.value), en = new Date(f.ends.value);
       if (isNaN(s) || isNaN(en)) return toast("Pick a start and end", true);
       if (!image) return toast("Upload the flyer picture first", true);
       const body = { business: f.business.value.trim(), line: f.line.value.trim(), category: f.category.value,
-        countries: picked(f.countries), cities: picked(f.cities), image: image.image, image_small: image.image_small || null,
+        countries: picked(f.countries), cities: picked(f.cities), motion, image: image.image, image_small: image.image_small || null,
         button: f.button.value, button_value: f.button_value.value.trim(), starts_at: s.toISOString(), ends_at: en.toISOString(),
         daily_cap: f.cap.value ? Number(f.cap.value) : null, active: f.active.checked,
         testers: f.testers.value.split(/[\s,]+/).map((t) => t.replace(/^@/, "").trim()).filter(Boolean),
@@ -640,6 +671,8 @@ const RENDER = {
           el("label", { class: "field" }, el("span", { text: "Business name (40)" }), f.business),
           el("label", { class: "field" }, el("span", { text: "One line (80)" }), f.line),
           el("label", { class: "field" }, el("span", { text: "Picture (JPG, PNG or WebP, square or wide works best)" }), f.file, preview),
+          el("label", { class: "field" }, el("span", { text: "Optional silent motion strip (MP4, first 10 seconds, 3:1 recommended)" }), motionInput, motionPreview),
+          el("button", { class: "btn secondary", text: "Remove motion strip", onclick: clearMotion }),
           el("label", { class: "field" }, el("span", { text: "Category" }), f.category),
           el("div", { class: "two", style: "gap: 10px;" },
             el("label", { class: "field" }, el("span", { text: "Countries (Ctrl/Cmd-click for more)" }), f.countries),

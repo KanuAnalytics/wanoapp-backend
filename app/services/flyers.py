@@ -32,6 +32,9 @@ import asyncio
 import io
 import hashlib
 import logging
+import subprocess
+import tempfile
+from pathlib import Path
 import random
 import re
 import uuid
@@ -203,7 +206,8 @@ async def validate(db, body: dict) -> dict:
     cap = body.get("daily_cap")
     if cap is not None and (not isinstance(cap, int) or isinstance(cap, bool) or not (1 <= cap <= 10_000_000)):
         raise HTTPException(status_code=422, detail="Views per day must be a number, or empty for no limit")
-    return {"business": business, "line": line, "category": category, "countries": countries, "cities": cities,
+    motion = {"motion": _motion_url(body["motion"])} if "motion" in body else {}
+    return {**motion, "business": business, "line": line, "category": category, "countries": countries, "cities": cities,
             "image": image, "image_small": _https(body.get("image_small")), "button": kind, "button_value": value,
             "starts_at": starts, "ends_at": ends, "daily_cap": cap, "active": body.get("active") is not False,
             "testers": names, "tester_ids": tester_ids, "testers_only": body.get("testers_only") is True,
@@ -241,7 +245,7 @@ async def set_active(db, fid: str, active: bool) -> dict:
 def _admin_out(d: dict) -> dict:
     return {"id": str(d["_id"]), "business": d.get("business"), "line": d.get("line"), "category": d.get("category"),
             "countries": d.get("countries") or [], "cities": d.get("cities") or [], "image": d.get("image"),
-            "image_small": d.get("image_small"), "button": d.get("button"), "button_value": d.get("button_value"),
+            "motion": d.get("motion"), "image_small": d.get("image_small"), "button": d.get("button"), "button_value": d.get("button_value"),
             "starts_at": d.get("starts_at"), "ends_at": d.get("ends_at"), "daily_cap": d.get("daily_cap"),
             "active": d.get("active") is True, "testers": d.get("testers") or [],
             "testers_only": d.get("testers_only") is True, "circle": _circle_out(d.get("circle"))}
@@ -259,6 +263,47 @@ def _circle_out(c) -> Optional[dict]:
 def _put(key: str, data: bytes) -> None:
     from app.services import small_images
     small_images._put(key, data)
+
+
+MOTION_MAX_BYTES = 12_000_000
+
+
+def _motion_url(value):
+    from app.core.config import settings
+    prefix = f"{settings.DO_SPACES_CDN_URL}/{settings.DO_SPACES_BUCKET_NAME}/flyers/"
+    if not value:
+        return None
+    if not value.startswith(prefix) or not re.fullmatch(r"[0-9a-f]{32}-motion\.webp", value[len(prefix):]):
+        raise HTTPException(status_code=422, detail="Upload the motion strip in Admin first")
+    return value
+
+
+def _encode_motion(data):
+    # Produce a bounded silent image animation. This keeps audio focus with the Short.
+    with tempfile.TemporaryDirectory() as tmp:
+        src, dest = Path(tmp) / "input.mp4", Path(tmp) / "strip.webp"
+        src.write_bytes(data)
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-protocol_whitelist", "file",
+                        "-f", "mov", "-i", str(src), "-map", "0:v:0", "-an", "-sn", "-dn",
+                        "-vf", "fps=12,scale=600:200:force_original_aspect_ratio=decrease,pad=600:200:(ow-iw)/2:(oh-ih)/2",
+                        "-t", "10", "-c:v", "libwebp_anim", "-quality", "74", "-loop", "1", str(dest)],
+                       check=True, timeout=30, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return dest.read_bytes()
+
+
+async def store_motion(data):
+    from app.core.config import settings
+    if not data or len(data) > MOTION_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Upload an MP4 under 12 MB")
+    if data[4:8] != b"ftyp":
+        raise HTTPException(status_code=422, detail="Choose an MP4 video")
+    try:
+        blob = await asyncio.to_thread(_encode_motion, data)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        raise HTTPException(status_code=422, detail="Could not read this video")
+    key = f"{FOLDER}/{uuid.uuid4().hex}-motion.webp"
+    await asyncio.to_thread(_put, key, blob)
+    return {"motion": f"{settings.DO_SPACES_CDN_URL}/{settings.DO_SPACES_BUCKET_NAME}/{key}"}
 
 
 async def store_image(data: bytes) -> dict:
@@ -442,7 +487,7 @@ def viewer_out(f: dict, test: bool = False) -> dict:
 
 
 def _artwork_id(flyer):
-    return hashlib.sha256((flyer.get("image") or "").encode()).hexdigest()[:32]
+    return hashlib.sha256((flyer.get("motion") or flyer.get("image") or "").encode()).hexdigest()[:32]
 
 
 def viewer_out_base(f: dict) -> dict:
@@ -450,6 +495,7 @@ def viewer_out_base(f: dict) -> dict:
             "image": f.get("image"), "image_small": f.get("image_small"),
             "button": {"kind": f.get("button"), "label": BUTTON_LABEL.get(f.get("button"), "Open"),
                        "url": button_url(f.get("button"), f.get("button_value") or "")},
+            **({"motion": f["motion"]} if f.get("motion") else {}),
             "label": "Sponsored", "artwork_id": _artwork_id(f)}
 
 

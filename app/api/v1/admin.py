@@ -645,6 +645,7 @@ class FlyerIn(BaseModel):
     cities: list[str] = Field(default_factory=list, max_length=60)
     image: str = Field(..., max_length=2048)
     image_small: Optional[str] = Field(None, max_length=2048)
+    motion: Optional[str] = Field(None, max_length=2048)
     button: Literal["whatsapp", "call", "link"]
     button_value: str = Field(..., max_length=500)
     starts_at: str = Field(..., max_length=40)
@@ -693,6 +694,11 @@ async def flyer_list(days: int = Query(30, ge=1, le=365), admin: str = Depends(r
     return {"items": await flyers_svc.admin_list(get_database(), days)}
 
 
+@router.post("/flyers/motion")
+async def flyer_motion(file: UploadFile = File(...), admin: str = Depends(require_admin)):
+    return await flyers_svc.store_motion(await file.read(flyers_svc.MOTION_MAX_BYTES + 1))
+
+
 @router.post("/flyers/image")
 async def flyer_image(file: UploadFile = File(...), admin: str = Depends(require_admin)):
     data = await file.read(flyers_svc.IMAGE_MAX_BYTES + 1)
@@ -710,7 +716,7 @@ async def flyer_create(body: FlyerIn, admin: str = Depends(require_admin)):
 @router.put("/flyers/{fid}")
 async def flyer_update(fid: str, body: FlyerIn, admin: str = Depends(require_admin)):
     db = get_database()
-    out = await flyers_svc.update(db, admin, fid[:40], body.model_dump())
+    out = await flyers_svc.update(db, admin, fid[:40], body.model_dump(exclude_unset=True))
     await admin_log.record(db, admin, "flyer_update", {"id": out["id"], "business": out["business"]})
     return out
 
