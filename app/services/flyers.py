@@ -132,7 +132,7 @@ async def validate(db, body: dict) -> dict:
     if category not in CATEGORIES:
         raise HTTPException(status_code=422, detail="Pick a category")
     countries = sorted({c.lower() for c in (body.get("countries") or []) if isinstance(c, str)})
-    if not countries or any(c not in hg.COUNTRIES for c in countries) or len(countries) > 20:
+    if not countries or any(c not in hg.COUNTRIES for c in countries):
         raise HTTPException(status_code=422, detail="Pick at least one country")
     cities = sorted({c for c in (body.get("cities") or []) if isinstance(c, str)})
     for c in cities:
