@@ -357,3 +357,17 @@ async def test_motion_upload_and_legacy_edit(client, db, monkeypatch):
     assert (await client.get(F, headers=viewer)).json()["flyers"][0]["motion"] == motion
     assert (await client.put(f"{A}/{flyer['id']}", json=_body(), headers=admin)).json()["motion"] == motion
     assert (await client.put(f"{A}/{flyer['id']}", json=_body(motion=None), headers=admin)).json()["motion"] is None
+
+
+async def test_public_audience_and_contextual_topics(client, db):
+    await _on(db)
+    await _flyer(client, db, business="Standard")
+    await _flyer(client, db, business="Public", all_viewers=True, countries=[])
+    await _flyer(client, db, business="Sports only", all_viewers=True, clip_topics=["sports"])
+    _, minor = await _viewer(db, None, dob=datetime(2015, 1, 1))
+    for headers, params in [(minor, {}), ({}, {"authenticated": "false"})]:
+        for topic, expected in [(None, {"Public"}), ("sports", {"Sports only", "Public"}), ("film", {"Public"})]:
+            query = {**params, **({"clip_topic": topic} if topic else {})}
+            response = await client.get(F, headers=headers, params=query)
+            assert response.status_code == 200
+            assert {f["business"] for f in response.json()["flyers"]} == expected

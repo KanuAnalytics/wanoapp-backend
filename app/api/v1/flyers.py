@@ -25,9 +25,9 @@ async def _db():
 
 
 @router.get("")
-async def my_flyers(current_user: Optional[str] = Depends(get_optional_active_user)):
+async def my_flyers(clip_topic: Optional[str] = None, current_user: Optional[str] = Depends(get_optional_active_user)):
     """The flyers this person may see now (none when logged out), and the slot's rules."""
-    return await svc.for_viewer(await _db(), current_user)
+    return await svc.for_viewer(await _db(), current_user, clip_topic=clip_topic)
 
 
 @router.post("/event")

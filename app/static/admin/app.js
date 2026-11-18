@@ -522,6 +522,7 @@ const RENDER = {
       ends: el("input", { type: "datetime-local", value: local(new Date(now.getTime() + 14 * 864e5)) }),
       cap: el("input", { type: "number", min: 1, placeholder: "No limit" }),
       testers: el("input", { type: "text", maxlength: 400, placeholder: "eilmer, nasir" }),
+      topics: el("select", {multiple: true, size: 5}, ...(opt.clip_topics || []).map(t => el("option", {value:t.id, text:t.name}))),
       allViewers: el("input", { type: "checkbox" }),
       testersOnly: el("input", { type: "checkbox" }),
       file: el("input", { type: "file", accept: "image/jpeg,image/png,image/webp" }),
@@ -601,6 +602,7 @@ const RENDER = {
       f.ends.value = x ? local(new Date(x.ends_at + "Z")) : local(new Date(Date.now() + 14 * 864e5));
       f.cap.value = x && x.daily_cap ? x.daily_cap : "";
       f.testers.value = x && x.testers ? x.testers.join(", ") : "";
+      [...f.topics.options].forEach(o => { o.selected = (x?.clip_topics || []).includes(o.value); });
       f.allViewers.checked = !!x?.all_viewers;
       f.testersOnly.checked = !!(x && x.testers_only);
       f.active.checked = x ? x.active : true;
@@ -624,7 +626,7 @@ const RENDER = {
         button: f.button.value, button_value: f.button_value.value.trim(), starts_at: s.toISOString(), ends_at: en.toISOString(),
         daily_cap: f.cap.value ? Number(f.cap.value) : null, active: f.active.checked,
         testers: f.testers.value.split(/[\s,]+/).map((t) => t.replace(/^@/, "").trim()).filter(Boolean),
-        testers_only: f.testersOnly.checked, all_viewers: f.allViewers.checked,
+        testers_only: f.testersOnly.checked, all_viewers: f.allViewers.checked, clip_topics: picked(f.topics),
         circle: f.circlePick.value ? { place_id: f.circlePick.value, km: Number(f.circleKm.value) } : null };
       const circleWhere = body.circle ? ` within ${f.circleKm.selectedOptions[0].text} of ${circleLabel[body.circle.place_id] || body.circle.place_id}` : "";
       const where = body.testers_only ? `only the testers: ${body.testers.join(", ")}` : body.cities.length ? body.cities.map((c) => (opt.cities.find((x) => x.id === c) || { name: c }).name).join(", ")
@@ -657,7 +659,8 @@ const RENDER = {
           el("label", { class: "field" }, el("span", { text: "Picture (JPG, PNG or WebP, square or wide works best)" }), f.file, preview),
           el("label", { class: "field" }, el("span", { text: "Optional silent motion strip (MP4, first 10 seconds, 3:1 recommended)" }), motionInput, motionPreview),
           el("button", { class: "btn secondary", text: "Remove motion strip", onclick: clearMotion }),
-          el("label", { class: "field" }, el("span", { text: "Category" }), f.category),
+          el("label", { class: "field" }, el("span", { text: "Advertiser category" }), f.category),
+          el("label", { class: "field" }, el("span", { text: "Show on clips about (empty = all topics)" }), f.topics),
           el("label", { class: "row" }, f.allViewers, el("span", { text: "All viewers worldwide, including guests and under-18s" })),
           el("div", { class: "two", style: "gap: 10px;" },
             el("label", { class: "field" }, el("span", { text: "Countries (Ctrl/Cmd-click for more)" }), f.countries),
@@ -683,7 +686,7 @@ const RENDER = {
               el("div", { class: "row small", style: "margin-top: 4px; gap: 6px;" },
                 el("span", { class: "pill " + (x.active ? "green" : "grey"), text: x.active ? "On" : "Off" }),
                 x.testers_only ? el("span", { class: "pill", text: "Testers only" }) : null,
-                el("span", { class: "muted", text: (x.cities.length ? x.cities : x.countries).map(placeName).join(", ") + (x.circle ? ` · ${x.circle.km} km round ${x.circle.label}` : "") + " · until " + when(x.ends_at) }))),
+                el("span", { class: "muted", text: (x.all_viewers ? "All viewers worldwide" : (x.cities.length ? x.cities : x.countries).map(placeName).join(", ")) + (x.clip_topics?.length ? " · " + x.clip_topics.map(k => opt.clip_topics?.find(t => t.id === k)?.name || k).join(", ") : "") + (x.circle ? ` · ${x.circle.km} km round ${x.circle.label}` : "") + " · until " + when(x.ends_at) }))),
             el("td", { text: num(x.stats.shown) }), el("td", { text: num(x.stats.reach) }), el("td", { text: num(x.stats.tap) }),
             el("td", { text: pct(x.stats.tap_rate) }),
             el("td", { style: "text-align: right; white-space: nowrap;" },

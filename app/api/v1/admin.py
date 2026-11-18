@@ -638,6 +638,7 @@ from app.services import flyers as flyers_svc  # noqa: E402
 
 class FlyerIn(BaseModel):
     all_viewers: StrictBool = False
+    clip_topics: list[str] = Field(default_factory=list, max_length=32)
     model_config = ConfigDict(extra="forbid")
     business: str = Field(..., max_length=200)
     line: str = Field("", max_length=400)
@@ -680,10 +681,11 @@ class FlyerActiveIn(BaseModel):
 
 @router.get("/flyers/options")
 async def flyer_options(admin: str = Depends(require_admin)):
-    from app.services import home_ground as hg
+    from app.services import home_ground as hg, points
     db = get_database()
     await hg.load_custom(db)
-    return {"categories": [{"id": k, "name": v, "adults_only": k in flyers_svc.ADULTS_ONLY}
+    return {"clip_topics": [{"id": k, "name": points.MORE_LABELS.get(k, v)} for k, v in points.ALL_CATEGORIES.items()],
+            "categories": [{"id": k, "name": v, "adults_only": k in flyers_svc.ADULTS_ONLY}
                            for k, v in flyers_svc.CATEGORIES.items()],
             "countries": [{"id": k, "name": v} for k, v in sorted(hg.COUNTRIES.items(), key=lambda x: x[1])],
             "cities": [{"id": c["id"], "name": c["name"], "country": c["country"]}
