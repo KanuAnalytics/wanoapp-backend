@@ -283,10 +283,15 @@ def svc_doc(i, now):
             "daily_cap": None, "active": True}
 
 
-async def test_FY18_testers_see_it_anywhere_first_and_nobody_else_changes(client, db):
+@pytest.mark.parametrize(("username", "entered"), [
+    ("eilmer", "@Eilmer "),
+    ("WanoTeam", "WanoTeam"),
+    ("WanoTeam", "@wanoteam "),
+])
+async def test_FY18_testers_see_it_anywhere_first_and_nobody_else_changes(client, db, username, entered):
     await _on(db)
-    eilmer, eh = await _viewer(db, "us", username="eilmer")
-    await _flyer(client, db, business="Kampala Only", countries=["ug"], cities=["kampala"], testers=["@Eilmer "])
+    _, eh = await _viewer(db, "us", username=username)
+    await _flyer(client, db, business="Kampala Only", countries=["ug"], cities=["kampala"], testers=[entered])
     await _flyer(client, db, business="Lagos Only", countries=["ng"])
     r = (await client.get(F, headers=eh)).json()["flyers"]
     assert [f["business"] for f in r] == ["Kampala Only"] and r[0]["test"] is True
@@ -331,3 +336,47 @@ async def test_FY21_testers_only_needs_a_tester(client, db):
     r = await client.post(A, json=_body(testers_only=True), headers=ah)
     assert r.status_code == 422 and "tester" in r.json()["detail"]
     assert (await client.post(A, json=_body(testers_only="yes"), headers=ah)).status_code == 422
+
+
+async def test_delivery_check_and_separate_previews(client, db):
+    await _on(db)
+    uid, _ = await _viewer(db, "us", username="WanoTeam")
+    _, admin = await _admin(db)
+    flyer = await _flyer(client, db, testers=["wanoteam"])
+    endpoint = f"{A}/{flyer['id']}/delivery"
+    for account in ["@WanoTeam", f"https://devbe.wanoafrica.com/u/{uid}"]:
+        r = await client.get(endpoint, params={"account": account}, headers=admin)
+        assert r.json()["result"] == "Selected in this check."
+    assert await db.flyer_daily.count_documents({}) == 0
+    assert await svc.record(db, uid, flyer["id"], "shown")
+    report = await svc.report(db, flyer["id"])
+    assert report["preview"]["shown"] == 1 and report["days"] == []
+    await db.users.update_one({"_id": ObjectId(uid)}, {"$set": {"date_of_birth": datetime.utcnow() - timedelta(days=365*15)}})
+    assert not await svc.record(db, uid, flyer["id"], "shown")
+    r = await client.get(endpoint, params={"account": "@WanoTeam"}, headers=admin)
+    assert "minimum age" in r.json()["result"]
+
+
+async def test_concurrent_cap_and_unique_viewers(client, db):
+    await _on(db)
+    uid, _ = await _viewer(db)
+    flyer = await _flyer(client, db, daily_cap=1)
+    fid = flyer["id"]
+    now = datetime.utcnow()
+    accepted = await asyncio.gather(*(svc.record(db, uid, fid, "shown", now) for _ in range(4)))
+    assert sum(accepted) == 1
+    assert await svc.record(db, uid, fid, "shown", now + timedelta(days=1))
+    assert (await svc.report(db, fid))["unique_viewers_tracked"] == 1
+    await db.flyers.update_one({"_id": ObjectId(fid)}, {"$set": {"active": False}})
+    assert not await svc.record(db, uid, fid, "tap", now)
+
+
+async def test_alcohol_preview_requires_adult_and_offsets_are_utc(client, db):
+    await _on(db)
+    uid, _ = await _viewer(db, "us", dob=None, username="PreviewUser")
+    flyer = await _flyer(client, db, category="drinks", testers=["PreviewUser"])
+    assert not (await svc.for_viewer(db, uid))["flyers"]
+    assert not await svc.record(db, uid, flyer["id"], "shown")
+    doc = await svc.validate(db, _body(starts_at="2026-11-17T20:00:00-06:00",
+                                        ends_at="2026-11-18T04:00:00Z"))
+    assert doc["starts_at"] == datetime(2026, 11, 18, 2)

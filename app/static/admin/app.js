@@ -594,14 +594,32 @@ const RENDER = {
     }});
     const pct = (x) => (x === null || x === undefined ? "–" : `${(x * 100).toFixed(1)}%`);
     const placeName = (id) => (opt.cities.find((c) => c.id === id) || opt.countries.find((c) => c.id === id) || { name: id }).name;
+    const checkDelivery = (x) => {
+      const account = el("input", { placeholder: "@username or Wano profile link" });
+      const result = el("p", { role: "status" });
+      main.replaceChildren(...head("Check delivery", x.business),
+        el("label", { class: "field" }, el("span", { text: "Account" }), account),
+        el("button", { class: "btn", text: "Check delivery", onclick: async (e) => {
+          result.textContent = "";
+          const report = await act(e.target, () => api("GET", `/admin/flyers/${encodeURIComponent(x.id)}/delivery?account=${encodeURIComponent(account.value.trim())}`));
+          if (report) {
+            const location = [report.city, report.country].filter(Boolean).map(placeName).join(", ");
+            const seen = report.last_public_impression
+              ? "Last recorded public impression: " + when(report.last_public_impression)
+              : "No individually tracked public impression on file.";
+            result.textContent = [report.result, location, seen].filter(Boolean).join(" ");
+          }
+        } }), result, el("button", { class: "btn secondary", text: "Back to flyers", onclick: () => RENDER.flyers(main) }));
+      account.focus();
+    };
     const showReport = async (x) => {
       const rep = await act(null, () => api("GET", `/admin/flyers/${encodeURIComponent(x.id)}/report`));
       if (!rep) return;
-      const t = (rows, key, label) => el("table", {}, el("thead", {}, el("tr", {}, ...[label, "Seen", "People", "Tapped", "Closed"].map((h) => el("th", { text: h })))),
+      const t = (rows, key, label) => el("table", {}, el("thead", {}, el("tr", {}, ...[label, "Seen", "Viewer-days", "Tapped", "Closed"].map((h) => el("th", { text: h })))),
         el("tbody", {}, ...rows.map((d) => el("tr", {}, el("td", { text: key === "place" ? placeName(d.place) : d[key] }), el("td", { text: num(d.shown) }), el("td", { text: num(d.reach) }),
           el("td", { text: num(d.tap) }), el("td", { text: num(d.close) })))));
       const tot = rep.days.reduce((a, d) => ({ shown: a.shown + d.shown, reach: a.reach + d.reach, tap: a.tap + d.tap }), { shown: 0, reach: 0, tap: 0 });
-      main.replaceChildren(...head(`${x.business}: last 30 days`, `Seen ${num(tot.shown)} times, ${num(tot.tap)} taps on ${x.button === "whatsapp" ? "WhatsApp" : x.button === "call" ? "Call" : "Visit"}. "People" counts each person once a day, so a regular viewer counts once for each day they saw it. Copy these numbers for the business.`),
+      main.replaceChildren(...head(`${x.business}: last 30 days`, `Seen ${num(tot.shown)} times, ${num(tot.tap)} taps on ${x.button === "whatsapp" ? "WhatsApp" : x.button === "call" ? "Call" : "Visit"}. Unique viewers in this period since tracking began: ${num(rep.unique_viewers_tracked)}. Viewer-days count each person once per day. Separate tester events: ${num(rep.preview.shown)} views, ${num(rep.preview.tap)} taps, ${num(rep.preview.close)} closes. Older totals may include tests.`),
         el("button", { class: "btn secondary", text: "Back to flyers", onclick: () => RENDER.flyers(main) }),
         el("div", { class: "two" }, el("div", { class: "card" }, el("h3", { text: "By place" }), rep.places.length ? t(rep.places, "place", "City / country") : el("div", { class: "empty", text: "Not shown yet." })),
           el("div", { class: "card" }, el("h3", { text: "By day" }), rep.days.length ? t(rep.days, "day", "Day") : el("div", { class: "empty", text: "Not shown yet." }))));
@@ -631,7 +649,7 @@ const RENDER = {
           el("label", { class: "row", style: "gap: 8px; margin: 8px 0;" }, f.active, el("span", { text: "On" })),
           el("div", { class: "row", style: "gap: 8px;" }, save, el("button", { class: "btn secondary", text: "Clear", onclick: () => fill(null) }))),
         el("div", { class: "card" }, el("h3", { text: "All flyers (last 30 days)" }), r.items.length ? el("table", {}, el("thead", {}, el("tr", {},
-            ...["", "Seen", "People", "Tapped", "Tap rate", ""].map((h) => el("th", { text: h })))),
+            ...["", "Seen", "Viewer-days", "Tapped", "Tap rate", ""].map((h) => el("th", { text: h })))),
           el("tbody", {}, ...r.items.map((x) => el("tr", {},
             el("td", {}, el("div", { style: "font-weight: 600;", text: x.business }), el("div", { class: "small muted", text: x.line || "" }),
               el("div", { class: "row small", style: "margin-top: 4px; gap: 6px;" },
@@ -641,6 +659,7 @@ const RENDER = {
             el("td", { text: num(x.stats.shown) }), el("td", { text: num(x.stats.reach) }), el("td", { text: num(x.stats.tap) }),
             el("td", { text: pct(x.stats.tap_rate) }),
             el("td", { style: "text-align: right; white-space: nowrap;" },
+              el("button", { class: "btn small secondary", text: "Check delivery", onclick: () => checkDelivery(x) }), " ",
               el("button", { class: "btn small secondary", text: "Numbers", onclick: () => showReport(x) }), " ",
               el("button", { class: "btn small secondary", text: "Edit", onclick: () => { fill(x); f.business.focus(); } }), " ",
               el("button", { class: "btn small secondary", text: x.active ? "Pause" : "Resume", onclick: async (e) => {

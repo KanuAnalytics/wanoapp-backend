@@ -187,6 +187,11 @@ async def create_indexes():
         (d.flyers, [("active", 1), ("ends_at", 1)], {}),
         (d.flyer_daily, [("flyer_id", 1), ("day", 1)], {}),
         (d.flyer_daily, [("day", 1)], {"expireAfterSeconds": 400 * 24 * 3600}),
+        (d.flyer_audience, [("flyer_id", 1), ("last_seen", 1)], {}),
+        (d.flyer_audience, [("last_seen", 1)], {"expireAfterSeconds": 365 * 86400}),
+        (d.flyer_counts, [("day", 1)], {"expireAfterSeconds": 3 * 86400}),
+        (d.flyer_preview_daily, [("day", 1)], {"expireAfterSeconds": 400 * 86400}),
+        (d.flyer_preview_daily, [("flyer_id", 1), ("day", 1)], {}),
         (d.flyer_reach, [("at", 1)], {"expireAfterSeconds": 3 * 24 * 3600}),
         (d.flyer_limits, [("at", 1)], {"expireAfterSeconds": 2 * 24 * 3600}),
         # Message extras: a chat's check for what changed (edits, unsends, reactions).

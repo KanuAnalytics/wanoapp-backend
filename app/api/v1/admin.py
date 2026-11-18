@@ -723,6 +723,12 @@ async def flyer_active(fid: str, body: FlyerActiveIn, admin: str = Depends(requi
     return out
 
 
+@router.get("/flyers/{fid}/delivery")
+async def flyer_delivery(fid: str, account: str = Query(..., min_length=1, max_length=256),
+                         admin: str = Depends(require_admin)):
+    return await flyers_svc.delivery_check(get_database(), fid, account)
+
+
 @router.get("/flyers/{fid}/report")
 async def flyer_report(fid: str, days: int = Query(30, ge=1, le=365), admin: str = Depends(require_admin)):
     return await flyers_svc.report(get_database(), fid[:40], days)

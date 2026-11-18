@@ -34,7 +34,7 @@ import logging
 import random
 import re
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from bson import ObjectId
@@ -118,6 +118,26 @@ def _check_button(kind, value) -> str:
     return v
 
 
+async def _handle(db, n):
+    projection = {"_id": 1, "username": 1}
+    u = await db.users.find_one({"username": n}, projection)
+    if not u:
+        matches = await db.users.find(
+            {"username": {"$regex": rf"^{re.escape(n)}$", "$options": "i"}}, projection
+        ).limit(2).to_list(length=2)
+        if len(matches) > 1:
+            raise HTTPException(status_code=422, detail=f"Use the exact capitalization for @{n[:30]}")
+        u = next(iter(matches), None)
+    if not u:
+        raise HTTPException(status_code=422, detail=f"No account called @{n[:30]}")
+    return u
+
+
+def _utc(value):
+    t = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    return t.astimezone(timezone.utc).replace(tzinfo=None) if t.tzinfo else t
+
+
 async def validate(db, body: dict) -> dict:
     from app.services import home_ground as hg
     await hg.load_custom(db)
@@ -146,21 +166,24 @@ async def validate(db, body: dict) -> dict:
     kind = body.get("button")
     value = _check_button(kind, body.get("button_value"))
     try:
-        starts = datetime.fromisoformat(str(body.get("starts_at"))[:19])
-        ends = datetime.fromisoformat(str(body.get("ends_at"))[:19])
+        starts = _utc(body.get("starts_at"))
+        ends = _utc(body.get("ends_at"))
     except ValueError:
         raise HTTPException(status_code=422, detail="Pick the start and end dates")
     if ends <= starts or ends - starts > timedelta(days=366):
         raise HTTPException(status_code=422, detail="The end must be after the start (at most a year)")
-    names = sorted({n.strip().lstrip("@").lower() for n in (body.get("testers") or []) if isinstance(n, str) and n.strip()})
-    if len(names) > MAX_TESTERS:
+    names = {n.strip().lstrip("@") for n in (body.get("testers") or []) if isinstance(n, str)}
+    names.discard("")
+    if len({name.lower() for name in names}) > MAX_TESTERS:
         raise HTTPException(status_code=422, detail=f"At most {MAX_TESTERS} testers")
-    tester_ids = []
-    for n in names:
-        u = await db.users.find_one({"username": n}, {"_id": 1})
-        if not u:
-            raise HTTPException(status_code=422, detail=f"No account called @{n[:30]}")
-        tester_ids.append(u["_id"])
+    testers = {}
+    for n in sorted(names):
+        u = await _handle(db, n)
+        testers[u["_id"]] = u["username"]
+    if len(testers) > MAX_TESTERS:
+        raise HTTPException(status_code=422, detail=f"At most {MAX_TESTERS} testers")
+    names = list(testers.values())
+    tester_ids = list(testers)
     if body.get("testers_only") is True and not tester_ids:
         raise HTTPException(status_code=422, detail="Add at least one tester for a testers-only flyer")
     circle = None
@@ -297,7 +320,12 @@ async def report(db, fid: str, days: int = 30) -> dict:
             b = bucket.setdefault(key, {"shown": 0, "tap": 0, "close": 0, "reach": 0})
             for f in ("shown", "tap", "close", "reach"):
                 b[f] += int(r.get(f) or 0)
-    return {"flyer": _admin_out(d), "days": [{"day": k, **v} for k, v in sorted(by_day.items())],
+    preview = {"shown": 0, "tap": 0, "close": 0}
+    async for row in db.flyer_preview_daily.find({"flyer_id": oid, "day": {"$gte": since}}):
+        for kind in preview:
+            preview[kind] += row.get(kind, 0)
+    unique = await db.flyer_audience.count_documents({"flyer_id": oid, "last_seen": {"$gte": since}})
+    return {"unique_viewers_tracked": unique, "preview": preview, "flyer": _admin_out(d), "days": [{"day": k, **v} for k, v in sorted(by_day.items())],
             "places": sorted([{"place": k, **v} for k, v in by_place.items()], key=lambda x: -x["shown"])}
 
 
@@ -321,33 +349,82 @@ def is_tester(flyer: dict, viewer: dict) -> bool:
     return viewer.get("_id") is not None and viewer["_id"] in (flyer.get("tester_ids") or [])
 
 
-def matches(flyer: dict, viewer: dict, now: Optional[datetime] = None) -> bool:
-    from app.services import home_ground as hg
-    if is_tester(flyer, viewer):
-        return True
-    if flyer.get("testers_only") is True:
-        return False
+def exclusion(flyer, viewer, now=None):
+    from app.services import home_ground as hg, places
+    if viewer.get("is_active") is False:
+        return "Account is inactive."
     if hg.is_minor(viewer, now):
-        return False
-    country = hg.country_of(viewer)
-    if not country or country not in (flyer.get("countries") or []):
-        return False
-    cities = flyer.get("cities") or []
-    if cities and hg.city_of(viewer) not in cities:
-        return False
-    if flyer.get("circle"):
-        from app.services import places
-        if not places.in_circle(viewer, flyer["circle"]):
-            return False
+        return "Account does not meet the minimum age."
     if flyer.get("category") in ADULTS_ONLY and not known_adult(viewer, now):
-        return False
-    return True
+        return "This category requires a confirmed adult birthday."
+    if is_tester(flyer, viewer):
+        return None
+    if flyer.get("testers_only") is True:
+        return "This preview is limited to named testers."
+    if hg.country_of(viewer) not in (flyer.get("countries") or []):
+        return "Account country is missing or outside the target countries."
+    if flyer.get("cities") and hg.city_of(viewer) not in flyer["cities"]:
+        return "Account city is outside the target cities."
+    if flyer.get("circle") and not places.in_circle(viewer, flyer["circle"]):
+        return "Account area is outside the target radius."
+    return None
+
+
+def matches(flyer, viewer, now=None):
+    return exclusion(flyer, viewer, now) is None
+
+
+async def delivery_check(db, fid, account):
+    from app.services import creator_push, home_ground as hg
+    from urllib.parse import urlsplit
+    campaign = await db.flyers.find_one({"_id": _oid(fid)})
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Flyer not found")
+    account = account.strip()
+    if "://" in account:
+        try:
+            url = urlsplit(account)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Invalid profile link")
+        match = re.fullmatch(r"/u/([0-9a-fA-F]{24})/?", url.path)
+        if url.scheme != "https" or url.hostname not in {"devbe.wanoafrica.com", "wanoafrica.com", "www.wanoafrica.com"} or not match:
+            raise HTTPException(status_code=422, detail="Enter a Wano profile link or username")
+        uid = ObjectId(match[1])
+    else:
+        uid = (await _handle(db, account.lstrip("@")))["_id"]
+    viewer = await db.users.find_one({"_id": uid}, {"username": 1, "localization": 1, "home_ground": 1,
+                                                   "area": 1, "date_of_birth": 1, "is_active": 1})
+    if not viewer:
+        raise HTTPException(status_code=404, detail="Account not found")
+    now = _now()
+    await hg.load_custom(db)
+    if not await creator_push.on(db, "flyers"):
+        reason = "Local flyers switch is off."
+    elif not campaign.get("active"):
+        reason = "Campaign is paused."
+    elif not campaign["starts_at"] <= now < campaign["ends_at"]:
+        reason = "Outside the campaign schedule."
+    else:
+        reason = exclusion(campaign, viewer, now)
+        if not reason and not is_tester(campaign, viewer) and not await _under_cap(db, campaign, now):
+            reason = "Daily impression cap reached."
+    if not reason:
+        selection = await for_viewer(db, str(uid), now)
+        picked = any(x["id"] == fid for x in selection["flyers"])
+        reason = "Selected in this check." if picked else "Eligible, but not selected in this check."
+    evidence = await db.flyer_audience.find_one({"_id": f"{fid}:{uid}"}, {"last_seen": 1})
+    last_seen = evidence["last_seen"].replace(tzinfo=timezone.utc).isoformat() if evidence else None
+    return {"result": reason, "country": hg.country_of(viewer), "city": hg.city_of(viewer),
+            "last_public_impression": last_seen}
 
 
 async def _under_cap(db, flyer: dict, now: datetime) -> bool:
     cap = flyer.get("daily_cap")
     if not cap:
         return True
+    count = await db.flyer_counts.find_one({"_id": f"{now:%Y%m%d}:{flyer['_id']}"})
+    if count is not None:
+        return count["n"] < cap
     total = 0
     async for r in db.flyer_daily.find({"flyer_id": flyer["_id"], "day": _day(now)}, {"shown": 1}):
         total += int(r.get("shown") or 0)
@@ -401,8 +478,8 @@ async def record(db, viewer_id: str, fid: str, kind: str, now: Optional[datetime
         return False
     f = await db.flyers.find_one({"_id": ObjectId(fid)})
     viewer = await db.users.find_one({"_id": ObjectId(viewer_id)}, {"localization": 1, "home_ground": 1,
-                                                                    "area": 1, "date_of_birth": 1})
-    if not f or not viewer or not matches(f, viewer, now):
+                                                                    "area": 1, "date_of_birth": 1, "is_active": 1})
+    if not f or not f.get("active") or not f["starts_at"] <= now < f["ends_at"] or not viewer or not matches(f, viewer, now):
         return False
     day = _day(now)
     lim = await db.flyer_limits.find_one_and_update(
@@ -410,6 +487,22 @@ async def record(db, viewer_id: str, fid: str, kind: str, now: Optional[datetime
         return_document=ReturnDocument.AFTER)
     if (lim or {}).get("n", 0) > EVENTS_PER_DAY:
         return False
+    if is_tester(f, viewer):
+        await db.flyer_preview_daily.update_one(
+            {"_id": f"{day:%Y%m%d}:{fid}"}, {"$inc": {kind: 1}, "$setOnInsert": {"day": day, "flyer_id": f["_id"]}},
+            upsert=True)
+        return True
+    if kind == "shown":
+        key = f"{day:%Y%m%d}:{fid}"
+        if not await db.flyer_counts.find_one({"_id": key}, {"_id": 1}):
+            previous = sum([int(r.get("shown", 0)) async for r in db.flyer_daily.find(
+                {"flyer_id": f["_id"], "day": day}, {"shown": 1})])
+            await db.flyer_counts.update_one({"_id": key}, {"$setOnInsert": {"n": previous, "day": day}}, upsert=True)
+        condition = {"_id": key}
+        if f.get("daily_cap"):
+            condition["n"] = {"$lt": f["daily_cap"]}
+        if not (await db.flyer_counts.update_one(condition, {"$inc": {"n": 1}})).modified_count:
+            return False
     country = hg.country_of(viewer)
     city = hg.city_of(viewer) or ""
     inc = {kind: 1}
@@ -419,6 +512,10 @@ async def record(db, viewer_id: str, fid: str, kind: str, now: Optional[datetime
             inc["reach"] = 1
         except DuplicateKeyError:
             pass
+    if kind == "shown":
+        await db.flyer_audience.update_one(
+            {"_id": f"{fid}:{viewer_id}"}, {"$setOnInsert": {"flyer_id": f["_id"]}, "$max": {"last_seen": now}},
+            upsert=True)
     await db.flyer_daily.update_one(
         {"_id": f"{day:%Y%m%d}:{fid}:{country}:{city}"},
         {"$inc": inc, "$setOnInsert": {"day": day, "flyer_id": f["_id"], "country": country, "city": city or None}},
