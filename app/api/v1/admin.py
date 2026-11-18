@@ -641,7 +641,7 @@ class FlyerIn(BaseModel):
     business: str = Field(..., max_length=200)
     line: str = Field("", max_length=400)
     category: str = Field(..., max_length=40)
-    countries: list[str] = Field(..., max_length=60)
+    countries: list[str] = Field(..., max_length=300)
     cities: list[str] = Field(default_factory=list, max_length=60)
     image: str = Field(..., max_length=2048)
     image_small: Optional[str] = Field(None, max_length=2048)
