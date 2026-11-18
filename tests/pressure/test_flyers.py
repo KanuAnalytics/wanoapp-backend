@@ -331,3 +331,29 @@ async def test_FY21_testers_only_needs_a_tester(client, db):
     r = await client.post(A, json=_body(testers_only=True), headers=ah)
     assert r.status_code == 422 and "tester" in r.json()["detail"]
     assert (await client.post(A, json=_body(testers_only="yes"), headers=ah)).status_code == 422
+
+
+async def test_motion_upload_and_legacy_edit(client, db, monkeypatch):
+    from pathlib import Path
+    import subprocess
+    import tempfile
+    from PIL import Image
+    import io
+    await _on(db)
+    _, admin = await _admin(db)
+    _, viewer = await _viewer(db)
+    stored = {}
+    monkeypatch.setattr(svc, "_put", lambda key, data: stored.update({key: data}))
+    with tempfile.TemporaryDirectory() as tmp:
+        clip = Path(tmp) / "motion.mp4"
+        subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=s=120x40:r=12",
+                        "-t", "10", "-pix_fmt", "yuv420p", str(clip)], check=True)
+        response = await client.post(A + "/motion", files={"file": ("motion.mp4", clip.read_bytes(), "video/mp4")}, headers=admin)
+    assert response.status_code == 200, response.text
+    motion = response.json()["motion"]
+    animation = Image.open(io.BytesIO(next(iter(stored.values()))))
+    assert animation.size == (600, 200) and animation.n_frames == 120
+    flyer = await _flyer(client, db, motion=motion)
+    assert (await client.get(F, headers=viewer)).json()["flyers"][0]["motion"] == motion
+    assert (await client.put(f"{A}/{flyer['id']}", json=_body(), headers=admin)).json()["motion"] == motion
+    assert (await client.put(f"{A}/{flyer['id']}", json=_body(motion=None), headers=admin)).json()["motion"] is None
