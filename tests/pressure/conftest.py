@@ -62,6 +62,10 @@ async def db(monkeypatch, calls):
         from app.main import ensure_indexes
         await ensure_indexes(mdb)
     else:
+        from app.services import flyers
+        async def mock_transaction(db, write):
+            return await write(None)
+        monkeypatch.setattr(flyers, "_atomic", mock_transaction)
         mdb = AsyncMongoMockClient()["wano_pressure"]
         monkeypatch.setattr(database_mod.db, "db", mdb)
 

@@ -168,7 +168,7 @@ async def test_FY10_at_most_three_at_once_and_safe_fields_only(client, db):
     r = (await client.get(F, headers=h)).json()
     assert len(r["flyers"]) == svc.MAX_PER_VIEWER
     f = r["flyers"][0]
-    assert set(f) == {"id", "business", "line", "image", "image_small", "button", "label"}   # no "test" for normal viewers
+    assert set(f) == {"id", "business", "line", "image", "image_small", "button", "label", "artwork_id"}   # no "test" for normal viewers
     assert f["label"] == "Sponsored"
     assert f["button"] == {"kind": "whatsapp", "label": "WhatsApp",
                            "url": "https://wa.me/256772123456?text=Hi%2C%20I%20saw%20your%20flyer%20on%20Wano"}
@@ -380,3 +380,63 @@ async def test_alcohol_preview_requires_adult_and_offsets_are_utc(client, db):
     doc = await svc.validate(db, _body(starts_at="2026-11-17T20:00:00-06:00",
                                         ends_at="2026-11-18T04:00:00Z"))
     assert doc["starts_at"] == datetime(2026, 11, 18, 2)
+
+
+async def test_display_retry_and_frozen_attribution(client, db):
+    await _on(db)
+    uid, _ = await _viewer(db, "ng", city="kampala", username="PreviewUser")
+    flyer = await _flyer(client, db, countries=["ng"], testers=["PreviewUser"])
+    fid = flyer["id"]
+    for _ in range(2):
+        assert await svc.record(db, uid, fid, "shown", display_id="preview-1")
+    await db.flyers.update_one({"_id": ObjectId(fid)}, {"$set": {"tester_ids": []}})
+    for _ in range(2):
+        assert await svc.record(db, uid, fid, "tap", display_id="preview-1")
+    assert not await svc.record(db, uid, fid, "tap", display_id="unknown")
+    artwork = (await svc.for_viewer(db, uid))["flyers"][0]["artwork_id"]
+    assert await svc.record(db, uid, fid, "shown", display_id="public-1", artwork_id=artwork)
+    report = await svc.report(db, fid)
+    assert report["last_artwork_impression"] is not None
+    await db.flyers.update_one({"_id": ObjectId(fid)}, {"$set": {"image": IMG + "?v=2"}})
+    assert (await svc.report(db, fid))["last_artwork_impression"] is None
+    assert report["preview"] == {"shown": 1, "tap": 1, "close": 0}
+    assert [(p["country"], p["city"], p["shown"]) for p in report["places"]] == [("ng", "kampala", 1)]
+
+
+async def test_detail_report_includes_every_location_day(client, db):
+    fid = (await _flyer(client, db))["id"]
+    today = svc._day(datetime.utcnow())
+    await db.flyer_daily.insert_many([
+        {"flyer_id": ObjectId(fid), "day": today - timedelta(days=i // 200),
+         "country": "ug", "city": str(i % 200), "shown": 1}
+        for i in range(5200)
+    ])
+    report = await svc.report(db, fid)
+    listed = next(x for x in await svc.admin_list(db) if x["id"] == fid)
+    assert sum(d["shown"] for d in report["days"]) == listed["stats"]["shown"] == 5200
+    assert sum(p["shown"] for p in report["places"]) == 5200
+
+
+async def test_real_transaction_rolls_back_and_retry_recovers(client, db, monkeypatch):
+    from tests.pressure.conftest import REAL_MONGO
+    if not REAL_MONGO:
+        pytest.skip("requires MongoDB transactions")
+    uid, _ = await _viewer(db)
+    fid = (await _flyer(client, db, daily_cap=1))["id"]
+    from motor.motor_asyncio import AsyncIOMotorCollection
+    original = AsyncIOMotorCollection.update_one
+
+    async def fail_audience(collection, *args, **kwargs):
+        if collection.name == "flyer_audience":
+            raise RuntimeError("simulated interrupted write")
+        return await original(collection, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(AsyncIOMotorCollection, "update_one", fail_audience)
+        with pytest.raises(RuntimeError, match="interrupted"):
+            await svc.record(db, uid, fid, "shown", display_id="retry")
+    assert await db.flyer_counts.count_documents({}) == 0
+    assert await db.flyer_displays.count_documents({}) == 0
+    results = await asyncio.gather(*(svc.record(db, uid, fid, "shown", display_id="retry") for _ in range(10)))
+    assert all(results)
+    assert (await svc.report(db, fid))["days"][0]["shown"] == 1

@@ -3,7 +3,7 @@
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, ConfigDict, StrictStr
+from pydantic import BaseModel, ConfigDict, StrictStr, Field
 
 from app.api.deps import get_current_active_user, get_optional_active_user
 from app.core.database import get_database
@@ -15,6 +15,8 @@ router = APIRouter()
 class EventIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     flyer_id: StrictStr
+    artwork_id: Optional[StrictStr] = Field(None, pattern=r"^[a-f0-9]{32}$")
+    display_id: Optional[StrictStr] = Field(None, min_length=1, max_length=80, pattern=r"^[a-zA-Z0-9_-]+$")
     kind: Literal["shown", "tap", "close"]
 
 
@@ -32,4 +34,4 @@ async def my_flyers(current_user: Optional[str] = Depends(get_optional_active_us
 
 @router.post("/event")
 async def event(body: EventIn, me: str = Depends(get_current_active_user)):
-    return {"counted": await svc.record(await _db(), me, body.flyer_id[:40], body.kind)}
+    return {"counted": await svc.record(await _db(), me, body.flyer_id[:40], body.kind, display_id=body.display_id, artwork_id=body.artwork_id)}

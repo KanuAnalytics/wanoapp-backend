@@ -30,6 +30,7 @@ reached (each person once a day), for the "your flyer was seen..." report.
 
 import asyncio
 import io
+import hashlib
 import logging
 import random
 import re
@@ -310,12 +311,12 @@ async def report(db, fid: str, days: int = 30) -> dict:
     if not d:
         raise HTTPException(status_code=404, detail="Flyer not found")
     since = _day(_now() - timedelta(days=days - 1))
-    rows = await db.flyer_daily.find({"flyer_id": oid, "day": {"$gte": since}}).to_list(5000)
+    rows = db.flyer_daily.find({"flyer_id": oid, "day": {"$gte": since}})
     by_day: dict = {}
     by_place: dict = {}
-    for r in rows:
+    async for r in rows:
         k = r["day"].strftime("%Y-%m-%d")
-        place = r.get("city") or r.get("country") or "?"
+        place = (r.get("country"), r.get("city"))
         for bucket, key in ((by_day, k), (by_place, place)):
             b = bucket.setdefault(key, {"shown": 0, "tap": 0, "close": 0, "reach": 0})
             for f in ("shown", "tap", "close", "reach"):
@@ -325,8 +326,10 @@ async def report(db, fid: str, days: int = 30) -> dict:
         for kind in preview:
             preview[kind] += row.get(kind, 0)
     unique = await db.flyer_audience.count_documents({"flyer_id": oid, "last_seen": {"$gte": since}})
-    return {"unique_viewers_tracked": unique, "preview": preview, "flyer": _admin_out(d), "days": [{"day": k, **v} for k, v in sorted(by_day.items())],
-            "places": sorted([{"place": k, **v} for k, v in by_place.items()], key=lambda x: -x["shown"])}
+    latest = await db.flyer_displays.find_one({"flyer_id": oid, "artwork_id": _artwork_id(d), "preview": False},
+                                              {"at": 1}, sort=[("at", -1)])
+    return {"last_artwork_impression": latest["at"] if latest else None, "unique_viewers_tracked": unique, "preview": preview, "flyer": _admin_out(d), "days": [{"day": k, **v} for k, v in sorted(by_day.items())],
+            "places": sorted([{"place": k[1] or k[0] or "?", "country": k[0], "city": k[1], **v} for k, v in by_place.items()], key=lambda x: -x["shown"])}
 
 
 # ------------------------------------------------------------------ viewers
@@ -438,12 +441,16 @@ def viewer_out(f: dict, test: bool = False) -> dict:
     return out
 
 
+def _artwork_id(flyer):
+    return hashlib.sha256((flyer.get("image") or "").encode()).hexdigest()[:32]
+
+
 def viewer_out_base(f: dict) -> dict:
     return {"id": str(f["_id"]), "business": f.get("business") or "", "line": f.get("line") or "",
             "image": f.get("image"), "image_small": f.get("image_small"),
             "button": {"kind": f.get("button"), "label": BUTTON_LABEL.get(f.get("button"), "Open"),
                        "url": button_url(f.get("button"), f.get("button_value") or "")},
-            "label": "Sponsored"}
+            "label": "Sponsored", "artwork_id": _artwork_id(f)}
 
 
 async def for_viewer(db, viewer_id: Optional[str], now: Optional[datetime] = None) -> dict:
@@ -470,54 +477,88 @@ async def for_viewer(db, viewer_id: Optional[str], now: Optional[datetime] = Non
     return {"flyers": out, "rules": rules}
 
 
-async def record(db, viewer_id: str, fid: str, kind: str, now: Optional[datetime] = None) -> bool:
-    """Count one event. False when ignored (unknown flyer, not theirs to see, over the cap)."""
-    from app.services import home_ground as hg
+async def _atomic(db, write):
+    async with await db.client.start_session() as session:
+        return await session.with_transaction(write)
+
+
+async def record(db, viewer_id, fid, kind, now=None, display_id=None, artwork_id=None):
     now = now or _now()
     if kind not in EVENT_KINDS or not ObjectId.is_valid(fid) or not ObjectId.is_valid(viewer_id):
         return False
-    f = await db.flyers.find_one({"_id": ObjectId(fid)})
-    viewer = await db.users.find_one({"_id": ObjectId(viewer_id)}, {"localization": 1, "home_ground": 1,
-                                                                    "area": 1, "date_of_birth": 1, "is_active": 1})
-    if not f or not f.get("active") or not f["starts_at"] <= now < f["ends_at"] or not viewer or not matches(f, viewer, now):
-        return False
+    async def write(session):
+        return await _record(db, viewer_id, fid, kind, now, display_id, artwork_id, session)
+    # Two first-time upserts may collide on a unique index before snapshot retry.
+    for attempt in range(3):
+        try:
+            return await _atomic(db, write)
+        except DuplicateKeyError:
+            if attempt == 2:
+                raise
+
+
+async def _record(db, viewer_id, fid, kind, now, display_id, artwork_id, session):
+    from app.services import home_ground as hg
+    opts = {"session": session} if session is not None else {}
     day = _day(now)
+    identity = {"viewer": ObjectId(viewer_id), "flyer_id": ObjectId(fid)}
+    receipt_key = f"{viewer_id}:{fid}:{display_id}" if display_id else None
+    receipt = None
+    if display_id:
+        receipt = await db.flyer_displays.find_one({"_id": receipt_key}, **opts)
+        if receipt and kind in receipt["events"]:
+            return True
+        if not receipt and kind != "shown":
+            return False
+    elif kind != "shown":
+        receipt = await db.flyer_displays.find_one(identity, sort=[("at", -1)], **opts)
+    campaign = await db.flyers.find_one({"_id": identity["flyer_id"]}, **opts)
+    viewer = await db.users.find_one({"_id": identity["viewer"]}, {"localization": 1, "home_ground": 1,
+        "area": 1, "date_of_birth": 1, "is_active": 1}, **opts)
+    if not campaign or not viewer or viewer.get("is_active") is False or not campaign.get("active"):
+        return False
+    if not campaign["starts_at"] <= now < campaign["ends_at"]:
+        return False
+    if receipt is None and not matches(campaign, viewer, now):
+        return False
     lim = await db.flyer_limits.find_one_and_update(
         {"_id": f"{viewer_id}:{day:%Y%m%d}"}, {"$inc": {"n": 1}, "$setOnInsert": {"at": now}}, upsert=True,
-        return_document=ReturnDocument.AFTER)
-    if (lim or {}).get("n", 0) > EVENTS_PER_DAY:
+        return_document=ReturnDocument.AFTER, **opts)
+    if lim["n"] > EVENTS_PER_DAY:
         return False
-    if is_tester(f, viewer):
-        await db.flyer_preview_daily.update_one(
-            {"_id": f"{day:%Y%m%d}:{fid}"}, {"$inc": {kind: 1}, "$setOnInsert": {"day": day, "flyer_id": f["_id"]}},
-            upsert=True)
-        return True
-    if kind == "shown":
+    preview = receipt["preview"] if receipt else is_tester(campaign, viewer)
+    country = receipt["country"] if receipt else hg.country_of(viewer)
+    city = receipt["city"] if receipt else hg.city_of(viewer) or ""
+    if kind == "shown" and not preview:
         key = f"{day:%Y%m%d}:{fid}"
-        if not await db.flyer_counts.find_one({"_id": key}, {"_id": 1}):
-            previous = sum([int(r.get("shown", 0)) async for r in db.flyer_daily.find(
-                {"flyer_id": f["_id"], "day": day}, {"shown": 1})])
-            await db.flyer_counts.update_one({"_id": key}, {"$setOnInsert": {"n": previous, "day": day}}, upsert=True)
+        counter = await db.flyer_counts.find_one({"_id": key}, **opts)
+        if not counter:
+            previous = sum([int(row.get("shown", 0)) async for row in db.flyer_daily.find(
+                {"flyer_id": campaign["_id"], "day": day}, {"shown": 1}, **opts)])
+            await db.flyer_counts.update_one({"_id": key}, {"$setOnInsert": {"n": previous, "day": day}}, upsert=True, **opts)
         condition = {"_id": key}
-        if f.get("daily_cap"):
-            condition["n"] = {"$lt": f["daily_cap"]}
-        if not (await db.flyer_counts.update_one(condition, {"$inc": {"n": 1}})).modified_count:
+        if campaign.get("daily_cap"):
+            condition["n"] = {"$lt": campaign["daily_cap"]}
+        if not (await db.flyer_counts.update_one(condition, {"$inc": {"n": 1}}, **opts)).modified_count:
             return False
-    country = hg.country_of(viewer)
-    city = hg.city_of(viewer) or ""
+    if kind == "shown":
+        await db.flyer_displays.insert_one({"_id": receipt_key or str(ObjectId()), **identity, "at": now,
+            "preview": preview, "country": country, "city": city, "artwork_id": artwork_id, "events": ["shown"]}, **opts)
+    elif display_id:
+        await db.flyer_displays.update_one({"_id": receipt_key}, {"$addToSet": {"events": kind}}, **opts)
+    if preview:
+        await db.flyer_preview_daily.update_one({"_id": f"{day:%Y%m%d}:{fid}"},
+            {"$inc": {kind: 1}, "$setOnInsert": {"day": day, "flyer_id": campaign["_id"]}}, upsert=True, **opts)
+        return True
     inc = {kind: 1}
     if kind == "shown":
-        try:
-            await db.flyer_reach.insert_one({"_id": f"{day:%Y%m%d}:{fid}:{viewer_id}", "at": now})
+        reach = await db.flyer_reach.update_one({"_id": f"{day:%Y%m%d}:{fid}:{viewer_id}"},
+            {"$setOnInsert": {"at": now}}, upsert=True, **opts)
+        if reach.upserted_id is not None:
             inc["reach"] = 1
-        except DuplicateKeyError:
-            pass
-    if kind == "shown":
-        await db.flyer_audience.update_one(
-            {"_id": f"{fid}:{viewer_id}"}, {"$setOnInsert": {"flyer_id": f["_id"]}, "$max": {"last_seen": now}},
-            upsert=True)
-    await db.flyer_daily.update_one(
-        {"_id": f"{day:%Y%m%d}:{fid}:{country}:{city}"},
-        {"$inc": inc, "$setOnInsert": {"day": day, "flyer_id": f["_id"], "country": country, "city": city or None}},
-        upsert=True)
+        await db.flyer_audience.update_one({"_id": f"{fid}:{viewer_id}"},
+            {"$setOnInsert": {"flyer_id": campaign["_id"]}, "$max": {"last_seen": now}}, upsert=True, **opts)
+    await db.flyer_daily.update_one({"_id": f"{day:%Y%m%d}:{fid}:{country}:{city}"},
+        {"$inc": inc, "$setOnInsert": {"day": day, "flyer_id": campaign["_id"], "country": country, "city": city or None}},
+        upsert=True, **opts)
     return True

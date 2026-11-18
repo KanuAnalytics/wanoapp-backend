@@ -479,6 +479,7 @@ const RENDER = {
     const now = new Date();
     let editing = null;
     let image = null;
+    let uploadRevision = 0;
     const f = {
       business: el("input", { type: "text", maxlength: 40, placeholder: "Mama Rose Kitchen" }),
       line: el("input", { type: "text", maxlength: 80, placeholder: "Lunch from 10,000 UGX, Kampala Road" }),
@@ -536,19 +537,28 @@ const RENDER = {
     f.file.addEventListener("change", async () => {
       const file = f.file.files && f.file.files[0];
       if (!file) return;
+      const revision = ++uploadRevision;
+      image = null;
+      preview.style.display = "none";
+      save.disabled = true;
       const form = new FormData();
       form.append("file", file);
       try {
         const res = await fetch(API + "/admin/flyers/image", { method: "POST", headers: { Authorization: "Bearer " + token }, body: form });
         const data = await res.json().catch(() => null);
         if (!res.ok) throw new Error((data && data.detail) || "Upload failed");
+        if (revision !== uploadRevision) return;
         image = data;
         preview.src = safeUrl(data.image_small) || "";
         preview.style.display = "block";
         toast("Picture ready");
-      } catch (e) { toast(e.message, true); }
+      } catch (e) { if (revision === uploadRevision) toast(e.message, true); }
+      finally { if (revision === uploadRevision) save.disabled = !image; }
     });
     const fill = (x) => {
+      ++uploadRevision;
+      f.file.value = "";
+      save.disabled = false;
       editing = x ? x.id : null;
       image = x ? { image: x.image, image_small: x.image_small } : null;
       f.business.value = x ? x.business : ""; f.line.value = x ? x.line || "" : "";
@@ -616,12 +626,12 @@ const RENDER = {
       const rep = await act(null, () => api("GET", `/admin/flyers/${encodeURIComponent(x.id)}/report`));
       if (!rep) return;
       const t = (rows, key, label) => el("table", {}, el("thead", {}, el("tr", {}, ...[label, "Seen", "Viewer-days", "Tapped", "Closed"].map((h) => el("th", { text: h })))),
-        el("tbody", {}, ...rows.map((d) => el("tr", {}, el("td", { text: key === "place" ? placeName(d.place) : d[key] }), el("td", { text: num(d.shown) }), el("td", { text: num(d.reach) }),
+        el("tbody", {}, ...rows.map((d) => el("tr", {}, el("td", { text: key === "place" ? [d.country, d.city].filter(Boolean).map(placeName).join(" / ") || "Unknown" : d[key] }), el("td", { text: num(d.shown) }), el("td", { text: num(d.reach) }),
           el("td", { text: num(d.tap) }), el("td", { text: num(d.close) })))));
       const tot = rep.days.reduce((a, d) => ({ shown: a.shown + d.shown, reach: a.reach + d.reach, tap: a.tap + d.tap }), { shown: 0, reach: 0, tap: 0 });
-      main.replaceChildren(...head(`${x.business}: last 30 days`, `Seen ${num(tot.shown)} times, ${num(tot.tap)} taps on ${x.button === "whatsapp" ? "WhatsApp" : x.button === "call" ? "Call" : "Visit"}. Unique viewers in this period since tracking began: ${num(rep.unique_viewers_tracked)}. Viewer-days count each person once per day. Separate tester events: ${num(rep.preview.shown)} views, ${num(rep.preview.tap)} taps, ${num(rep.preview.close)} closes. Older totals may include tests.`),
+      main.replaceChildren(...head(`${x.business}: last 30 days`, `Seen ${num(tot.shown)} times, ${num(tot.tap)} taps on ${x.button === "whatsapp" ? "WhatsApp" : x.button === "call" ? "Call" : "Visit"}. Current artwork’s last reported public impression: ${rep.last_artwork_impression ? when(rep.last_artwork_impression) : "none recorded"}. Unique viewers in this period since tracking began: ${num(rep.unique_viewers_tracked)}. Viewer-days count each person once per day. Separate tester events: ${num(rep.preview.shown)} views, ${num(rep.preview.tap)} taps, ${num(rep.preview.close)} closes. Older totals may include tests.`),
         el("button", { class: "btn secondary", text: "Back to flyers", onclick: () => RENDER.flyers(main) }),
-        el("div", { class: "two" }, el("div", { class: "card" }, el("h3", { text: "By place" }), rep.places.length ? t(rep.places, "place", "City / country") : el("div", { class: "empty", text: "Not shown yet." })),
+        el("div", { class: "two" }, el("div", { class: "card" }, el("h3", { text: "By place" }), rep.places.length ? t(rep.places, "place", "Account country / Home Ground city") : el("div", { class: "empty", text: "Not shown yet." })),
           el("div", { class: "card" }, el("h3", { text: "By day" }), rep.days.length ? t(rep.days, "day", "Day") : el("div", { class: "empty", text: "Not shown yet." }))));
     };
     main.replaceChildren(...head("Local flyers", "Businesses' flyers in the Wano TV ticket's spot on shorts, marked Sponsored, with a WhatsApp, Call or Visit button. Only people in the countries (and cities) you pick see them; never under-18s; drinks only to people whose birthday shows 18+. Turn on the Local flyers switch for any to show."),

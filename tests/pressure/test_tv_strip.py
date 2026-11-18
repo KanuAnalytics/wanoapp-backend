@@ -20,7 +20,7 @@ async def _on(db):
 
 
 async def _title(db, title="Yaoundé Police Criminelle", type_="series", featured=True, days_ago=7, **extra):
-    doc = {"title": title, "type": type_, "featured": featured, "is_active": True,
+    doc = {"slug": str(ObjectId()), "title": title, "type": type_, "featured": featured, "is_active": True,
            "release_date": (date.today() - timedelta(days=days_ago)).isoformat(),
            "poster": f"{CDN}/wano-tv/{title[:5]}/poster.jpg", **extra}
     return str((await db.tv_titles.insert_one(doc)).inserted_id)
@@ -117,11 +117,11 @@ async def test_TS6_one_person_cant_pump_the_numbers(client, db):
 async def test_TS7_broken_catalogue_never_breaks_it(client, db):
     await _on(db)
     await db.tv_titles.insert_many([
-        {"is_active": True, "title": None, "poster": f"{CDN}/a.jpg"},
-        {"is_active": True, "title": "  ", "poster": f"{CDN}/a.jpg"},
-        {"is_active": True, "title": "Weird date", "poster": f"{CDN}/a.jpg", "release_date": "not-a-date"},
-        {"is_active": True, "title": "Dict date", "poster": f"{CDN}/a.jpg", "release_date": {"$gt": 1}},
-        {"is_active": True, "title": ["list"], "poster": f"{CDN}/a.jpg"},
+        {"slug": str(ObjectId()), "is_active": True, "title": None, "poster": f"{CDN}/a.jpg"},
+        {"slug": str(ObjectId()), "is_active": True, "title": "  ", "poster": f"{CDN}/a.jpg"},
+        {"slug": str(ObjectId()), "is_active": True, "title": "Weird date", "poster": f"{CDN}/a.jpg", "release_date": "not-a-date"},
+        {"slug": str(ObjectId()), "is_active": True, "title": "Dict date", "poster": f"{CDN}/a.jpg", "release_date": {"$gt": 1}},
+        {"slug": str(ObjectId()), "is_active": True, "title": ["list"], "poster": f"{CDN}/a.jpg"},
     ])
     r = await _cfg(client)
     assert r.status_code == 200
