@@ -56,7 +56,7 @@ def preview(ep):
 async def _notify(db, doc, ep, now):
     from app.services import tv_more, home_ground, growth_notifications
     sent = 0
-    async for r in db.tv_reminders.find({"title_id": doc["_id"]}):
+    async for r in db.tv_reminders.find({"title_id": doc["_id"], "notified_episodes": {"$ne": ep["id"]}}):
         # People subscribing after release should not receive old episode alerts.
         at = stored_time(ep.get("publish_at"))
         subscribed = r.get("at")
@@ -73,11 +73,15 @@ async def _notify(db, doc, ep, now):
             {"_id": key, "$or": [{"state": "pending"}, {"state": "sending", "claimed_at": {"$lt": now - timedelta(minutes=5)}}]},
             {"$set": {"state": "sending", "claimed_at": now}}, return_document=ReturnDocument.AFTER)
         if not job:
+            completed = await db.tv_release_notices.find_one({"_id": key, "state": {"$in": ["sent", "skipped"]}}, {"_id": 1})
+            if completed:
+                await db.tv_reminders.update_one({"_id": r["_id"]}, {"$addToSet": {"notified_episodes": ep["id"]}})
             continue
         u = await db.users.find_one({"_id": r["user_id"], "is_active": {"$ne": False}})
         rating = tv_more.min_age(doc.get("age_rating"))
         if not u or (rating and home_ground.is_minor(u) and (home_ground.age_of(u.get("date_of_birth")) or 0) < rating):
             await db.tv_release_notices.update_one({"_id": key}, {"$set": {"state": "skipped"}})
+            await db.tv_reminders.update_one({"_id": r["_id"]}, {"$addToSet": {"notified_episodes": ep["id"]}})
             continue
         if growth_notifications._quiet(u, now):
             await db.tv_release_notices.update_one({"_id": key}, {"$set": {"state": "pending"}})
@@ -95,6 +99,8 @@ async def _notify(db, doc, ep, now):
             ok = 0
             log.exception("Episode reminder delivery failed")
         await db.tv_release_notices.update_one({"_id": key}, {"$set": {"state": "sent" if ok == len(msgs) else "pending", "sent_at": now if ok == len(msgs) else None}})
+        if ok == len(msgs):
+            await db.tv_reminders.update_one({"_id": r["_id"]}, {"$addToSet": {"notified_episodes": ep["id"]}})
         sent += int(ok == len(msgs))
     return sent
 

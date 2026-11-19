@@ -81,6 +81,7 @@ async def test_weekly_push_retries_failure_and_is_deduplicated(db, spaces, rb, m
     assert await tv_release._notify(db,doc,ep,now)==1
     assert await tv_release._notify(db,doc,ep,now)==0
     assert len(calls)==2
+    assert (await db.tv_reminders.find_one({"_id":"reminder"}))["notified_episodes"] == [ep["id"]]
 
 async def test_playback_events_are_idempotent_and_future_episode_rejected(client,db,spaces,rb):
     tid=await scheduled(db)
