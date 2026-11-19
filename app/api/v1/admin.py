@@ -351,7 +351,7 @@ async def studio_accounts(admin: str = Depends(require_admin)):
 async def studio_set_account(body: HouseIn, admin: str = Depends(require_admin)):
     from app.services import studio
     db = get_database()
-    out = await studio.set_house(db, body.creator[:200], body.on)
+    out = await studio.set_house(db, body.creator[:200], body.on, admin_id=admin)
     await admin_log.record(db, admin, "house_account_on" if body.on else "house_account_off", {"user": out["id"]})
     return out
 
