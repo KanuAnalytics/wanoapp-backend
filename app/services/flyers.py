@@ -162,15 +162,28 @@ async def validate(db, body: dict) -> dict:
         raise HTTPException(status_code=422, detail="Pick the start and end dates")
     if ends <= starts or ends - starts > timedelta(days=366):
         raise HTTPException(status_code=422, detail="The end must be after the start (at most a year)")
-    names = sorted({n.strip().lstrip("@").lower() for n in (body.get("testers") or []) if isinstance(n, str) and n.strip()})
-    if len(names) > MAX_TESTERS:
+    names = {n.strip().lstrip("@") for n in (body.get("testers") or []) if isinstance(n, str)}
+    names.discard("")
+    if len({name.lower() for name in names}) > MAX_TESTERS:
         raise HTTPException(status_code=422, detail=f"At most {MAX_TESTERS} testers")
-    tester_ids = []
-    for n in names:
-        u = await db.users.find_one({"username": n}, {"_id": 1})
+    testers = {}
+    projection = {"_id": 1, "username": 1}
+    for n in sorted(names):
+        u = await db.users.find_one({"username": n}, projection)
+        if not u:
+            matches = await db.users.find(
+                {"username": {"$regex": rf"^{re.escape(n)}$", "$options": "i"}}, projection
+            ).limit(2).to_list(length=2)
+            if len(matches) > 1:
+                raise HTTPException(status_code=422, detail=f"Use the exact capitalization for @{n[:30]}")
+            u = next(iter(matches), None)
         if not u:
             raise HTTPException(status_code=422, detail=f"No account called @{n[:30]}")
-        tester_ids.append(u["_id"])
+        testers[u["_id"]] = u["username"]
+    if len(testers) > MAX_TESTERS:
+        raise HTTPException(status_code=422, detail=f"At most {MAX_TESTERS} testers")
+    names = list(testers.values())
+    tester_ids = list(testers)
     if body.get("testers_only") is True and not tester_ids:
         raise HTTPException(status_code=422, detail="Add at least one tester for a testers-only flyer")
     circle = None

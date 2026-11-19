@@ -283,10 +283,15 @@ def svc_doc(i, now):
             "daily_cap": None, "active": True}
 
 
-async def test_FY18_testers_see_it_anywhere_first_and_nobody_else_changes(client, db):
+@pytest.mark.parametrize(("username", "entered"), [
+    ("eilmer", "@Eilmer "),
+    ("WanoTeam", "WanoTeam"),
+    ("WanoTeam", "@wanoteam "),
+])
+async def test_FY18_testers_see_it_anywhere_first_and_nobody_else_changes(client, db, username, entered):
     await _on(db)
-    eilmer, eh = await _viewer(db, "us", username="eilmer")
-    await _flyer(client, db, business="Kampala Only", countries=["ug"], cities=["kampala"], testers=["@Eilmer "])
+    _, eh = await _viewer(db, "us", username=username)
+    await _flyer(client, db, business="Kampala Only", countries=["ug"], cities=["kampala"], testers=[entered])
     await _flyer(client, db, business="Lagos Only", countries=["ng"])
     r = (await client.get(F, headers=eh)).json()["flyers"]
     assert [f["business"] for f in r] == ["Kampala Only"] and r[0]["test"] is True
