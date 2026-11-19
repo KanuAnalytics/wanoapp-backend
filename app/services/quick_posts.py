@@ -56,6 +56,9 @@ REPORTS_TO_HIDE = 3
 TRUSTED_ACCOUNT_DAYS = 3
 REPORTS_PER_DAY = 20
 SEEN_PER_DAY = 2000
+COMMENT_MAX = 150
+COMMENTS_PER_DAY = 200
+COMMENTS_SHOWN = 100
 REASONS = ("spam", "harassment", "hate", "scam", "nudity", "violence", "self_harm", "false_information", "other")
 
 
@@ -131,6 +134,10 @@ def _out(q: dict, seen: bool, mine: bool) -> dict:
         o.update(audio_url=q.get("audio_url"), duration_ms=int(q.get("duration_ms") or 0))
     if mine:
         o["views"] = int(q.get("views") or 0)
+    # quick_replies: public comments, only when the poster turned them on.
+    o["comments"] = q.get("comments_on") is True
+    if o["comments"]:
+        o["comments_count"] = max(0, int(q.get("comments_count") or 0))
     return o
 
 
@@ -286,7 +293,7 @@ def _tidy_card(text) -> str:
     return t if visible else ""
 
 
-async def make_card(db, me_id: str, text, color: str) -> dict:
+async def make_card(db, me_id: str, text, color: str, comments: bool = False) -> dict:
     from app.services.messages import has_link
     me = await _poster(db, me_id)
     t = _tidy_card(text)
@@ -299,7 +306,10 @@ async def make_card(db, me_id: str, text, color: str) -> dict:
     if has_link(t) or _MORE_LINKS.search(t):
         raise HTTPException(status_code=400, detail="Links can't go in quick posts")
     await _room(db, me)
-    return await _insert(db, {"user_id": me["_id"], "kind": "card", "text": t, "color": color})
+    doc = {"user_id": me["_id"], "kind": "card", "text": t, "color": color}
+    if comments:
+        doc["comments_on"] = True
+    return await _insert(db, doc)
 
 
 def _boxes(data: bytes, start: int = 0, end: Optional[int] = None):
@@ -380,7 +390,7 @@ def _delete(key: str) -> None:
     _spaces_client().delete_object(Bucket=settings.DO_SPACES_BUCKET_NAME, Key=key)
 
 
-async def make_voice(db, me_id: str, data: bytes, duration_ms: int) -> dict:
+async def make_voice(db, me_id: str, data: bytes, duration_ms: int, comments: bool = False) -> dict:
     me = await _poster(db, me_id)
     if _minor(me):
         raise HTTPException(status_code=403, detail="Voice quick posts are for people 18 and over. "
@@ -404,8 +414,11 @@ async def make_voice(db, me_id: str, data: bytes, duration_ms: int) -> dict:
         raise HTTPException(status_code=502, detail="Couldn't save your voice note. Try again.")
     url = f"{settings.DO_SPACES_CDN_URL}/{settings.DO_SPACES_BUCKET_NAME}/{key}"
     try:
-        return await _insert(db, {"user_id": me["_id"], "kind": "voice", "audio_key": key, "audio_url": url,
-                                  "duration_ms": int(duration_ms), "bytes": len(data)})
+        doc = {"user_id": me["_id"], "kind": "voice", "audio_key": key, "audio_url": url,
+               "duration_ms": int(duration_ms), "bytes": len(data)}
+        if comments:
+            doc["comments_on"] = True
+        return await _insert(db, doc)
     except HTTPException:
         try:
             await asyncio.to_thread(_delete, key)
@@ -470,7 +483,7 @@ async def report(db, me_id: str, qid: str, reason: str) -> dict:
 
 async def admin_reports(db, limit: int = 50) -> List[dict]:
     rows = await db.quick_reports.aggregate([
-        {"$match": {"status": "open"}},
+        {"$match": {"status": "open", "comment_id": {"$exists": False}}},
         {"$group": {"_id": "$quick_id", "reasons": {"$push": "$reason"}, "n": {"$sum": 1},
                     "last": {"$max": "$created_at"}}},
         {"$sort": {"last": -1}}, {"$limit": limit}]).to_list(limit)
@@ -502,7 +515,144 @@ async def admin_act(db, qid: str, action: str) -> dict:
         await _drop_file(db, q)
     else:
         await db.quick_posts.update_one({"_id": q["_id"]}, {"$set": {"hidden": False, "reports": 0}})
-    await db.quick_reports.update_many({"quick_id": q["_id"], "status": "open"},
+    await db.quick_reports.update_many({"quick_id": q["_id"], "status": "open", "comment_id": {"$exists": False}},
                                        {"$set": {"status": "removed" if action == "remove" else "dismissed",
                                                  "settled_at": _now()}})
     return {"ok": True, "action": action}
+
+
+# ------------------------------------------------------------------ replies
+# "quick_replies" switch. Two clearly different things:
+# - a private reply goes to the poster's messages, carrying a small preview of
+#   the card or voice note it answers (reply_ref, used by messages.send);
+# - public comments sit under the quick post for everyone who can see it, only
+#   when the poster turned them on. They end with the quick post.
+
+def reply_ref(q: dict) -> dict:
+    """What a private reply remembers about the quick post (kept after it ends)."""
+    ref = {"id": str(q["_id"]), "kind": q.get("kind")}
+    if q.get("kind") == "card":
+        ref.update(text=(q.get("text") or "")[:80], color=q.get("color") if q.get("color") in COLORS else "green")
+    else:
+        ref["duration_ms"] = int(q.get("duration_ms") or 0)
+    return ref
+
+
+async def for_private_reply(db, me_id: str, qid, other_oid: ObjectId) -> dict:
+    """The quick post a private reply answers: one the other person in the chat
+    posted and I can still see."""
+    me = await _me(db, me_id)
+    q = await _visible_post(db, me, qid)
+    if q["user_id"] != other_oid:
+        raise HTTPException(status_code=400, detail="That quick post isn't theirs")
+    return reply_ref(q)
+
+
+async def set_comments(db, me_id: str, qid: str, on: bool) -> dict:
+    q = await db.quick_posts.find_one_and_update(
+        {"_id": _oid(qid), "user_id": ObjectId(me_id), **_live()}, {"$set": {"comments_on": bool(on)}},
+        return_document=ReturnDocument.AFTER)
+    if not q:
+        raise HTTPException(status_code=404, detail="This quick post has gone")
+    return _out(q, True, True)
+
+
+def _blocked(a: dict, b: dict) -> bool:
+    return (str(b["_id"]) in _ids(a, "blocked_users") | _ids(a, "blocked_by")
+            or str(a["_id"]) in _ids(b, "blocked_users") | _ids(b, "blocked_by"))
+
+
+def _comment_out(c: dict, user: dict, me: dict, owner_id) -> dict:
+    return {"id": str(c["_id"]), "text": c.get("text") or "", "at": c.get("created_at"),
+            "user": _public_user(user), "mine": c["user_id"] == me["_id"],
+            "can_delete": c["user_id"] == me["_id"] or owner_id == me["_id"]}
+
+
+async def comments(db, me_id: str, qid: str) -> dict:
+    me = await _me(db, me_id)
+    q = await _visible_post(db, me, qid)
+    mine = q["user_id"] == me["_id"]
+    if q.get("comments_on") is not True and not mine:
+        return {"on": False, "items": [], "count": 0}
+    rows = await db.quick_comments.find(
+        {"quick_id": q["_id"], "removed": {"$ne": True}, "hidden": {"$ne": True}}).sort("_id", -1).to_list(COMMENTS_SHOWN)
+    users = {u["_id"]: u async for u in db.users.find(
+        {"_id": {"$in": list({c["user_id"] for c in rows})}}, OWNER_FIELDS)}
+    items = []
+    for c in rows:
+        u = users.get(c["user_id"])
+        if not u or u.get("is_active") is False or (u["_id"] != me["_id"] and _blocked(me, u)):
+            continue
+        items.append(_comment_out(c, u, me, q["user_id"]))
+    return {"on": q.get("comments_on") is True, "items": items,
+            "count": max(0, int(q.get("comments_count") or 0))}
+
+
+async def add_comment(db, me_id: str, qid: str, text) -> dict:
+    from app.services.messages import has_link
+    me = await _me(db, me_id)
+    q = await _visible_post(db, me, qid)
+    if q.get("comments_on") is not True:
+        raise HTTPException(status_code=403, detail="Comments are off for this one")
+    full = await db.users.find_one({"_id": me["_id"]}, {**OWNER_FIELDS, "created_at": 1})
+    if not full or full.get("is_active") is False:
+        raise HTTPException(status_code=403, detail="This account can't comment")
+    t = _tidy_card(text)
+    if not t:
+        raise HTTPException(status_code=400, detail="Write something first")
+    if len(t) > COMMENT_MAX:
+        raise HTTPException(status_code=400, detail=f"Keep it to {COMMENT_MAX} characters")
+    if t.count("\n") > 2:
+        raise HTTPException(status_code=400, detail="Too many lines")
+    if has_link(t) or _MORE_LINKS.search(t):
+        raise HTTPException(status_code=400, detail="Links can't go in comments")
+    if not await _take_daily(db, f"comment:{me['_id']}", COMMENTS_PER_DAY):
+        raise HTTPException(status_code=429, detail="That's enough comments for today")
+    now = _now()
+    doc = {"quick_id": q["_id"], "owner_id": q["user_id"], "user_id": me["_id"], "text": t,
+           "created_at": now, "expires_at": q["expires_at"], "reports": 0}
+    doc["_id"] = (await db.quick_comments.insert_one(doc)).inserted_id
+    await db.quick_posts.update_one({"_id": q["_id"]}, {"$inc": {"comments_count": 1}})
+    return _comment_out(doc, full, me, q["user_id"])
+
+
+async def delete_comment(db, me_id: str, cid: str) -> dict:
+    me_oid = ObjectId(me_id)
+    c = await db.quick_comments.find_one({"_id": _oid(cid), "removed": {"$ne": True}})
+    if not c or me_oid not in (c["user_id"], c.get("owner_id")):
+        raise HTTPException(status_code=404, detail="Not found")
+    res = await db.quick_comments.update_one({"_id": c["_id"], "removed": {"$ne": True}},
+                                             {"$set": {"removed": True, "removed_at": _now()}})
+    if res.modified_count and c.get("hidden") is not True:
+        await db.quick_posts.update_one({"_id": c["quick_id"], "comments_count": {"$gt": 0}},
+                                        {"$inc": {"comments_count": -1}})
+    return {"deleted": True}
+
+
+async def report_comment(db, me_id: str, cid: str, reason: str) -> dict:
+    me = await _me(db, me_id)
+    c = await db.quick_comments.find_one({"_id": _oid(cid), "removed": {"$ne": True}})
+    if not c:
+        raise HTTPException(status_code=404, detail="Not found")
+    await _visible_post(db, me, str(c["quick_id"]))
+    if c["user_id"] == me["_id"]:
+        raise HTTPException(status_code=400, detail="You can't report your own comment")
+    try:
+        await db.quick_reports.insert_one({"_id": f"c:{c['_id']}:{me['_id']}", "comment_id": c["_id"],
+                                           "quick_id": c["quick_id"], "reporter_id": me["_id"],
+                                           "owner_id": c["user_id"], "reason": reason, "status": "open",
+                                           "created_at": _now()})
+    except DuplicateKeyError:
+        return {"reported": True}
+    reporter = await db.users.find_one({"_id": me["_id"]}, {"created_at": 1})
+    made = (reporter or {}).get("created_at")
+    trusted = isinstance(made, datetime) and made.replace(tzinfo=None) < _now() - timedelta(days=TRUSTED_ACCOUNT_DAYS)
+    if trusted and await _take_daily(db, f"report:{me['_id']}", REPORTS_PER_DAY):
+        upd = await db.quick_comments.find_one_and_update({"_id": c["_id"]}, {"$inc": {"reports": 1}},
+                                                          return_document=ReturnDocument.AFTER)
+        if (upd or {}).get("reports", 0) >= REPORTS_TO_HIDE and upd.get("hidden") is not True:
+            await db.quick_comments.update_one({"_id": c["_id"]}, {"$set": {"hidden": True, "hidden_at": _now()}})
+            await db.quick_posts.update_one({"_id": c["quick_id"], "comments_count": {"$gt": 0}},
+                                            {"$inc": {"comments_count": -1}})
+    # The poster can also just delete it; this tells us.
+    return {"reported": True}

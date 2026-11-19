@@ -4,7 +4,7 @@ creator's photo (app/services/quick_posts.py). Behind the "quick_posts" switch."
 from typing import Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
-from pydantic import BaseModel, ConfigDict, StrictStr
+from pydantic import BaseModel, ConfigDict, StrictBool, StrictStr
 
 from app.api.deps import get_current_active_user
 from app.core.database import get_database
@@ -17,6 +17,17 @@ class CardIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     text: StrictStr
     color: Literal["green", "night", "sunset", "ocean", "plum", "earth"] = "green"
+    comments: StrictBool = False
+
+
+class CommentsOnIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    on: StrictBool
+
+
+class CommentIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: StrictStr
 
 
 class ReportIn(BaseModel):
@@ -44,17 +55,52 @@ async def for_user(uid: str, me: str = Depends(get_current_active_user)):
 
 @router.post("/card", status_code=201)
 async def make_card(body: CardIn, me: str = Depends(get_current_active_user)):
-    return await svc.make_card(await _db(), me, body.text[:2000], body.color)
+    db = await _db()
+    comments = body.comments and await creator_push.on(db, "quick_replies")
+    return await svc.make_card(db, me, body.text[:2000], body.color, comments=comments)
 
 
 @router.post("/voice", status_code=201)
-async def make_voice(file: UploadFile = File(...), duration_ms: int = Form(...),
+async def make_voice(file: UploadFile = File(...), duration_ms: int = Form(...), comments: bool = Form(False),
                      me: str = Depends(get_current_active_user)):
     db = await _db()
     data = await file.read(svc.VOICE_MAX_BYTES + 1)     # never more than this is read into memory
     if len(data) > svc.VOICE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="That voice note is too big")
-    return await svc.make_voice(db, me, data, duration_ms)
+    comments = comments is True and await creator_push.on(db, "quick_replies")
+    return await svc.make_voice(db, me, data, duration_ms, comments=comments)
+
+
+async def _replies_db():
+    db = await _db()
+    await creator_push.require(db, "quick_replies")
+    return db
+
+
+@router.get("/{qid}/comments")
+async def comments(qid: str, me: str = Depends(get_current_active_user)):
+    return await svc.comments(await _replies_db(), me, qid[:40])
+
+
+@router.post("/{qid}/comments", status_code=201)
+async def add_comment(qid: str, body: CommentIn, me: str = Depends(get_current_active_user)):
+    return await svc.add_comment(await _replies_db(), me, qid[:40], body.text[:1000])
+
+
+@router.post("/{qid}/comments-on")
+async def comments_on(qid: str, body: CommentsOnIn, me: str = Depends(get_current_active_user)):
+    return await svc.set_comments(await _replies_db(), me, qid[:40], body.on)
+
+
+@router.delete("/comments/{cid}")
+async def delete_comment(cid: str, me: str = Depends(get_current_active_user)):
+    # Works with the switch off too, so nothing gets stuck up.
+    return await svc.delete_comment(get_database(), me, cid[:40])
+
+
+@router.post("/comments/{cid}/report")
+async def report_comment(cid: str, body: ReportIn, me: str = Depends(get_current_active_user)):
+    return await svc.report_comment(await _replies_db(), me, cid[:40], body.reason)
 
 
 @router.post("/{qid}/seen")

@@ -23,6 +23,7 @@ class SendIn(BaseModel):
     post_id: Optional[StrictStr] = None
     client_id: Optional[StrictStr] = None
     reply_to: Optional[StrictStr] = None
+    quick_id: Optional[StrictStr] = None
 
 
 class ReactIn(BaseModel):
@@ -88,7 +89,8 @@ async def get_messages(cid: str, limit: int = Query(30, ge=1, le=100), before: O
 
 @router.post("/conversations/{cid}/messages", status_code=201)
 async def send_message(cid: str, body: SendIn, response: Response, me: str = Depends(get_current_active_user)):
-    msg, created = await svc.send(await _db(), me, cid, body.text, body.post_id, body.client_id, reply_to=body.reply_to)
+    msg, created = await svc.send(await _db(), me, cid, body.text, body.post_id, body.client_id, reply_to=body.reply_to,
+                                    quick_id=body.quick_id)
     if not created:
         response.status_code = 200
     return msg

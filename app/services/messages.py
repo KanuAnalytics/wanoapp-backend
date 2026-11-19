@@ -384,6 +384,8 @@ def _msg_out(m: dict, me: ObjectId, posts: dict, replies: Optional[dict] = None)
         out["voice"] = {"url": m["audio_url"], "duration_ms": int(m.get("duration_ms") or 0)}
     if m.get("reply_to") is not None:
         out["reply_to"] = (replies or {}).get(m["reply_to"]) or {"id": str(m["reply_to"]), "gone": True}
+    if isinstance(m.get("quick"), dict) and not gone:
+        out["quick"] = m["quick"]
     return out
 
 
@@ -438,7 +440,7 @@ async def _reply_target(db, conv: dict, me_oid: ObjectId, reply_to) -> Optional[
 
 
 async def send(db, me_id: str, cid: str, text, post_id, client_id, reply_to=None,
-               voice: Optional[dict] = None) -> Tuple[dict, bool]:
+               voice: Optional[dict] = None, quick_id=None) -> Tuple[dict, bool]:
     """Returns (message, created). created False = a retry of one already sent.
     voice: an already-stored voice file {audio_key, audio_url, duration_ms, bytes}."""
     me_oid = ObjectId(me_id)
@@ -468,6 +470,12 @@ async def send(db, me_id: str, cid: str, text, post_id, client_id, reply_to=None
     me = await _user(db, me_oid)
     other = await _user(db, other_oid)
     _check_pair(me, other)
+    # quick_replies: a private reply to their card or voice note keeps a small
+    # preview of it, so they know what it's about. Older apps never send this.
+    quick = None
+    if quick_id is not None and voice is None and post_oid is None and await _feature_on(db, "quick_replies"):
+        from app.services import quick_posts as qp
+        quick = await qp.for_private_reply(db, me_id, quick_id, other_oid)
     if post_oid is not None:
         v = await db.videos.find_one({"_id": post_oid}, {"creator_id": 1})
         creator = await db.users.find_one({"_id": (v or {}).get("creator_id")}, {"is_active": 1})
@@ -506,6 +514,8 @@ async def send(db, me_id: str, cid: str, text, post_id, client_id, reply_to=None
         doc.update({k: voice[k] for k in ("audio_key", "audio_url", "duration_ms", "bytes")})
     if reply_oid is not None:
         doc["reply_to"] = reply_oid
+    if quick is not None:
+        doc["quick"] = quick
     if client_id is not None:
         doc["client_id"] = client_id
     if swallowed:
@@ -528,7 +538,10 @@ async def send(db, me_id: str, cid: str, text, post_id, client_id, reply_to=None
         if accept_now:
             upd["$set"]["state"] = "active"
         await db.conversations.update_one({"_id": conv["_id"]}, upd)
-        _push_later(db, conv["_id"], me, other, VOICE_TEXT if voice is not None else body, post_oid is not None,
+        push_text = VOICE_TEXT if voice is not None else body
+        if quick is not None:
+            push_text = f"Replied to your {'card' if quick.get('kind') == 'card' else 'voice note'}: {body}"
+        _push_later(db, conv["_id"], me, other, push_text, post_oid is not None,
                     request=(state == "request" and conv.get("requester") == me_oid))
         if post_oid is not None:
             # A post sent to someone is a share (app/services/shares.py).
