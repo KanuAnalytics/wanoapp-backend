@@ -272,11 +272,20 @@ async def serve(db, token: str, path: str) -> str:
     if len(path) > 200 or not _SAFE_PATH.match(path):
         raise NotFound(path)
     title = await db.tv_titles.find_one({"_id": ObjectId(title_id), "is_active": True},
-                                        {"video_url": 1, "trailer": 1, "poster": 1})
+                                        {"video_url": 1, "trailer": 1, "poster": 1, "type": 1, "seasons": 1})
     folder = own_folder(title)
     if not folder:
         raise NotFound(title_id)
     key = folder + path
+    if title.get("type") == "series" and title.get("seasons"):
+        from app.services.tv_release import released, episodes
+        allowed, blocked = [], []
+        for ep in episodes(title):
+            ep_key = spaces_key(ep.get("video_url"))
+            if ep_key and title_folder(ep_key) == folder:
+                (allowed if released(ep) else blocked).append(ep_key.rsplit("/", 1)[0] + "/")
+        if any(key.startswith(prefix) for prefix in blocked) or not any(key.startswith(prefix) for prefix in allowed):
+            raise NotFound(path)
     exp = int(_unb64(token.split(".")[0]).decode().split(".")[1])
     return rewrite(await _playlist(key), key, folder, token, exp)
 

@@ -135,7 +135,7 @@ async def mine(db, me: str) -> dict:
         out["loved"] = [str(r["title_id"]) async for r in db.tv_loves.find({"user_id": uid}, {"title_id": 1}).limit(500)]
     if await on(db, "tv_coming_soon"):
         out["reminders"] = [str(r["title_id"]) async for r in db.tv_reminders.find(
-            {"user_id": uid, "sent": {"$ne": True}}, {"title_id": 1}).limit(MAX_REMINDERS_LISTED)]
+            {"user_id": uid}, {"title_id": 1}).limit(MAX_REMINDERS_LISTED)]
     return out
 
 
@@ -146,12 +146,14 @@ def _https(u) -> Optional[str]:
 
 
 def coming_card(doc: dict) -> dict:
+    from app.services.tv_release import preview, episodes
     trailer = doc.get("trailer") if isinstance(doc.get("trailer"), dict) else {}
     return {"id": str(doc["_id"]), "slug": doc.get("slug") or "", "title": doc.get("title") or "",
             "type": doc.get("type") or "movie", "genres": [g for g in (doc.get("genres") or []) if isinstance(g, str)],
             "age_rating": doc.get("age_rating") or "", "synopsis": doc.get("synopsis") or doc.get("description") or "",
             "poster": _https(doc.get("poster")), "backdrop": _https(doc.get("backdrop")),
             "trailer": {"video_url": _https(trailer.get("video_url")), "thumbnail": _https(trailer.get("thumbnail"))},
+            "upcoming_episodes": [preview(e) for e in episodes(doc) if e.get("is_published") is not False and e.get("publish_at")],
             "coming_at": doc.get("coming_at") if isinstance(doc.get("coming_at"), str) else None}
 
 
@@ -165,7 +167,7 @@ async def coming_soon(db, user_id: Optional[str]) -> List[dict]:
 
 
 async def remind(db, me: str, title_id: str, on_: bool) -> dict:
-    doc = await db.tv_titles.find_one({"_id": _oid(title_id), "status": "coming_soon"}, {"_id": 1})
+    doc = await db.tv_titles.find_one({"_id": _oid(title_id), "$or": [{"status": "coming_soon"}, {"type": "series", "is_active": True}]}, {"_id": 1})
     if not doc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Title not found")
     key = f"{doc['_id']}:{me}"
@@ -173,7 +175,7 @@ async def remind(db, me: str, title_id: str, on_: bool) -> dict:
         await db.tv_reminders.update_one({"_id": key}, {"$setOnInsert": {
             "title_id": doc["_id"], "user_id": ObjectId(me), "at": datetime.utcnow(), "sent": False}}, upsert=True)
     else:
-        await db.tv_reminders.delete_one({"_id": key, "sent": {"$ne": True}})
+        await db.tv_reminders.delete_one({"_id": key})
     return {"reminded": on_}
 
 
@@ -309,6 +311,9 @@ async def download(db, me: str, title_id: str, episode: Optional[str]) -> dict:
                     src = e
         if src is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Episode not found")
+    from app.services.tv_release import released, episodes
+    if (episode and not released(src)) or (not episode and doc.get("type") == "series" and episodes(doc)):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Episode not available")
     day = datetime.utcnow().strftime("%Y-%m-%d")
     lim = await db.tv_download_limits.find_one_and_update(
         {"_id": f"{me}:{day}"}, {"$inc": {"n": 1}, "$setOnInsert": {"at": datetime.utcnow()}},

@@ -75,7 +75,7 @@ async def my_tv(current_user: str = Depends(get_current_active_user)):
                      "done": bool(r.get("done")), "updated_at": r.get("updated_at")})
         if len(cont) >= CONTINUE_LIMIT:
             break
-    lst = await db.tv_list.find({"user_id": me}).sort("added_at", -1).limit(LIST_LIMIT).to_list(None)
+    lst = await db.tv_list.find({"user_id": me}).sort([("added_at", -1), ("_id", -1)]).limit(LIST_LIMIT).to_list(None)
     alive = {d["_id"] async for d in db.tv_titles.find(
         {"_id": {"$in": [x["title_id"] for x in lst]}, "is_active": True}, {"_id": 1})}
     return {"continue": cont, "list": [str(x["title_id"]) for x in lst if x["title_id"] in alive]}

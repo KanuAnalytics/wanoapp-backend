@@ -11,12 +11,12 @@ import logging
 from datetime import datetime
 from typing import List, Optional
 from bson import ObjectId
-from pydantic import ValidationError
+from pydantic import ValidationError, Field
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 from app.api.deps import get_current_active_user, get_optional_active_user
 from app.core.database import get_database
 from app.models.tv import TvEpisode, TvGenreResponse, TvMaker, TvSeason, TvTitleResponse, TvWatchResponse
-from app.services import recommendations, tv_cf, tv_more, tv_popularity, tv_stream
+from app.services import tv_release, recommendations, tv_cf, tv_more, tv_popularity, tv_stream
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +70,7 @@ async def _warm_cf(docs: List[dict]) -> None:
             uids.add(d["cf_uid"])
         for s in d.get("seasons") or []:
             for e in (s.get("episodes") or []) if isinstance(s, dict) else []:
-                if isinstance(e, dict) and tv_cf.valid_uid(e.get("cf_uid")) and e.get("cf_ready") is True:
+                if isinstance(e, dict) and tv_release.released(e) and tv_cf.valid_uid(e.get("cf_uid")) and e.get("cf_ready") is True:
                     uids.add(e["cf_uid"])
     for uid in uids:
         try:
@@ -81,7 +81,7 @@ async def _warm_cf(docs: List[dict]) -> None:
 
 def _protect(data: dict, viewer: str) -> dict:
     """Films on our Spaces get an expiring signed link instead of the public file."""
-    cf = _cf_url(data)
+    cf = _cf_url(data) if not (data.get("type") == "series" and data.get("seasons")) else None
     if cf:
         data["video_url"] = cf
         return data
@@ -103,12 +103,17 @@ def _episodes(data: dict, viewer: str) -> None:
         return
     folder = tv_stream.own_folder(data)
     seasons, seen = [], set()
+    data["upcoming_episodes"] = []
     for season in data.get("seasons") or []:
         if not isinstance(season, dict):
             continue
         eps = []
         for ep in season.get("episodes") or []:
             if not isinstance(ep, dict) or ep.get("id") in seen:
+                continue
+            if not tv_release.released(ep):
+                if ep.get("is_published") is not False and ep.get("publish_at"):
+                    data["upcoming_episodes"].append(tv_release.preview(ep))
                 continue
             try:
                 cf = _cf_url(ep)
@@ -403,7 +408,7 @@ def _has_episode(doc: dict, episode: str) -> bool:
     for season in doc.get("seasons") or []:
         if isinstance(season, dict):
             for ep in season.get("episodes") or []:
-                if isinstance(ep, dict) and ep.get("id") == episode:
+                if isinstance(ep, dict) and ep.get("id") == episode and tv_release.released(ep):
                     return True
     return False
 
@@ -495,3 +500,22 @@ async def strip_event(body: StripEventIn, request: Request,
     await _strip_on(db)
     who = current_user or ("ip:" + (request.client.host if request.client else "?"))
     return {"counted": await tv_strip.record(db, who, body.title_id[:40], body.kind)}
+
+
+class PlaybackEventIn(_BM):
+    model_config = _CD(extra="forbid")
+    session: str = Field(..., pattern=r"^[a-zA-Z0-9-]{16,64}$")
+    kind: _Lit["trailer_start", "play_start", "progress", "complete", "error"]
+    episode: Optional[str] = Field(None, pattern=r"^s\d{1,3}e\d{1,4}$")
+    trailer: bool = False
+    position: float = Field(0, ge=0, le=43200, allow_inf_nan=False)
+    duration: float = Field(0, ge=0, le=43200, allow_inf_nan=False)
+
+
+@router.post("/titles/{title_id}/events")
+async def playback_event(title_id: str, body: PlaybackEventIn,
+                         current_user: Optional[str] = Depends(get_optional_active_user),
+                         x_device_id: Optional[str] = Header(None, alias="X-Device-Id")):
+    from app.services import tv_analytics
+    viewer = current_user or recommendations.anon_id(x_device_id)
+    return await tv_analytics.record(get_database(), title_id, viewer, body)

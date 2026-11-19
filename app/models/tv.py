@@ -64,6 +64,17 @@ class TvEpisode(BaseModel):
     downloadable: bool = False
 
 
+class TvUpcomingEpisode(BaseModel):
+    id: str
+    season: int
+    number: int
+    title: str
+    synopsis: str = ""
+    duration_minutes: int = 0
+    thumbnail: Optional[str] = None
+    publish_at: Optional[datetime] = None
+
+
 class TvSeason(BaseModel):
     number: int = Field(..., ge=0)
     title: Optional[str] = None
@@ -108,6 +119,7 @@ class TvTitleResponse(BaseModel):
     # then the first episode. Empty for movies.
     seasons: List[TvSeason] = Field(default_factory=list)
     episode_count: int = 0
+    upcoming_episodes: List[TvUpcomingEpisode] = Field(default_factory=list)
     # History only: the episode the viewer last started.
     last_episode: Optional[str] = None
     # Wano users credited on the title ("Meet the Makers"): makers stored on the

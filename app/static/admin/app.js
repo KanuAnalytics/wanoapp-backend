@@ -1003,13 +1003,15 @@ const RENDER = {
   async tvnumbers(main, days) {
     days = days || 30;
     const r = await api("GET", `/admin/tv/stats?days=${days}`);
+    const playback = await api("GET", `/admin/tv/playback-stats?days=${days}`);
     const tabs = el("div", { class: "tabs" }, ...[7, 30, 60].map((d) => el("button", { class: d === days ? "on" : "", text: `${d} days`, onclick: () => RENDER.tvnumbers(main, d) })));
     const max = Math.max(1, ...r.by_day.map((d) => d.plays));
     const bars = el("div", { style: "display: flex; align-items: flex-end; gap: 2px; height: 90px; margin: 8px 0;" },
       ...r.by_day.map((d) => el("div", { title: `${d.day}: ${d.plays} plays`, style: `flex: 1; background: var(--primary); opacity: .8; border-radius: 2px 2px 0 0; height: ${Math.max(2, Math.round(d.plays / max * 88))}px;` })));
     const H = ["Title", "Plays", "Started", "Finished", "Avg watched", "My List", "Hearts", "Reminders", "Downloads", "Strip shown → taps"];
+    const playbackTable = el("div", { class: "card" }, el("h3", {text: "Playback sessions · trailers and episodes"}), el("p", {class:"small muted",text:"Sessions count actual playback. Completion and average position include signed-out devices. Only new app versions report these."}), el("table", {}, el("thead", {}, el("tr", {}, ...["Title / episode", "Starts", "Completed", "Avg reached", "Errors"].map(x => el("th",{text:x})))), el("tbody",{}, ...playback.items.map(x => el("tr", {}, el("td",{text:(r.items.find(t => t.id === x.title_id)?.title || x.title_id) + (x.trailer ? " · Trailer" : " · " + (x.episode || "Film"))}), ...[x.starts,x.completed,x.avg_pct === null ? "–" : x.avg_pct + "%",x.errors].map(v => el("td",{text:String(v)})))))));
     main.replaceChildren(...head("Wano TV numbers", "Plays count once per person per title per day (signed in or not). Started, finished and how far people get come from signed-in viewers. Plays are kept 60 days."),
-      tabs,
+      tabs, playbackTable,
       el("div", { class: "card" }, el("div", { class: "row space" }, el("h3", { text: `${num(r.total_plays)} plays` }), el("div", { class: "small muted", text: `${num(r.people_started)} people have ever started a title` })), bars),
       el("div", { class: "card" }, r.items.length ? el("table", {}, el("thead", {}, el("tr", {}, ...H.map((h) => el("th", { text: h })))),
         el("tbody", {}, ...r.items.map((x) => el("tr", {}, el("td", { text: x.title + (x.status !== "live" ? ` (${x.status.replace("_", " ")})` : "") }),
@@ -1402,7 +1404,7 @@ async function tvEditor(main, box, id) {
     distributor: inp((t.credits || {}).distributor || "Wano TV"),
     people: area(((t.credits || {}).people || []).map((p) => [p.name, p.role, p.username ? "@" + p.username : ""].filter(Boolean).join(" | ")).join("\n"), 4),
     video_url: inp(t.cf_uid ? "" : t.video_url, { placeholder: t.cf_uid ? "Film uploaded to Cloudflare (paste a Spaces link to replace it)" : "https://…/wano-tv/<folder>/master.m3u8" }),
-    featured: el("input", { type: "checkbox" }), popularity: inp(t.popularity || 0, { type: "number" }), coming_at: inp(t.coming_at || "", { type: "date" }),
+    featured: el("input", { type: "checkbox" }), popularity: inp(t.popularity || 0, { type: "number" }), coming_at: inp(t.coming_at || "", { type: "date" }), premiere_at: inp(t.premiere_at ? new Date(t.premiere_at).toISOString().slice(0,16) : "", { type: "datetime-local" }),
   };
   f.featured.checked = !!t.featured;
   const field = (label, node, hint) => el("label", { class: "field" }, el("span", { text: label }), node, hint ? el("div", { class: "small muted", text: hint }) : null);
@@ -1427,7 +1429,7 @@ async function tvEditor(main, box, id) {
       people: f.people.value.split("\n").map((l) => l.split("|").map((x) => x.trim())).filter((p) => p[0] && p[1])
         .map((p) => ({ name: p[0], role: p[1], username: (p[2] || "").replace(/^@/, "") })) },
     video_url: f.video_url.value.trim() || (t.cf_uid ? t.video_url : ""), featured: f.featured.checked,
-    popularity: Number(f.popularity.value) || 0, coming_at: f.coming_at.value || null,
+    popularity: Number(f.popularity.value) || 0, coming_at: f.coming_at.value || null, premiere_at: f.premiere_at.value ? f.premiere_at.value + ":00Z" : null,
   });
   const save = el("button", { class: "btn", text: t.id ? "Save" : "Create (Hidden)", onclick: async (e) => {
     const out = await act(e.target, () => t.id ? api("PUT", `/admin/tv/titles/${t.id}`, body()) : api("POST", "/admin/tv/titles", body()), "Saved");
@@ -1471,6 +1473,7 @@ async function tvEditor(main, box, id) {
         el("div", { class: "row", style: "gap: 8px;" }, field("Year", f.year), field("Release date", f.release_date), field("Minutes", f.duration_minutes), field("Rating", f.age_rating)),
         field("One-line description", f.description), field("Story (synopsis)", f.synopsis),
         field("Coming soon date (optional)", f.coming_at, "Shown on the Coming soon row."),
+        field("Automatic series premiere (UTC)", f.premiere_at, "19:00 Tanzania = 16:00 UTC. Only ready, released episodes become playable."),
         el("label", { class: "row", style: "gap: 8px; margin: 8px 0;" }, f.featured, el("span", { text: "Featured (top of Wano TV)" })), field("Popularity boost (0-1000)", f.popularity)),
       el("div", {}, picture("Poster (portrait)", f.poster), picture("Landscape picture", f.backdrop), picture("Trailer picture", f.thumb),
         field("Trailer link", f.trailer), field("Trailer length (seconds)", f.trailer_s),
@@ -1552,12 +1555,14 @@ function episodesCard(t, reload) {
   const syn = el("textarea", { rows: 2, placeholder: "What happens (optional)" });
   const link = el("input", { type: "text", placeholder: "Film on Spaces (optional): https://…/wano-tv/<this title's folder>/…/master.m3u8" });
   const thumb = el("input", { type: "text", placeholder: "Episode picture link (optional)" });
+  const publish = el("input", { type: "datetime-local" });
+  const enabled = el("input", { type: "checkbox" });
   const pic = el("input", { type: "file", accept: ".jpg,.jpeg,.png,.webp" });
   pic.onchange = async () => { const fd = new FormData(); fd.append("file", pic.files[0]); const out = await act(null, () => apiForm(`/admin/tv/titles/${t.id}/art-file`, fd), "Picture uploaded"); if (out) thumb.value = out.url; };
-  const fill = (e) => { sea.value = e.season; no.value = e.number; ti.value = e.title; mins.value = e.duration_minutes || ""; syn.value = e.synopsis || ""; link.value = e.cf_uid ? "" : (e.video_url || ""); thumb.value = e.thumbnail || ""; ti.focus(); };
+  const fill = (e) => { publish.value = e.publish_at ? new Date(e.publish_at).toISOString().slice(0,16) : ""; enabled.checked = e.is_published !== false; sea.value = e.season; no.value = e.number; ti.value = e.title; mins.value = e.duration_minutes || ""; syn.value = e.synopsis || ""; link.value = e.cf_uid ? "" : (e.video_url || ""); thumb.value = e.thumbnail || ""; ti.focus(); };
   return el("div", { class: "card" }, el("h3", { text: `Episodes (${eps.length})` }),
     ...eps.map((e) => el("div", { style: "padding: 8px 0; border-bottom: 1px solid var(--border);" },
-      el("div", { class: "row space" }, el("div", {}, el("strong", { text: `S${e.season} E${e.number} · ${e.title}` }), el("span", { class: "small muted", text: ` · ${e.duration_minutes || "?"} min` })),
+      el("div", { class: "row space" }, el("div", {}, el("strong", { text: `S${e.season} E${e.number} · ${e.title}` }), el("span", { class: "small muted", text: ` · ${e.duration_minutes || "?"} min · ${e.is_published === false ? "Hidden" : e.publish_at ? "Unlocks " + new Date(e.publish_at).toLocaleString("en-GB", {timeZone:"Africa/Dar_es_Salaam"}) + " EAT" : "Available"}` })),
         el("div", { class: "row", style: "gap: 6px;" }, el("button", { class: "btn small secondary", text: "Edit", onclick: () => fill(e) }),
           el("button", { class: "btn small secondary", text: "Remove", onclick: async (ev) => {
             if (await confirmBox(`Remove episode ${e.number}?`, "Its film and subtitles stay in storage; only the episode is taken off the title.", "Remove", true))
@@ -1566,11 +1571,13 @@ function episodesCard(t, reload) {
       filmCard(t, e, reload))),
     el("h3", { text: "Add or change an episode", style: "margin-top: 14px;" }),
     el("div", { class: "row", style: "gap: 8px; flex-wrap: wrap;" }, el("span", { class: "small", text: "Season" }), sea, el("span", { class: "small", text: "Episode" }), no, ti, mins),
+    el("label", { class: "field" }, el("span", { text: "Unlock date and time (UTC; 19:00 Tanzania = 16:00 UTC)" }), publish),
+    el("label", {}, enabled, " Ready for release (otherwise kept hidden)"),
     el("div", { style: "margin-top: 6px;" }, syn), el("div", { style: "margin-top: 6px;" }, link),
     el("div", { class: "row", style: "gap: 8px; margin-top: 6px;" }, thumb, pic),
     el("button", { class: "btn small", style: "margin-top: 8px;", text: "Save episode", onclick: async (ev) => {
       const out = await act(ev.target, () => api("PUT", `/admin/tv/titles/${t.id}/episodes`, { season: Number(sea.value), number: Number(no.value), title: ti.value.trim(),
-        synopsis: syn.value.trim(), duration_minutes: Number(mins.value) || 0, thumbnail: thumb.value.trim(), video_url: link.value.trim() }), "Episode saved: upload its film below it");
+        publish_at: publish.value ? publish.value + ":00Z" : null, is_published: enabled.checked, synopsis: syn.value.trim(), duration_minutes: Number(mins.value) || 0, thumbnail: thumb.value.trim(), video_url: link.value.trim() }), "Episode saved: upload its film below it");
       if (out) reload();
     } }));
 }

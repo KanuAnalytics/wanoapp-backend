@@ -95,6 +95,8 @@ async def lifespan(app: FastAPI):
     # Ensure indexes on the shared connection (no second client to leak)
     await ensure_indexes(get_database())
     await metrics_buffer.start()  # Start the metrics buffer
+    from app.services.tv_release import release_worker
+    release_worker.start()
     await scheduled_publisher.start()  # Publishes scheduled posts when they come due
     await recommendations.stats_sync.start()  # Pushes changed view/like counts to Recombee
     import asyncio as _asyncio
@@ -112,6 +114,7 @@ async def lifespan(app: FastAPI):
     await growth_loop.stop()
     await rescue_loop.stop()
     await recommendations.stats_sync.stop()
+    await release_worker.stop()
     await scheduled_publisher.stop()
     await metrics_buffer.stop()   # Stop the metrics buffer
     await close_mongo_connection()

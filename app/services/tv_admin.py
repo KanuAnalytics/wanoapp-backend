@@ -18,7 +18,7 @@ hearts, reminders, downloads and the feed strip, per title.
 import asyncio
 import logging
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import List, Literal, Optional
 
 from bson import ObjectId
@@ -95,6 +95,13 @@ class TitleIn(BaseModel):
     featured: StrictBool = False
     popularity: int = Field(0, ge=0, le=1000)
     coming_at: Optional[str] = None
+    premiere_at: Optional[datetime] = None
+
+    @field_validator("premiere_at", mode="before")
+    @classmethod
+    def _premiere(cls, value):
+        from app.services.tv_release import utc
+        return utc(value)
 
     _u = field_validator("poster", "backdrop", "video_url")(_https_or_blank)
     _d = field_validator("release_date", "coming_at")(_date_or_none)
@@ -119,6 +126,15 @@ class EpisodeIn(BaseModel):
     duration_minutes: int = Field(0, ge=0, le=600)
     thumbnail: str = ""
     video_url: str = ""
+    publish_at: Optional[datetime] = None
+    is_published: Optional[bool] = None
+
+    @field_validator("publish_at", mode="before")
+    @classmethod
+    def _publish(cls, value):
+        from app.services.tv_release import utc
+        return utc(value)
+
     _u = field_validator("thumbnail", "video_url")(_https_or_blank)
 
 
@@ -188,8 +204,11 @@ def problems(doc: dict) -> List[str]:
         out.append("Needs a director in the credits")
     if not doc.get("release_date"):
         out.append("Needs a release date")
-    eps = _episodes(doc)
-    if doc.get("type") == "series" and eps:
+    from app.services.tv_release import released
+    eps = [e for e in _episodes(doc) if released(e)]
+    if doc.get("type") == "series" and _episodes(doc):
+        if not eps:
+            out.append("No released episode is ready yet")
         for e in eps:
             if tv_cf.valid_uid(e.get("cf_uid")) and e.get("cf_ready") is not True:
                 out.append(f"Episode {e.get('id')}: film still processing (press Check)")
@@ -213,7 +232,7 @@ def problems(doc: dict) -> List[str]:
         elif doc.get("type") == "series" and eps and resp.episode_count < len(eps):
             shown = {e.id for s in resp.seasons for e in s.episodes}
             for e in eps:
-                if e.get("id") not in shown:
+                if released(e) and e.get("id") not in shown:
                     out.append(f"Episode {e.get('id')}: its film must be in this title's own folder")
     return out
 
@@ -235,9 +254,15 @@ def detail(doc: dict) -> dict:
     out["problems"] = problems(doc)
     out["downloadable"] = tv_more.downloadable(doc)
     for k, v in list(out.items()):
-        if isinstance(v, (datetime, date)):
+        if isinstance(v, datetime):
+            out[k] = (v.replace(tzinfo=timezone.utc) if v.tzinfo is None else v).isoformat()
+        elif isinstance(v, date):
             out[k] = v.isoformat()
     for s in out.get("seasons") or []:
+        for e in s.get("episodes") or []:
+            if isinstance(e, dict) and isinstance(e.get("publish_at"), datetime):
+                v = e["publish_at"]
+                e["publish_at"] = (v.replace(tzinfo=timezone.utc) if v.tzinfo is None else v).isoformat()
         s["episodes"] = sorted([e for e in s.get("episodes") or [] if isinstance(e, dict)],
                                key=lambda e: e.get("number") or 0)
     return out
@@ -286,6 +311,8 @@ async def update_title(db, title_id: str, body: TitleIn) -> dict:
     if other:
         raise HTTPException(status.HTTP_409_CONFLICT, "Another title already uses that web address")
     f = _fields(body)
+    if "premiere_at" not in body.model_fields_set:
+        f.pop("premiere_at", None)
     # A pasted Spaces link replaces a Cloudflare film; an untouched field keeps it.
     if f["video_url"] and f["video_url"] != doc.get("video_url"):
         unset = {"cf_uid": "", "cf_ready": "", "download_ready": "", "download_cf_uid": "", "download_asked": ""}
@@ -361,6 +388,9 @@ async def save_episode(db, title_id: str, body: EpisodeIn) -> dict:
                 old = e
     ep = {**(old or {}), "id": ep_id, "season": body.season, "number": body.number, "title": body.title,
           "synopsis": body.synopsis, "duration_minutes": body.duration_minutes, "thumbnail": body.thumbnail or None}
+    if "publish_at" in body.model_fields_set:
+        ep["publish_at"] = body.publish_at
+    ep["is_published"] = body.is_published if body.is_published is not None else (old or {}).get("is_published", True)
     if body.video_url and body.video_url != (old or {}).get("video_url"):
         ep["video_url"] = body.video_url
         for k in ("cf_uid", "cf_ready", "download_ready", "download_cf_uid", "download_asked"):

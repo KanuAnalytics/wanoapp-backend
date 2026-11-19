@@ -197,3 +197,12 @@ async def set_strip_rules(body: RulesIn, admin: str = Depends(require_admin)):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
     await admin_log.record(db, admin, "tv_strip_rules", body.model_dump(exclude_none=True))
     return {"rules": out}
+
+
+@router.get("/playback-stats")
+async def playback_stats(days: int = Query(30, ge=1, le=90), admin: str = Depends(require_admin)):
+    from app.services import tv_analytics
+    rows = await tv_analytics.report(get_database(), days)
+    return {"days": days, "items": [{"title_id": str(r["_id"]["title_id"]), "episode": r["_id"].get("episode"),
+            "trailer": bool(r["_id"].get("trailer")), "starts": r["starts"], "completed": r["completed"],
+            "errors": r["errors"], "avg_pct": round(r["avg_pct"] * 100) if r.get("avg_pct") is not None else None} for r in rows]}
