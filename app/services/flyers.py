@@ -426,7 +426,7 @@ def viewer_out_base(f: dict) -> dict:
 async def for_viewer(db, viewer_id: Optional[str], now: Optional[datetime] = None, clip_topic: Optional[str] = None) -> dict:
     from app.services import home_ground as hg, tv_strip
     now = now or _now()
-    rules = dict(tv_strip.RULES)
+    rules = await tv_strip.rules(db)
     viewer = {}
     if viewer_id is not None:
         if not ObjectId.is_valid(viewer_id):
