@@ -37,6 +37,10 @@ function safeUrl(u) {
   try { const x = new URL(u); return x.protocol === "https:" ? x.href : null; } catch (e) { return null; }
 }
 
+function tvWaitingForPremiere(t) {
+  return t.status === "coming_soon" && t.premiere_at && Date.parse(t.premiere_at) > Date.now() && t.problems?.length === 1 && t.problems[0] === "No released episode is ready yet";
+}
+
 let toastTimer = null;
 function toast(msg, err) {
   const t = $("toast");
@@ -991,7 +995,7 @@ const RENDER = {
         el("td", { text: STATUS[t.status] + (t.status === "coming_soon" && t.coming_at ? ` (${t.coming_at})` : "") }),
         el("td", { text: t.film === "cloudflare" ? "Cloudflare" : t.film === "spaces" ? "Spaces" : (t.episodes ? "In episodes" : "—") }),
         el("td", { text: String(t.captions) }),
-        el("td", { class: "small", text: t.problems.length ? `${t.problems.length} to fix` : "✓" }),
+        el("td", { class: "small", text: tvWaitingForPremiere(t) ? "Scheduled" : t.problems.length ? `${t.problems.length} to fix` : "✓" }),
         el("td", {}, el("button", { class: "btn small secondary", text: "Open", onclick: () => tvEditor(main, detail, t.id) }))))))
       : el("div", { class: "empty", text: "No titles yet." });
     main.replaceChildren(...head("Wano TV titles", "Add and edit what's on Wano TV. A new title starts Hidden; it can only go Live once everything the app needs is there. Films can be uploaded straight to Cloudflare from here, or keep using a film already on Spaces by pasting its master.m3u8 link."),
@@ -1449,7 +1453,7 @@ async function tvEditor(main, box, id) {
     } });
     sections.push(el("div", { class: "card" }, el("h3", { text: "Status" }),
       el("div", { class: "row", style: "gap: 8px; flex-wrap: wrap;" }, statusBtn("live", "Live"), statusBtn("coming_soon", "Coming soon"), statusBtn("hidden", "Hidden"), notify),
-      t.problems.length ? el("ul", { class: "small", style: "color: #b42318; margin-top: 10px;" }, ...t.problems.map((p) => el("li", { text: p }))) : el("p", { class: "small muted", text: "Ready: the app can show this title." })));
+      tvWaitingForPremiere(t) ? el("p", {class:"small muted",text:"Scheduled: episodes unlock automatically at their release times."}) : t.problems.length ? el("ul", { class: "small", style: "color: #b42318; margin-top: 10px;" }, ...t.problems.map((p) => el("li", { text: p }))) : el("p", { class: "small muted", text: "Ready: the app can show this title." })));
 
     sections.push(filmCard(t, null, reload));
 

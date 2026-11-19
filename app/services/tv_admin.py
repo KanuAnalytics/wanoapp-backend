@@ -241,7 +241,7 @@ def row(doc: dict) -> dict:
     eps = _episodes(doc)
     return {"id": str(doc["_id"]), "slug": doc.get("slug"), "title": doc.get("title"), "type": doc.get("type"),
             "status": status_of(doc), "poster": doc.get("poster"), "age_rating": doc.get("age_rating"),
-            "coming_at": doc.get("coming_at"), "episodes": len(eps), "captions": len(doc.get("captions") or []),
+            "coming_at": doc.get("coming_at"), "premiere_at": doc.get("premiere_at"), "episodes": len(eps), "captions": len(doc.get("captions") or []),
             "film": "cloudflare" if tv_cf.valid_uid(doc.get("cf_uid")) else ("spaces" if doc.get("video_url") else ""),
             "downloadable": tv_more.downloadable(doc), "notified_at": doc.get("notified_at"),
             "problems": problems(doc)}
