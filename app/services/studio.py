@@ -25,13 +25,15 @@ async def house_accounts(db) -> list:
              "profile_picture": u.get("profile_picture"), "active": u.get("is_active") is True} for u in rows]
 
 
-async def set_house(db, creator_text: str, on: bool) -> dict:
+async def set_house(db, creator_text: str, on: bool, *, admin_id: str) -> dict:
     from app.api.v1.admin import _find_creator
     u = await _find_creator(db, creator_text)
     if not u:
         raise HTTPException(status_code=404, detail="No account found")
-    if on and str(u.get("user_type", "")).lower() == "admin":
-        raise HTTPException(status_code=400, detail="Admin accounts can't be house accounts")
+    # An official account may also administer Wano. Only its authenticated owner
+    # can opt that admin account into Studio; other admins remain protected.
+    if on and str(u.get("user_type", "")).lower() == "admin" and str(u["_id"]) != admin_id:
+        raise HTTPException(status_code=400, detail="Admin accounts can only enable their own Studio posting")
     await db.users.update_one({"_id": u["_id"]}, {"$set": {"house_account": True}} if on
                               else {"$unset": {"house_account": ""}})
     return {"id": str(u["_id"]), "username": u.get("username"), "house_account": on}

@@ -110,3 +110,26 @@ async def test_ST8_admin_page_allows_only_cloudflare_uploads(client, db):
     r = await client.get("/admin")
     csp = r.headers.get("content-security-policy", "")
     assert "connect-src 'self' https://upload.cloudflarestream.com https://upload.videodelivery.net;" in csp
+
+
+async def test_ST9_admin_can_schedule_on_own_official_account(client, db, cf):
+    acct, ah = await make_user(db, username="WanoTeam", user_type="admin")
+    # Admin status alone is not enough: explicit house-account opt-in is required.
+    assert (await _draft(client, ah, acct)).status_code == 404
+    r = await client.post(f"{S}/accounts", json={"creator": "@WanoTeam"}, headers=ah)
+    assert r.status_code == 200, r.text
+    user = await db.users.find_one({"_id": ObjectId(acct)})
+    assert user["user_type"] == "admin" and user["house_account"] is True
+    at = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(days=1)
+    did = (await _draft(client, ah, acct, scheduled_for=at.isoformat())).json()["id"]
+    assert await db.videos.count_documents({}) == 0
+    r = await client.post(f"{S}/drafts/{did}/approve", json={}, headers=ah)
+    assert r.status_code == 200, r.text
+    v = await db.videos.find_one({})
+    assert v["creator_id"] == ObjectId(acct)
+    assert v["status"] == "scheduled" and v["is_active"] is False
+    assert v["scheduled_at"] == at.replace(tzinfo=None)
+    # Removing opt-in prevents subsequent publishing without changing admin access.
+    assert (await client.post(f"{S}/accounts", json={"creator": "@WanoTeam", "on": False}, headers=ah)).status_code == 200
+    assert (await _draft(client, ah, acct)).status_code == 404
+    assert (await client.get(f"{S}/accounts", headers=ah)).status_code == 200
