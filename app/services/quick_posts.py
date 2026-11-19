@@ -393,8 +393,7 @@ def _delete(key: str) -> None:
 async def make_voice(db, me_id: str, data: bytes, duration_ms: int, comments: bool = False) -> dict:
     me = await _poster(db, me_id)
     if _minor(me):
-        raise HTTPException(status_code=403, detail="Voice quick posts are for people 18 and over. "
-                                                    "You can post a Status card.")
+        raise HTTPException(status_code=403, detail="To keep teens safe, voice notes aren't available on teen accounts. You can post a Status card.")
     if len(data) > VOICE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="That voice note is too big")
     if not is_m4a(data):

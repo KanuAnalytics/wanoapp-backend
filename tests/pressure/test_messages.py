@@ -252,7 +252,7 @@ async def test_MS17_under_18_cant_message_or_be_messaged(client, db):
     r1 = await _open(client, ah, teen)
     r2 = await _open(client, th, adult)
     assert r1.status_code == 403 and r2.status_code == 403
-    assert "18" in r2.json()["detail"]
+    assert "teen accounts" in r2.json()["detail"]
     almost, alh = await make_user(db, date_of_birth=datetime.now() - timedelta(days=365 * 18 - 3))
     await _mutual(db, adult, almost)
     assert (await _open(client, ah, almost)).status_code == 403

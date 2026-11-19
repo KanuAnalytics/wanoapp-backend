@@ -199,7 +199,7 @@ async def test_QP6_under_18s_cards_only_and_followers_only(client, db, store):
     teen_dob = datetime.utcnow() - timedelta(days=15 * 365)
     teen, th = await make_user(db, date_of_birth=teen_dob)
     r = await _voice(client, th)
-    assert r.status_code == 403 and "18" in r.json()["detail"] and store["saved"] == {}
+    assert r.status_code == 403 and "teen accounts" in r.json()["detail"] and store["saved"] == {}
     qid = (await _card(client, th, "exam tomorrow 📚")).json()["id"]
     stranger, sh = await make_user(db)
     follower, fh = await make_user(db, following=[ObjectId(teen)])

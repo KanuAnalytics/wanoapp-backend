@@ -46,7 +46,7 @@ async def test_AG3_flagged_young_fixes_once_then_can_message(client, db):
     s = (await client.get(f"{A}/check", headers=kh)).json()
     assert s["needs_check"] and s["can_fix"] and s["treated_as_minor"] and s["birthday"] == "2016-07-07"
     r = await client.post("/api/v1/messages/conversations", json={"user_id": friend}, headers=kh)
-    assert r.status_code == 403 and "18" in r.json()["detail"]
+    assert r.status_code == 403 and "teen accounts" in r.json()["detail"]
     r = await client.post(f"{A}/birthday", json={"birthday": "1988-03-02"}, headers=kh)
     assert r.status_code == 200, r.text
     assert r.json() == {"birthday": "1988-03-02", "age": r.json()["age"], "treated_as_minor": False,

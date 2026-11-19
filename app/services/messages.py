@@ -150,7 +150,7 @@ def _check_pair(me: dict, other: Optional[dict]):
     if _blocked(me, other["_id"]) or _blocked(other, me["_id"]):
         raise HTTPException(status_code=403, detail="You can't message this account")
     if _minor(me):
-        raise HTTPException(status_code=403, detail="Messages are for people 18 and over")
+        raise HTTPException(status_code=403, detail="To keep teens safe, messages aren't available on teen accounts")
     if _minor(other):
         raise HTTPException(status_code=403, detail="This account can't receive messages (under 18)")
 
