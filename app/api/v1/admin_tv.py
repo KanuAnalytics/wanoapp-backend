@@ -205,4 +205,5 @@ async def playback_stats(days: int = Query(30, ge=1, le=90), admin: str = Depend
     rows = await tv_analytics.report(get_database(), days)
     return {"days": days, "items": [{"title_id": str(r["_id"]["title_id"]), "episode": r["_id"].get("episode"),
             "trailer": bool(r["_id"].get("trailer")), "starts": r["starts"], "completed": r["completed"],
-            "errors": r["errors"], "avg_pct": round(r["avg_pct"] * 100) if r.get("avg_pct") is not None else None} for r in rows]}
+            "errors": r["errors"], "stopped_quarters": [r["stopped_under_25"], r["stopped_25_50"], r["stopped_50_75"], r["stopped_75_100"]],
+            "avg_pct": round(r["avg_pct"] * 100) if r.get("avg_pct") is not None else None} for r in rows]}

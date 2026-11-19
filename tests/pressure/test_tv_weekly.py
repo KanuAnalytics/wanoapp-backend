@@ -95,3 +95,14 @@ async def test_playback_events_are_idempotent_and_future_episode_rejected(client
     assert row['completed']==1 and row['position']==600
     body['episode']='s1e2'
     assert (await client.post(url,headers=h,json=body)).status_code==404
+
+
+async def test_analytics_report_separates_completed_and_early_exits(db,spaces,rb):
+    from app.services import tv_analytics
+    from app.api.v1.tv import PlaybackEventIn
+    tid=await _series(db,seasons=1,per=1)
+    for session,kind,position in [('1234567890abcdef','progress',20),('abcdef1234567890','complete',100)]:
+        await tv_analytics.record(db,tid,'viewer',PlaybackEventIn(session=session,kind=kind,episode='s1e1',position=position,duration=100))
+    rows=await tv_analytics.report(db,30)
+    assert rows[0]['starts']==2 and rows[0]['completed']==1
+    assert rows[0]['stopped_under_25']==1 and rows[0]['stopped_25_50']==0

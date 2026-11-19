@@ -37,9 +37,13 @@ async def record(db, title_id, viewer, body):
 
 async def report(db, days):
     since = datetime.utcnow() - timedelta(days=days)
+    ratio = {"$cond": [{"$gt": ["$duration", 0]}, {"$divide": ["$position", "$duration"]}, 0]}
+    bucket = lambda low, high: {"$sum": {"$cond": [{"$and": [{"$eq": ["$started", 1]}, {"$eq": ["$completed", 0]}, {"$gte": [ratio, low]}, {"$lt": [ratio, high]}]}, 1, 0]}}
     return [r async for r in db.tv_playback_sessions.aggregate([
         {"$match": {"created_at": {"$gte": since}}},
         {"$group": {"_id": {"title_id": "$title_id", "episode": "$episode", "trailer": "$trailer"},
             "starts": {"$sum": "$started"}, "completed": {"$sum": "$completed"}, "errors": {"$sum": "$failed"},
+            "stopped_under_25": bucket(0, .25), "stopped_25_50": bucket(.25, .5),
+            "stopped_50_75": bucket(.5, .75), "stopped_75_100": bucket(.75, 1.01),
             "avg_pct": {"$avg": {"$cond": [{"$gt": ["$duration", 0]}, {"$divide": ["$position", "$duration"]}, None]}}}},
         {"$sort": {"starts": -1}}, {"$limit": 1000}])]
