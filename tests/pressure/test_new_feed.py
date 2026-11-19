@@ -132,6 +132,19 @@ async def test_N5_exclude_watched_still_fills_the_page(client, db):
     assert r.headers.get("X-Next-Cursor")
 
 
+async def test_N5_watched_backfill_keeps_creators_interleaved(client, db):
+    busy, _ = await make_user(db)
+    newest = await make_video(db, busy, created_at=ago(minutes=1), isReadyToStream=True)
+    second = await make_video(db, busy, created_at=ago(minutes=2), isReadyToStream=True)
+    other, watched = await _spread(db, 2, minutes_apart=1, start_minutes=3)
+    _, viewer = await make_user(db)
+    r = await client.post(f"/api/v1/videos/{watched}/watch", headers=viewer, json={"portion": 1})
+    assert r.status_code == 200
+
+    page, _ = await _ids(client, viewer, exclude_watched="true", cursor="start")
+    assert page == [newest, other, second, watched]
+
+
 async def test_N6_broken_and_processing_videos_never_show(client, db):
     c, _ = await make_user(db)
     good = await make_video(db, c, created_at=ago(minutes=9), isReadyToStream=True)

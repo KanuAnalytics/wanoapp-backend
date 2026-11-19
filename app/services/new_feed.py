@@ -336,13 +336,14 @@ async def cursor_page(db, match: dict, *, limit: int, cursor: str, viewer: Optio
 
     # Someone who has watched nearly everything got an empty New tab. When
     # unseen posts can't fill half the page, posts they watched (that the
-    # boundary has already passed) fill it, kept newest first.
+    # boundary has already passed) fill it without undoing creator rotation.
     if exclude_watched and watched_skipped and len(chosen) < (limit + 1) // 2:
         for d in watched_skipped:
             if len(chosen) >= limit:
                 break
             take(d)
-        chosen.sort(key=lambda d: (_naive(d["created_at"]), d["_id"]), reverse=True)
+        if not cap_creators:
+            chosen.sort(key=lambda d: (_naive(d["created_at"]), d["_id"]), reverse=True)
 
     # Held-back posts ride in the cursor. Past MAX_DEFERRED it's a flood: the
     # oldest extras are left to the creator's profile and For You.
