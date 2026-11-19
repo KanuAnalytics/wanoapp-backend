@@ -333,3 +333,41 @@ async def test_R3_3_same_name_in_two_countries_gets_its_own_id(client, db):
     assert r.json()["id"] == "kingston_ca"
     from app.services import home_ground as hg
     assert hg.CITY["kingston"]["country"] == "jm"
+
+    _, jamaican = await make_user(db, localization={"country": "jm"})
+    r = await client.post(f"{HG}/request-city", json={"name": " KINGSTON "}, headers=jamaican)
+    assert r.json() == {"exists": True, "city": hg.CITY["kingston"]}
+    for country, expected_id in (("jm", "kingston"), ("ca", "kingston_ca")):
+        r = await client.post("/api/v1/admin/home-ground/cities",
+                              json={"name": "Kingston", "country": country}, headers=adm)
+        assert r.status_code == 200 and r.json()["id"] == expected_id
+    assert await db.hg_cities.count_documents({"name": "Kingston"}) == 1
+
+
+async def test_city_request_survives_failed_insert_and_can_be_retried(client, db, monkeypatch):
+    from pymongo.errors import OperationFailure
+    from app.services import home_ground as hg
+
+    await _on(db)
+    _, user = await make_user(db, localization={"country": "ug"})
+    admin_id, admin = await make_user(db, user_type="admin")
+    name = "Write Failure City"
+    r = await client.post(f"{HG}/request-city", json={"name": name}, headers=user)
+    assert r.json() == {"exists": False}
+
+    async def fail_insert(*args, **kwargs):
+        raise OperationFailure("simulated write failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(type(db.hg_cities), "insert_one", fail_insert)
+        with pytest.raises(OperationFailure, match="simulated write failure"):
+            await hg.add_city(db, admin_id, name, "ug")
+
+    requests = "/api/v1/admin/home-ground/requests"
+    items = (await client.get(requests, headers=admin)).json()["items"]
+    assert any(item["name"] == name for item in items)
+    r = await client.post("/api/v1/admin/home-ground/cities", json={"name": name, "country": "ug"}, headers=admin)
+    assert r.status_code == 200 and r.json()["id"] == "write_failure_city"
+    assert (await client.get(requests, headers=admin)).json()["items"] == []
+    groups = (await client.get(f"{HG}/cities", headers=user)).json()
+    assert {"id": "write_failure_city", "name": name} in next(g["cities"] for g in groups if g["country"] == "ug")

@@ -27,6 +27,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 from bson import ObjectId
+from pymongo.errors import DuplicateKeyError
 
 MIN_CITY_CREATORS = 3
 CHANGE_DAYS = 30
@@ -80,7 +81,9 @@ async def load_custom(db, force: bool = False) -> None:
     try:
         extra = await db.hg_cities.find({}).to_list(2000)
     except Exception:
-        extra = []
+        if force:
+            raise
+        return
     _set_cities(extra)
     _custom_loaded_at[0] = time.monotonic()
 
@@ -109,10 +112,19 @@ _BY_NAME: Dict[str, str] = {}
 _set_cities()
 
 
-def city_from_text(text) -> Optional[str]:
+def city_from_text(text, country: Optional[str] = None) -> Optional[str]:
     if not isinstance(text, str):
         return None
     f = _fold(text)
+    if country is not None:
+        # Prefer the built-in ID if an older custom entry duplicated its name.
+        for cid, city in CITY.items():
+            if city["country"] == country and _fold(city["name"]) == f:
+                return cid
+        for cid in (ALIASES.get(f), slug(text)):
+            if cid in CITY and CITY[cid]["country"] == country:
+                return cid
+        return None
     return _BY_NAME.get(f) or ALIASES.get(f) or (slug(text) if slug(text) in CITY else None)
 
 
@@ -127,8 +139,8 @@ async def request_city(db, user: str, name: str, country: Optional[str]) -> dict
     cc = country.lower() if isinstance(country, str) else ""
     if cc not in COUNTRIES:
         raise HTTPException(status_code=422, detail="Pick a country")
-    existing = city_from_text(clean)
-    if existing and CITY[existing]["country"] == cc:
+    existing = city_from_text(clean, cc)
+    if existing:
         return {"exists": True, "city": CITY[existing]}
     key = f"{slug(clean)}:{cc}"
     await db.hg_city_requests.update_one(
@@ -155,22 +167,38 @@ async def add_city(db, admin: str, name: str, country: str) -> dict:
     if not re.fullmatch(r"[^\W\d_][\w .'\-]{1,59}", clean or "", re.UNICODE) or cc not in COUNTRIES:
         raise HTTPException(status_code=422, detail="Give a city name and a country")
     await load_custom(db, force=True)
-    found = city_from_text(clean)
-    if found and CITY[found]["country"] == cc:
-        await db.hg_city_requests.delete_one({"_id": f"{slug(clean)}:{cc}"})
+    key = slug(clean)
+    request_id = f"{key}:{cc}"
+    found = city_from_text(clean, cc)
+    if found:
+        await db.hg_city_requests.delete_one({"_id": request_id})
         return CITY[found]
-    cid = slug(clean)
-    if cid in CITY:
-        cid = f"{cid}_{cc}"
-    try:
-        await db.hg_cities.insert_one({"_id": cid, "name": clean, "country": cc, "added_by": ObjectId(admin),
-                                       "at": datetime.utcnow()})
-    except Exception:
-        pass
-    await db.hg_city_requests.delete_one({"_id": f"{slug(clean)}:{cc}"})
+    cid = key
+    suffix = 0
+    while True:
+        if cid not in CITY:
+            try:
+                await db.hg_cities.insert_one({"_id": cid, "name": clean, "country": cc,
+                                               "added_by": ObjectId(admin), "at": datetime.utcnow()})
+                break
+            except DuplicateKeyError:
+                # Another worker may have added the same city since our read.
+                await load_custom(db, force=True)
+                found = city_from_text(clean, cc)
+                if found:
+                    cid = found
+                    break
+                if cid not in CITY:
+                    raise
+        suffix += 1
+        cid = f"{key}_{cc}" if suffix == 1 else f"{key}_{cc}_{suffix}"
     await load_custom(db, force=True)
+    city = CITY.get(cid)
+    if not city or city["country"] != cc or _fold(city["name"]) != _fold(clean):
+        raise HTTPException(status_code=503, detail="City could not be verified. Try again.")
+    await db.hg_city_requests.delete_one({"_id": request_id})
     clear_cache()
-    return CITY[cid]
+    return city
 
 
 def country_of(user: dict) -> Optional[str]:
