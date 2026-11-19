@@ -444,12 +444,15 @@ async def get_user_relationships(
     return [by_id[uid] for uid in user_ids if uid in by_id]
 
 # Helper function to get video details
-async def get_video_details(db, video_ids: List[ObjectId]) -> List[VideoDetail]:
+async def get_video_details(db, video_ids: List[ObjectId], viewer_id: Optional[str] = None) -> List[VideoDetail]:
     """Get video details for a list of video IDs"""
     if not video_ids:
         return []
     
-    # Get videos from database
+    viewer_oid = ObjectId(viewer_id) if viewer_id and ObjectId.is_valid(viewer_id) else None
+    viewer = await db.users.find_one({"_id": viewer_oid}, {"blocked_users": 1, "blocked_by": 1}) if viewer_oid else None
+    blocked = set((viewer or {}).get("blocked_users", [])) | set((viewer or {}).get("blocked_by", []))
+    # Lists show public posts; creators retain access to their own private items.
     cursor = db.videos.find({
         "_id": {"$in": video_ids},
         "is_active": True,
@@ -465,7 +468,22 @@ async def get_video_details(db, video_ids: List[ObjectId]) -> List[VideoDetail]:
     
     # Create a mapping to preserve order
     video_map = {}
-    async for video in cursor:
+    videos = [video async for video in cursor]
+    creator_ids = list({video.get("creator_id") for video in videos if video.get("creator_id")})
+    authors = {author["_id"]: author async for author in db.users.find(
+        {"_id": {"$in": creator_ids}}, {"is_active": 1, "blocked_users": 1, "blocked_by": 1}
+    )} if creator_ids else {}
+    for video in videos:
+        creator = video.get("creator_id")
+        own = bool(viewer_oid) and str(creator) == str(viewer_oid)
+        if not own:
+            if creator in blocked or video.get("privacy", "public") != "public" or video.get("trial") is True:
+                continue
+            if video.get("status") in ("scheduled", "publishing", "cancelled") or (video.get("moderation") or {}).get("state") in ("held", "removed"):
+                continue
+            author = authors.get(creator)
+            if not author or author.get("is_active") is False or viewer_oid in (author.get("blocked_users", []) + author.get("blocked_by", [])):
+                continue
         urls = video.get("urls") if isinstance(video.get("urls"), dict) else None
         detail = dict(
             id=str(video["_id"]),
@@ -901,7 +919,7 @@ async def get_my_liked_videos(
     liked_video_ids = (user.get("liked_videos") or [])[skip:skip + limit]
     
     # Get video details
-    video_details = await get_video_details(db, liked_video_ids)
+    video_details = await get_video_details(db, liked_video_ids, current_user)
     
     return video_details
 
@@ -926,7 +944,7 @@ async def get_my_bookmarked_videos(
     bookmarked_video_ids = (user.get("bookmarked_videos") or [])[skip:skip + limit]
     
     # Get video details
-    video_details = await get_video_details(db, bookmarked_video_ids)
+    video_details = await get_video_details(db, bookmarked_video_ids, current_user)
     
     return video_details
 
@@ -1266,7 +1284,7 @@ async def get_user_complete(
     if current_user == user_id:
         bookmarked_video_details = await get_video_details(
             db, 
-            user.get("bookmarked_videos", [])
+            user.get("bookmarked_videos", []), current_user
         )
     else:
         bookmarked_video_details = []
@@ -1274,7 +1292,7 @@ async def get_user_complete(
     if include_liked:
         liked_video_details = await get_video_details(
             db, 
-            user.get("liked_videos", [])
+            user.get("liked_videos", []), current_user
         )
     else:
         liked_video_details = []
