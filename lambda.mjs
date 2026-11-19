@@ -225,9 +225,12 @@ function buildConcatFilterArgs(clips, outputPath, music = null, videoVolume = 1)
     filters.push(
       `[${inputIndex++}:a:0]aformat=sample_rates=${TARGET_SAMPLE_RATE}:channel_layouts=stereo,atrim=duration=${totalDuration},asetpts=PTS-STARTPTS,${volumeFilter(music.volume)}anull${musicLabel}`,
     );
-    // normalize=0 keeps each track at the level set above; amix's default
-    // scales every input down by the number of inputs, halving both here.
-    if (music.keepOriginalSound) filters.push("[clipsound][music]amix=inputs=2:duration=first:normalize=0[outa]");
+    // Original audio can end before the video. Pad it so a short source
+    // track cannot cut off the song. Keep both slider levels intact.
+    if (music.keepOriginalSound) {
+      filters.push(`[clipsound]apad=whole_dur=${totalDuration}[paddedclipsound]`);
+      filters.push("[paddedclipsound][music]amix=inputs=2:duration=first:normalize=0[outa]");
+    }
   }
 
   return [
