@@ -484,7 +484,12 @@ async def get_feed(
     page_cap = limit if cursor is not None else limit + len(pinned_docs)
     videos = videos[:page_cap]
 
-    if video_id and skip == 0 and cursor in (None, new_feed.START):
+    # The post that was tapped leads the first page the app asks for. Grids
+    # (Discover, profiles, Trending) open the watch screen at the tile's own
+    # position (skip=N) and send video_id only with that first request, so
+    # this must not depend on skip being 0: when it did, every tile but the
+    # first opened whatever post sat at position N of a fresh list.
+    if video_id and cursor in (None, new_feed.START):
         featured_pipeline = [
             {
                 "$match": {
