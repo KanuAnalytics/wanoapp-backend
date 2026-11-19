@@ -52,6 +52,18 @@ async def test_PS2_creator_page_shows_public_posts_only(client, db):
     assert "email" not in d and "date_of_birth" not in d and "phone_number" not in d
 
 
+async def test_PS2b_namesakes_the_page_is_the_one_with_posts(client, db):
+    """Sitemap linked @Justin (with posts); the page found an empty namesake and was noindex."""
+    await make_user(db, username="Justin", followers_count=900)          # no posts, more followers
+    real, _ = await make_user(db, username="Justin ", followers_count=3)
+    await make_video(db, real, title="My first", **THUMB)
+    await make_user(db, username="justin", followers_count=1)
+    d = (await client.get(f"{P}/creators/Justin")).json()
+    assert d["posts_count"] == 1 and d["posts"][0]["title"] == "My first"
+    items = (await client.get(f"{P}/creators")).json()["items"]
+    assert [i["username"] for i in items] == ["Justin"]
+
+
 async def test_PS3_sitemap_lists_adult_creators_with_public_posts(client, db):
     a, _ = await make_user(db, username="ama", followers_count=50)
     b, _ = await make_user(db, username="kofi", followers_count=500)

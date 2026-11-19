@@ -142,11 +142,21 @@ async def _find_user(db, username: str) -> Optional[dict]:
     if not name or len(name) > USERNAME_MAX:
         return None
     # Usernames are stored as typed (some with a trailing space); match those exactly, then any case.
-    u = await db.users.find_one({"username": {"$in": [name, name + " "]}}, USER_FIELDS)
-    if not u:
-        u = await db.users.find_one({"username": {"$in": [name, name + " "]}}, USER_FIELDS,
-                                    collation={"locale": "en", "strength": 2})
-    return u
+    # Several accounts can share a name ("Justin" and "Justin ", or two "Justin"s
+    # from before names were unique): the page belongs to the one with public
+    # posts, then the most followed. Otherwise the sitemap linked the creator
+    # with posts and the page showed an empty namesake marked noindex.
+    found = await db.users.find({"username": {"$in": [name, name + " "]}}, USER_FIELDS).to_list(5)
+    if not found:
+        found = await db.users.find({"username": {"$in": [name, name + " "]}}, USER_FIELDS,
+                                    collation={"locale": "en", "strength": 2}).to_list(5)
+    if len(found) <= 1:
+        return found[0] if found else None
+    ok = [u for u in found if _ok_user(u)] or found
+    for u in sorted(ok, key=lambda u: -int(u.get("followers_count") or 0)):
+        if await db.videos.find_one({"creator_id": u["_id"], **_visible_post()}, {"_id": 1}):
+            return u
+    return max(ok, key=lambda u: int(u.get("followers_count") or 0))
 
 
 async def creator(db, username: str) -> Optional[dict]:
