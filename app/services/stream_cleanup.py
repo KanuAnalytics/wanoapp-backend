@@ -16,6 +16,7 @@ Deleting re-checks each video against the posts first, and skips any that a
 post started using since the list was made.
 """
 
+import re
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
@@ -88,6 +89,22 @@ def _row(v: dict) -> dict:
     }
 
 
+# Collections that keep Cloudflare video ids outside the posts: Wano TV films,
+# episodes and their offline copies, Studio drafts. Small, read whole.
+_OTHER_HOLDERS = ("tv_titles", "studio_drafts", "tv_clips", "flyers")
+_UID_RE = re.compile(r"[0-9a-f]{32}")
+
+
+async def _held_elsewhere(db) -> set:
+    """Every Cloudflare-looking id stored in _OTHER_HOLDERS (never deleted)."""
+    from bson import json_util
+    held = set()
+    for name in _OTHER_HOLDERS:
+        async for d in db[name].find({}):
+            held.update(_UID_RE.findall(json_util.dumps(d)))
+    return held
+
+
 async def scan(db, videos: Optional[Iterable[dict]] = None, now: Optional[datetime] = None) -> dict:
     """Find unused videos and save the list. `videos` (tests) replaces the Cloudflare listing."""
     from app.services.upload_DO import PROTECTED_STREAM_UIDS
@@ -101,7 +118,7 @@ async def scan(db, videos: Optional[Iterable[dict]] = None, now: Optional[dateti
 
     # One pass over the posts for the UIDs they store, then the full check
     # (URLs of older posts, drafts, stitch jobs) only for what's left.
-    stored = set()
+    stored = await _held_elsewhere(db)
     async for d in db.videos.find({"stream_uid": {"$type": "string"}}, {"stream_uid": 1}):
         stored.add(d["stream_uid"])
 
@@ -151,10 +168,11 @@ async def delete(db, uids: Iterable[str], admin: str) -> dict:
     from app.services.video_deletion import is_stream_uid_referenced
 
     scanned = await last_scan(db)
+    held = await _held_elsewhere(db)
     listed = {r["uid"]: r for r in scanned.get("items") or []}
     deleted, skipped, failed = [], [], []
     for uid in list(dict.fromkeys(u for u in uids if isinstance(u, str)))[:MAX_DELETE]:
-        if uid not in listed or uid in PROTECTED_STREAM_UIDS:
+        if uid not in listed or uid in PROTECTED_STREAM_UIDS or uid in held:
             skipped.append(uid)
             continue
         if await is_stream_uid_referenced(db, uid) or await db.videos.find_one({"stream_uid": uid}, {"_id": 1}):

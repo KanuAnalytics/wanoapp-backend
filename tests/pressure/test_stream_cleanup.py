@@ -114,3 +114,26 @@ async def test_SC4_endpoints_are_admin_only_and_need_confirm(client, db, monkeyp
 async def test_SC5_switches_listed_and_off(client, db):
     f = (await client.get("/api/v1/config/features")).json()
     assert f["lean_preload"] is False and f["loop_cap"] is False and f["data_saver"] is False
+
+
+async def test_SC_tv_and_studio_videos_are_never_listed_or_deleted(db, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from app.services import stream_cleanup as sc
+    old = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+    film, ep, offline, draft, junk = ("a" * 32, "b" * 32, "c" * 32, "d" * 32, "e" * 32)
+    await db.tv_titles.insert_one({"slug": "x", "cf_uid": film, "download_cf_uid": offline,
+                                   "seasons": [{"episodes": [{"cf_uid": ep}]}]})
+    await db.studio_drafts.insert_one({"stream_uid": draft})
+    vids = [{"uid": u, "created": old, "duration": 60, "status": {"state": "ready"}, "meta": {}}
+            for u in (film, ep, offline, draft, junk)]
+    out = await sc.scan(db, videos=vids)
+    assert [r["uid"] for r in out["items"]] == [junk]
+    # Even if an old list named them, delete skips them.
+    await db.config.update_one({"_id": sc.STATE_ID}, {"$set": {"items": [sc._row(v) for v in vids]}})
+    gone = []
+    monkeypatch.setattr(sc, "_delete", lambda uid: gone.append(uid))
+    from app.services import admin_log
+    async def _rec(*a, **k): return None
+    monkeypatch.setattr(admin_log, "record", _rec)
+    await sc.delete(db, [film, ep, offline, draft, junk], "6845fdb76cd85e35c8f722f6")
+    assert gone == [junk]
