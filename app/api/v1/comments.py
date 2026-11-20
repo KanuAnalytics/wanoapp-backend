@@ -780,6 +780,22 @@ class TeenCommentsIn(BaseModel):
     who: str = Field(..., pattern="^(following|everyone)$")
 
 
+@router.get("/me/teen-comments")
+async def get_teen_comments(current_user: str = Depends(get_current_active_user)):
+    """Who may comment on my posts: adults "everyone"; under 16 "friends" (locked);
+    16-17 "following" unless they chose "everyone"."""
+    db = get_database()
+    from app.services import home_ground
+    me = await db.users.find_one({"_id": ObjectId(current_user)}, {"date_of_birth": 1, "teen_comments": 1})
+    age = home_ground.age_of((me or {}).get("date_of_birth")) if me and home_ground.is_minor(me) else None
+    if age is None:
+        return {"teen": False, "who": "everyone", "locked": False}
+    if age < 16:
+        return {"teen": True, "who": "friends", "locked": True}
+    return {"teen": True, "who": "everyone" if (me or {}).get("teen_comments") == "everyone" else "following",
+            "locked": False}
+
+
 @router.put("/me/teen-comments")
 async def set_teen_comments(body: TeenCommentsIn, current_user: str = Depends(get_current_active_user)):
     """16-17: who may comment on my posts. Under 16 it stays friends only."""

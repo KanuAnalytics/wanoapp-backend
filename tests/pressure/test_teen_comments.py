@@ -136,3 +136,14 @@ async def test_TC7_safety_record_has_rules_switch_history_and_counts(client, db)
     from app.services import safety_record
     await safety_record.ensure(db)
     assert (await db.safety_policies.find_one({"_id": "teen_comments:v1"}))["text"] == "original"
+
+
+async def test_TC8_reading_my_setting(client, db):
+    _, ah = await make_user(db)
+    _, yh = await make_user(db, date_of_birth=_born(14))
+    _, oh = await make_user(db, date_of_birth=_born(17))
+    assert (await client.get(f"{C}me/teen-comments", headers=ah)).json() == {"teen": False, "who": "everyone", "locked": False}
+    assert (await client.get(f"{C}me/teen-comments", headers=yh)).json() == {"teen": True, "who": "friends", "locked": True}
+    assert (await client.get(f"{C}me/teen-comments", headers=oh)).json()["who"] == "following"
+    await client.put(f"{C}me/teen-comments", json={"who": "everyone"}, headers=oh)
+    assert (await client.get(f"{C}me/teen-comments", headers=oh)).json()["who"] == "everyone"
