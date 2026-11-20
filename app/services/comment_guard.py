@@ -92,9 +92,91 @@ async def too_fast(db, user_id: ObjectId, video_id: ObjectId, now: Optional[date
     return False
 
 
-async def hold_reason(db, *, user: dict, video: dict, parent: Optional[dict], content: str) -> Optional[str]:
-    """Why a new comment should be held, or None. Only call with the switch on."""
+# ------------------------------------------------------------------ teens
+# teen_comments switch (safety_record "teen_comments:v1"): who may comment on a
+# teen's post. Under 16: friends only (follow each other), locked. 16-17:
+# people the teen follows unless they chose everyone. Offensive words held.
+TEEN_SWITCH = "teen_comments"
+TEEN_RULE = "teen_comments:v1"
+TEEN_CHOICES = ("following", "everyone")
+# Offensive words held on teen posts. Admin can add more (config
+# "teen_blocked_words"); matched as whole words, ignoring case and spacing tricks.
+BLOCKED_WORDS = ("fuck", "fucking", "shit", "bitch", "bastard", "slut", "whore", "dick", "pussy", "cunt",
+                 "nigga", "nigger", "faggot", "retard", "kill yourself", "kys", "nude", "nudes", "sexy",
+                 "send pics", "hookup", "sugar daddy", "malaya", "kuma", "msenge", "shenzi", "fala")
+
+
+async def teen_on(db) -> bool:
+    from app.services import creator_push
+    return await creator_push.on(db, TEEN_SWITCH)
+
+
+def _age(user: dict) -> Optional[int]:
+    from app.services import home_ground
+    if not home_ground.is_minor(user):
+        return None
+    return home_ground.age_of(user.get("date_of_birth"))
+
+
+async def _blocked_words(db) -> List[str]:
+    cfg = await db.config.find_one({"teen_blocked_words": {"$exists": True}}, {"teen_blocked_words": 1}) or {}
+    extra = [w.lower().strip() for w in (cfg.get("teen_blocked_words") or []) if isinstance(w, str) and w.strip()]
+    return list(BLOCKED_WORDS) + extra
+
+
+def _normal(text: str) -> str:
+    t = (text or "").lower()
+    t = t.translate(str.maketrans({"0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "@": "a", "$": "s", "!": "i"}))
+    t = re.sub(r"[^a-z\s]", " ", t)
+    return " " + re.sub(r"\s+", " ", t) + " "
+
+
+def _join_spelled(t: str) -> str:
+    """'f u c k' -> 'fuck' (runs of single letters), leaving real words alone."""
+    return re.sub(r"(?:\b[a-z] ){2,}[a-z]\b", lambda m: m.group(0).replace(" ", ""), t)
+
+
+def has_blocked_word(text: str, words: Iterable[str]) -> bool:
+    t = _normal(text)
+    joined = _join_spelled(t)
+    for w in words:
+        w = " ".join(w.lower().split())
+        if w and (f" {w} " in t or f" {w} " in joined):
+            return True
+    return False
+
+
+async def teen_reason(db, *, user: dict, owner: Optional[dict], content: str) -> Optional[str]:
+    """Why a comment on a teen's post is held under teen_comments:v1, or None."""
+    if not owner or owner.get("_id") == user.get("_id"):
+        return None
+    age = _age(owner)
+    if age is None:
+        return None
+    me = user["_id"]
+    they_follow_me = me in _ids(owner.get("following"))
+    i_follow_them = owner["_id"] in _ids(user.get("following"))
+    if age < 16:
+        if not (they_follow_me and i_follow_them):
+            return "teen_friends_only"
+    elif owner.get("teen_comments") != "everyone" and not they_follow_me:
+        return "teen_following_only"
+    if has_blocked_word(content, await _blocked_words(db)):
+        return "teen_word_filter"
+    return None
+
+
+async def hold_reason(db, *, user: dict, video: dict, parent: Optional[dict], content: str,
+                      guard: bool = True, teen: bool = False) -> Optional[str]:
+    """Why a new comment should be held, or None."""
     creator = video.get("creator_id")
+    if teen:
+        owner = await db.users.find_one({"_id": creator}, {"date_of_birth": 1, "following": 1, "teen_comments": 1})
+        why = await teen_reason(db, user=user, owner=owner, content=content)
+        if why:
+            return why
+    if not guard:
+        return None
     if blocked_between(user, creator):
         return "blocked"
     if parent is not None and blocked_between(user, parent.get("user_id")):

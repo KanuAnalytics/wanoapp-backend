@@ -25,6 +25,11 @@ async def connect_to_mongo():
         
         # Create indexes for better performance
         await create_indexes()
+        try:
+            from app.services import safety_record
+            await safety_record.ensure(db.db)
+        except Exception:
+            logger.exception("Could not write the safety rules")
         
         await create_comment_indexes(db.db)
         

@@ -296,9 +296,10 @@ async def create_comment(
     # comment_guard: a comment that breaks a rule is saved for its author only
     # (old apps show no error for a refused comment; see comment_guard.py).
     held = None
-    if await comment_guard.on(db):
+    guard_on, teen_on = await comment_guard.on(db), await comment_guard.teen_on(db)
+    if guard_on or teen_on:
         held = await comment_guard.hold_reason(db, user=user, video=video, parent=parent_comment,
-                                               content=comment.content)
+                                               content=comment.content, guard=guard_on, teen=teen_on)
 
     # Create comment document with user display name (fallback to Anonymous)
     comment_doc = {
@@ -319,7 +320,10 @@ async def create_comment(
         "is_active": True
     }
     if held:
+        # Kept for the safety record: why, when, and under which rule version.
         comment_doc["held"] = held
+        comment_doc["held_at"] = comment_doc["created_at"]
+        comment_doc["held_rule"] = comment_guard.TEEN_RULE if held.startswith("teen_") else "comment_guard:v1"
 
     # Insert comment
     result = await db.comments.insert_one(comment_doc)
@@ -769,3 +773,30 @@ async def admin_comment_report_action(comment_id: str, body: ReportAction, admin
     from app.services import admin_log
     await admin_log.record(db, admin, f"comment_report_{body.action}", {"comment_id": comment_id})
     return {"ok": True}
+
+
+# ------------------------------------------------------------------ teens
+class TeenCommentsIn(BaseModel):
+    who: str = Field(..., pattern="^(following|everyone)$")
+
+
+@router.put("/me/teen-comments")
+async def set_teen_comments(body: TeenCommentsIn, current_user: str = Depends(get_current_active_user)):
+    """16-17: who may comment on my posts. Under 16 it stays friends only."""
+    db = get_database()
+    from app.services import home_ground
+    me = await db.users.find_one({"_id": ObjectId(current_user)}, {"date_of_birth": 1})
+    age = home_ground.age_of((me or {}).get("date_of_birth")) if me and home_ground.is_minor(me) else None
+    if age is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This setting is for teen accounts")
+    if age < 16:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="Until you're 16, only friends can comment on your posts")
+    await db.users.update_one({"_id": me["_id"]}, {"$set": {"teen_comments": body.who}})
+    return {"who": body.who}
+
+
+@router.get("/admin/safety-record")
+async def admin_safety_record(days: int = Query(90, ge=1, le=730), admin: str = Depends(require_admin)):
+    from app.services import safety_record
+    return await safety_record.record(get_database(), days)

@@ -132,7 +132,7 @@ $("logout").addEventListener("click", () => logout());
 
 const PAGES = [
   ["overview", "Overview"], ["payouts", "Payouts"], ["pool", "Cash pool"], ["creators", "Creators"],
-  ["kampala", "Kampala growth"], ["moderation", "Reported posts"], ["messagereports", "Reported messages"], ["quickreports", "Reported quick posts"], ["commentreports", "Reported comments"], ["whatsnew", "What's new"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["cities", "Cities"], ["categories", "Categories"], ["films", "Film submissions"], ["tvtitles", "Wano TV titles"], ["tvnumbers", "Wano TV numbers"], ["tvstrip", "Wano TV strip"], ["siteenq", "Website enquiries"], ["sitemail", "Mailing list"], ["sitedel", "Account deletion"], ["flyers", "Local flyers"], ["places", "Places"], ["failedups", "Failed uploads"], ["switches", "Feature switches"], ["updates", "Force update"], ["speed", "Speed"], ["storage", "Video storage"], ["log", "Activity log"],
+  ["kampala", "Kampala growth"], ["moderation", "Reported posts"], ["messagereports", "Reported messages"], ["quickreports", "Reported quick posts"], ["commentreports", "Reported comments"], ["safety", "Safety record"], ["whatsnew", "What's new"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["cities", "Cities"], ["categories", "Categories"], ["films", "Film submissions"], ["tvtitles", "Wano TV titles"], ["tvnumbers", "Wano TV numbers"], ["tvstrip", "Wano TV strip"], ["siteenq", "Website enquiries"], ["sitemail", "Mailing list"], ["sitedel", "Account deletion"], ["flyers", "Local flyers"], ["places", "Places"], ["failedups", "Failed uploads"], ["switches", "Feature switches"], ["updates", "Force update"], ["speed", "Speed"], ["storage", "Video storage"], ["log", "Activity log"],
 ];
 let current = "overview";
 const counts = {};
@@ -224,6 +224,7 @@ const FEATURES = {
   data_saver: ["Data saver on mobile data", "On mobile data, videos play in standard quality (about 480p, at most ~22 MB a minute instead of up to 61 MB); people can turn on \"HD on mobile data\" in Settings. Wi-Fi is unchanged. Doesn't change the Cloudflare bill. Needs app 2.3.43."],
   fast_start: ["Faster start on slow connections", "For places where videos are slow to start (Uganda median 3 s, Kenya 5 s vs 0.1 s in the US). Android starts a video after 1 s of it has arrived instead of 2.5 s and resumes after a pause sooner. Each phone measures its own connection: the slower it is, the smaller the video (about 480p when videos take over 2 s to start, 360p over 4 s, the smallest copy over 8 s), back to full quality when starts are quick. Less waiting and less data. \"HD on mobile data\" is respected. Needs app 2.3.58."],
   challenge_fair: ["Fair challenge scoring", "Challenges created while this is on are scored so they can't be bought: only accounts at least 3 days old count (never the creator), each viewer once, signed-out views at a tenth with a cap, one point-earning comment per person, held comments never count. A post enters one challenge, and not with more than 10 hashtags. Admin accounts never rank. The board freezes at the end time. Challenges made before keep their old scoring. Works for every app version (the hashtag still enters)."],
+  teen_comments: ["Teen comment safety", "On teen accounts' posts: under 16, only friends (people who follow each other) can comment, and it can't be opened up; 16 and 17, only people the teen follows unless they choose everyone (app 2.3.59). Comments with offensive words are held. A held comment is visible only to its writer. Every held comment and every switch change is kept in Safety record."],
   comment_guard: ["Comment safety", "Comments with links, from people going too fast (over 5 a minute, 20 on one post in an hour, 200 a day), or between people who blocked each other are kept visible only to the person who wrote them (old apps show no error, so nothing is refused). Comments from people you blocked are hidden. Signed-out viewers can read comments. Comment reports: three reports from accounts at least 3 days old hide a comment until you review it (Comment reports)."],
   quick_replies: ["Quick post replies and comments", "On voice notes and cards: type a private reply or tap a reaction without leaving, and it arrives in their messages with a small preview of what it answers. Posters can also turn on public comments for a card or voice note (off unless they choose it). Needs Quick posts on and app 2.3.58."],
   small_images: ["Small pictures", "The app loads small copies of pictures (avatars ~10 KB instead of up to 2 MB). Turn on once the Speed page shows the copies are done."],
@@ -433,6 +434,31 @@ const RENDER = {
         el("td", { style: "text-align: right; white-space: nowrap; vertical-align: top;" },
           c.deleted ? null : el("button", { class: "btn secondary small", text: "Keep", onclick: (e) => decide(e.target, c, "keep") }), " ",
           c.deleted ? null : el("button", { class: "btn ghost-danger small", text: "Hide", onclick: (e) => decide(e.target, c, "hide") })))))) : el("div", { class: "empty", text: "No reported comments." })));
+  },
+
+  async safety(main) {
+    const r = await api("GET", "/admin/safety-record?days=90");
+    const when = (d) => d ? new Date(d.endsWith && !d.endsWith("Z") ? d + "Z" : d).toLocaleString() : "";
+    const dl = () => {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([JSON.stringify(r, null, 2)], { type: "application/json" }));
+      a.download = `wano-safety-record-${new Date().toISOString().slice(0, 10)}.json`; a.click();
+    };
+    main.replaceChildren(...head("Safety record", "Wano's safety rules as written, when each was switched on or off and by whom, and what they held back in the last 90 days. Rules are never edited: a new wording is a new version."),
+      el("div", { class: "row", style: "margin-bottom: 12px;" }, el("button", { class: "btn secondary small", text: "Download record (JSON)", onclick: dl })),
+      el("div", { class: "card" }, el("h3", { text: "Rules" }), ...r.policies.map((p) => el("div", { style: "margin: 10px 0;" },
+        el("div", { style: "font-weight: 600;", text: `${p.title} (${p.id})` }),
+        el("div", { class: "small", text: p.text }),
+        p.follows && p.follows.length ? el("div", { class: "small muted", text: "Follows: " + p.follows.join("; ") }) : null,
+        el("div", { class: "small muted", text: `Recorded ${when(p.recorded_at)}${p.switch ? " · switch: " + p.switch : " · always on"}` })))),
+      el("div", { class: "card" }, el("h3", { text: "Switch history" }), r.switch_history.length ? el("table", {}, el("tbody", {},
+        ...r.switch_history.map((h) => el("tr", {}, el("td", { text: when(h.at) }), el("td", { text: h.switch }),
+          el("td", { text: h.on ? "on" : "off" }), el("td", { class: "muted", text: h.by ? "@" + h.by : "" })))))
+        : el("div", { class: "empty", text: "No switch changes yet." })),
+      el("div", { class: "card" }, el("h3", { text: "Held comments (90 days)" }),
+        el("div", { class: "small", text: Object.entries(r.held_comments).map(([k, n]) => `${k.replace(/_/g, " ")}: ${n}`).join(" · ") || "None" }),
+        el("h3", { text: "Comment reports (90 days)" }),
+        el("div", { class: "small", text: Object.entries(r.comment_reports).map(([k, n]) => `${k}: ${n}`).join(" · ") || "None" })));
   },
 
   async failedups(main) {
