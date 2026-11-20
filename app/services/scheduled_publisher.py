@@ -120,6 +120,12 @@ async def publish_post(video_id) -> bool:
         await db.users.update_one({"_id": video["creator_id"]}, {"$inc": {"videos_count": 1}})
     except Exception:
         logger.exception("Counting scheduled post %s on its creator failed", video["_id"])
+    try:
+        from app.services import challenge_fair
+        await challenge_fair.stamp(db, video["_id"], video.get("hashtags") or [],
+                                   privacy=video.get("privacy", "public"), joined=video.get("joined_challenge"))
+    except Exception:
+        logger.exception("Could not enter scheduled post %s in a challenge", video["_id"])
     await _sync_recombee(video, now)
     await _notify_creator(video, now)
     if isinstance(video.get("reply_to"), dict):

@@ -47,6 +47,9 @@ async def create(body: ChallengeIn, admin: str = Depends(require_admin)):
     doc = {"hashtag": body.hashtag, "title": body.title.strip(), "description": body.description.strip(),
            "starts_at": svc._naive(body.starts_at), "ends_at": svc._naive(body.ends_at),
            "prize_points": body.prize_points, "created_by": ObjectId(admin), "created_at": datetime.utcnow()}
+    from app.services import challenge_fair
+    if await challenge_fair.on(db):
+        doc["rules"] = challenge_fair.RULES     # fair scoring for its whole life
     doc["_id"] = (await db.challenges.insert_one(doc)).inserted_id
     await admin_log.record(db, admin, "challenge_create", {"id": str(doc["_id"]), "hashtag": doc["hashtag"]})
     return svc.public(doc, svc._utcnow())
@@ -58,6 +61,8 @@ async def list_challenges(current_user: Optional[str] = Depends(get_optional_act
     db = get_database()
     now = svc._utcnow()
     docs = await db.challenges.find({"ends_at": {"$gte": svc._naive(now) - timedelta(days=14)}}).to_list(200)
+    # One ended early within its first hour was a test or a mistake: not shown.
+    docs = [d for d in docs if not (d.get("ended_early_by") and d["ends_at"] - d["starts_at"] < timedelta(hours=1))]
     order = {"live": 0, "upcoming": 1, "ended": 2}
     out = [svc.public(d, now) for d in docs]
     out.sort(key=lambda c: (order[c["state"]], c["ends_at"]))
@@ -73,5 +78,44 @@ async def leaderboard(challenge_id: str, limit: int = Query(50, ge=1, le=100),
     ch = await db.challenges.find_one({"_id": ObjectId(challenge_id)})
     if not ch:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Challenge not found")
+    from app.services import challenge_fair
+    if challenge_fair.fair(ch):
+        rows = await challenge_fair.board(db, ch)
+        return {"challenge": svc.public(ch, svc._utcnow()), "entries": rows[:limit],
+                "mine": await challenge_fair.mine(db, ch, rows, current_user)}
     rows = await svc.ranking(db, ch)
     return {"challenge": svc.public(ch, svc._utcnow()), "entries": rows[:limit]}
+
+
+class ChallengeEdit(BaseModel):
+    title: Optional[str] = Field(None, min_length=2, max_length=80)
+    description: Optional[str] = Field(None, max_length=500)
+    hashtag: Optional[str] = None
+
+
+@router.put("/{challenge_id}")
+async def edit_challenge(challenge_id: str, body: ChallengeEdit, admin: str = Depends(require_admin)):
+    """Fix the title or description any time; the hashtag only before it starts."""
+    db = get_database()
+    if not ObjectId.is_valid(challenge_id):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid challenge ID")
+    ch = await db.challenges.find_one({"_id": ObjectId(challenge_id)})
+    if not ch:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Challenge not found")
+    upd = {}
+    if body.title is not None:
+        upd["title"] = body.title.strip()
+    if body.description is not None:
+        upd["description"] = body.description.strip()
+    if body.hashtag is not None:
+        if svc.state(ch, svc._utcnow()) != "upcoming":
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                detail="The hashtag can't change once the challenge has started")
+        m = svc.HASHTAG.match(body.hashtag.strip())
+        if not m:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="hashtag: 2-40 letters, numbers or _")
+        upd["hashtag"] = m.group(1).lower()
+    if upd:
+        await db.challenges.update_one({"_id": ch["_id"]}, {"$set": upd})
+        await admin_log.record(db, admin, "challenge_edit", {"id": challenge_id, **upd})
+    return svc.public({**ch, **upd}, svc._utcnow())

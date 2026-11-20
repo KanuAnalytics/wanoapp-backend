@@ -92,7 +92,9 @@ async def finish(db) -> int:
     now = _utcnow()
     done = 0
     async for ch in db.challenges.find({"ends_at": {"$lte": _naive(now) - FINISH_DELAY}, "finished": {"$ne": True}}):
-        for row in (await ranking(db, ch))[:TOP]:
+        from app.services import challenge_fair
+        rows = await challenge_fair.board(db, ch) if challenge_fair.fair(ch) else await ranking(db, ch)
+        for row in rows[:TOP]:
             uid = ObjectId(row["user"]["id"])
             if await leaderboard._award(db, uid, "challenge_top3", now, week=str(ch["_id"]), rank=row["rank"],
                                         challenge=ch["title"]):

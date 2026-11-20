@@ -151,6 +151,8 @@ class VideoPost(BaseModel):
     trial: bool = False
     # The creator says this was made with AI (ai_label switch).
     ai_generated: StrictBool = False
+    # Joined from a challenge's Join button (challenge_fair); the hashtag still works too.
+    challenge_id: Optional[str] = Field(None, max_length=24)
 
 class StitchClip(BaseModel):
     url: str
@@ -193,6 +195,8 @@ class VideoStitch(BaseModel):
     trial: bool = False
     # The creator says this was made with AI (ai_label switch).
     ai_generated: StrictBool = False
+    # Joined from a challenge's Join button (challenge_fair); the hashtag still works too.
+    challenge_id: Optional[str] = Field(None, max_length=24)
 
 class VideoCreate(BaseModel):
     title: Optional[str] = None
@@ -324,6 +328,7 @@ async def post_video(
             points_category=await _points_category(input.points_category),
             trial=input.trial and await _trial_on(),
             ai_generated=input.ai_generated and await _ai_label_on(),
+            challenge_id=input.challenge_id,
             remix_enabled=input.remix_enabled is not False,
             media_type=input.media_type,
             images=input.images,
@@ -443,6 +448,7 @@ async def _create_stitch_job(input: VideoStitch, current_user: str, sound, sched
             "points_category": await _points_category(input.points_category),
             "trial": bool(input.trial and await _trial_on()),
             "ai_generated": bool(input.ai_generated and await _ai_label_on()),
+            "challenge_id": input.challenge_id,
         },
     )
 
@@ -752,7 +758,8 @@ async def track_video_watch(
 
     video = await db.videos.find_one(
         {"_id": ObjectId(video_id), "is_active": True},
-        {"description": 1, "urls.thumbnail": 1, "creator_id": 1, "views_count": 1, "privacy": 1},
+        {"description": 1, "urls.thumbnail": 1, "creator_id": 1, "views_count": 1, "privacy": 1,
+         "challenge_id": 1},
     )
     if not video or not _visible_to(video, current_user):
         raise HTTPException(
@@ -772,6 +779,10 @@ async def track_video_watch(
                                     viewer=current_user, creator=video.get("creator_id"))
         await creators.record_view(db, video, viewer=current_user, portion=body.portion,
                                    device=x_device_id, ip=_client_ip(request))
+        if video.get("challenge_id"):
+            from app.services import challenge_fair
+            await challenge_fair.note_view(db, video, viewer=viewer, signed_in=bool(current_user),
+                                           portion=body.portion)
         buffered = await metrics_buffer.get_buffered_counts(video_id)
         total_views = video.get("views_count", 0) + buffered["views"]
         await notify_view_milestones(db, video, video_id, total_views, background_tasks)

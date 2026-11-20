@@ -102,6 +102,7 @@ async def create_video_post(
     points_category: Optional[str] = None,
     trial: bool = False,
     ai_generated: bool = False,
+    challenge_id: Optional[str] = None,
 ) -> str:
     """
     Saves the post, counts it on the user, and syncs it to Recombee. Returns the new video's id.
@@ -202,11 +203,20 @@ async def create_video_post(
         video_doc["status"] = "scheduled"
         video_doc["scheduled_at"] = scheduled_at
         video_doc["scheduled_timezone"] = scheduled_timezone
+        if challenge_id:
+            video_doc["joined_challenge"] = str(challenge_id)
 
     result = await db.videos.insert_one(video_doc)
 
     if scheduled_at is not None:
         return str(result.inserted_id)
+
+    # challenge_fair: a public post enters one live challenge (rules 2 only).
+    try:
+        from app.services import challenge_fair
+        await challenge_fair.stamp(db, result.inserted_id, hashtags, privacy=privacy, joined=challenge_id)
+    except Exception:
+        logger.exception("Could not enter video %s in a challenge", result.inserted_id)
 
     await db.users.update_one(
         {"_id": creator_id},

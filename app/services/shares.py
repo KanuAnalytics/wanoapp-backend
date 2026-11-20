@@ -33,5 +33,9 @@ async def count_share(db, video_id: str, actor: Optional[str], creator=None,
             await trending.record_once(db, vid, actor=actor, creator=creator, kind="share", shares=1)
             await db.videos.update_one({"_id": ObjectId(vid)}, {"$inc": {"shares_count": 1}})
             counted = True
+            v = await db.videos.find_one({"_id": ObjectId(vid)}, {"challenge_id": 1, "creator_id": 1})
+            if (v or {}).get("challenge_id"):
+                from app.services import challenge_fair
+                await challenge_fair.note_share(db, v, str(actor))
     await recommendations.report_share(actor, vid, recomm_id)
     return counted
