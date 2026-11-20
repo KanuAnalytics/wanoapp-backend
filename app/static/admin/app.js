@@ -132,7 +132,7 @@ $("logout").addEventListener("click", () => logout());
 
 const PAGES = [
   ["overview", "Overview"], ["payouts", "Payouts"], ["pool", "Cash pool"], ["creators", "Creators"],
-  ["kampala", "Kampala growth"], ["moderation", "Reported posts"], ["messagereports", "Reported messages"], ["quickreports", "Reported quick posts"], ["whatsnew", "What's new"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["cities", "Cities"], ["categories", "Categories"], ["films", "Film submissions"], ["tvtitles", "Wano TV titles"], ["tvnumbers", "Wano TV numbers"], ["tvstrip", "Wano TV strip"], ["siteenq", "Website enquiries"], ["sitemail", "Mailing list"], ["sitedel", "Account deletion"], ["flyers", "Local flyers"], ["places", "Places"], ["failedups", "Failed uploads"], ["switches", "Feature switches"], ["updates", "Force update"], ["speed", "Speed"], ["storage", "Video storage"], ["log", "Activity log"],
+  ["kampala", "Kampala growth"], ["moderation", "Reported posts"], ["messagereports", "Reported messages"], ["quickreports", "Reported quick posts"], ["commentreports", "Reported comments"], ["whatsnew", "What's new"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["cities", "Cities"], ["categories", "Categories"], ["films", "Film submissions"], ["tvtitles", "Wano TV titles"], ["tvnumbers", "Wano TV numbers"], ["tvstrip", "Wano TV strip"], ["siteenq", "Website enquiries"], ["sitemail", "Mailing list"], ["sitedel", "Account deletion"], ["flyers", "Local flyers"], ["places", "Places"], ["failedups", "Failed uploads"], ["switches", "Feature switches"], ["updates", "Force update"], ["speed", "Speed"], ["storage", "Video storage"], ["log", "Activity log"],
 ];
 let current = "overview";
 const counts = {};
@@ -223,6 +223,7 @@ const FEATURES = {
   tv_player_plus: ["Wano TV: player extras", "Choose the subtitle language, and when a film ends suggest another one (series already roll into the next episode). Needs the next app build."],
   data_saver: ["Data saver on mobile data", "On mobile data, videos play in standard quality (about 480p, at most ~22 MB a minute instead of up to 61 MB); people can turn on \"HD on mobile data\" in Settings. Wi-Fi is unchanged. Doesn't change the Cloudflare bill. Needs app 2.3.43."],
   fast_start: ["Faster start on slow connections", "For places where videos are slow to start (Uganda median 3 s, Kenya 5 s vs 0.1 s in the US). Android starts a video after 1 s of it has arrived instead of 2.5 s and resumes after a pause sooner. Each phone measures its own connection: the slower it is, the smaller the video (about 480p when videos take over 2 s to start, 360p over 4 s, the smallest copy over 8 s), back to full quality when starts are quick. Less waiting and less data. \"HD on mobile data\" is respected. Needs app 2.3.58."],
+  comment_guard: ["Comment safety", "Comments with links, from people going too fast (over 5 a minute, 20 on one post in an hour, 200 a day), or between people who blocked each other are kept visible only to the person who wrote them (old apps show no error, so nothing is refused). Comments from people you blocked are hidden. Signed-out viewers can read comments. Comment reports: three reports from accounts at least 3 days old hide a comment until you review it (Comment reports)."],
   quick_replies: ["Quick post replies and comments", "On voice notes and cards: type a private reply or tap a reaction without leaving, and it arrives in their messages with a small preview of what it answers. Posters can also turn on public comments for a card or voice note (off unless they choose it). Needs Quick posts on and app 2.3.58."],
   small_images: ["Small pictures", "The app loads small copies of pictures (avatars ~10 KB instead of up to 2 MB). Turn on once the Speed page shows the copies are done."],
   trial_posts: ["Trial posts", "Creators can post without telling followers, then share it later."],
@@ -411,6 +412,26 @@ const RENDER = {
             q.deleted ? null : el("button", { class: "btn secondary small", text: "Restore", onclick: (e) => decide(e.target, q, "restore") }), " ",
             q.deleted ? null : el("button", { class: "btn ghost-danger small", text: "Remove", onclick: (e) => decide(e.target, q, "remove") })));
       }))) : el("div", { class: "empty", text: "No reported quick posts." })));
+  },
+
+  async commentreports(main) {
+    const r = await api("GET", "/admin/comment-reports");
+    counts.commentreports = r.items.filter((c) => !c.deleted).length; drawNav();
+    const decide = async (btn, c, action) => {
+      if (await act(btn, () => api("POST", `/admin/comment-reports/${encodeURIComponent(c.comment_id)}`, { action }),
+        action === "hide" ? "Comment hidden" : "Comment kept")) RENDER.commentreports(main);
+    };
+    main.replaceChildren(...head("Reported comments", "Comments people reported (needs the Comment safety switch and app 2.3.59). Three reports from accounts at least 3 days old hide one at once. Keep puts it back; Hide takes it down for everyone."),
+      el("div", { class: "card" }, r.items.length ? el("table", {}, el("tbody", {}, ...r.items.map((c) => el("tr", {},
+        el("td", {},
+          el("div", { class: "row small", style: "margin-bottom: 6px;" },
+            el("span", { class: "pill amber", text: String(c.reason || "other").replace(/_/g, " ") }),
+            c.deleted ? el("span", { class: "pill grey", text: "Deleted" }) : c.hidden ? el("span", { class: "pill amber", text: "Hidden" }) : null,
+            el("span", { class: "muted", text: `${c.reports} reports` })),
+          el("div", { style: "font-weight: 600;", text: c.text || "[empty]" })),
+        el("td", { style: "text-align: right; white-space: nowrap; vertical-align: top;" },
+          c.deleted ? null : el("button", { class: "btn secondary small", text: "Keep", onclick: (e) => decide(e.target, c, "keep") }), " ",
+          c.deleted ? null : el("button", { class: "btn ghost-danger small", text: "Hide", onclick: (e) => decide(e.target, c, "hide") })))))) : el("div", { class: "empty", text: "No reported comments." })));
   },
 
   async failedups(main) {

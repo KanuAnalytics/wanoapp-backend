@@ -166,7 +166,9 @@ async def top_comment(db, video_id: str, me: Optional[str]) -> Optional[dict]:
         for k in ("blocked_users", "blocked_by"):
             if isinstance(me_doc.get(k), list):
                 blocked.update(me_doc[k])
-    docs = await db.comments.find({"video_id": vid, "parent_id": None, "is_active": True},
+    # Held (comment_guard) and hidden comments are never shown over a post.
+    docs = await db.comments.find({"video_id": vid, "parent_id": None, "is_active": True,
+                                   "held": {"$exists": False}, "hidden": {"$ne": True}},
                                   {"content": 1, "user_id": 1, "likes_count": 1, "is_pinned": 1}
                                   ).sort("created_at", -1).limit(50).to_list(50)
     users = {u["_id"]: u async for u in db.users.find(

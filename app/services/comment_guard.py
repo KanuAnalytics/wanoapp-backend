@@ -1,0 +1,185 @@
+"""Comment safety ("comment_guard" switch, Nov 2026).
+
+Every app version from 2.1.1 to 2.3.58 ignores a refused comment: no error,
+the text just stays in the box. So nothing here refuses. A comment that
+breaks a rule is saved but HELD: only its author sees it, it adds nothing to
+any count, and nobody is notified. Spammers can't tell, honest people aren't
+confused, and old apps keep working.
+
+Held when:
+  - it has a link (scams and other-app adverts; quick posts already block them)
+  - the author is going too fast: more than PER_MINUTE comments in a minute,
+    PER_POST_HOUR on one post in an hour, or PER_DAY in a day
+  - the author and the post's creator (or, for a reply, the person replied
+    to) have blocked each other, either way
+
+Reading: comments by people the viewer blocked, or who blocked the viewer,
+are left out, and held comments are shown only to their author. Signed-out
+people can read comments (most first-time viewers aren't signed in).
+
+Reporting: a comment reported by REPORTS_TO_HIDE accounts at least
+TRUSTED_ACCOUNT_DAYS old is hidden and goes to Admin; the post's creator can
+also delete it.
+"""
+
+import re
+from datetime import datetime, timedelta, timezone
+from typing import Iterable, List, Optional, Set
+
+from bson import ObjectId
+from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
+
+SWITCH = "comment_guard"
+PER_MINUTE = 5
+PER_POST_HOUR = 20
+PER_DAY = 200
+REPORTS_TO_HIDE = 3
+TRUSTED_ACCOUNT_DAYS = 3
+REPORTS_PER_DAY = 20
+REASONS = ("spam", "harassment", "hate", "scam", "nudity", "violence", "self_harm", "false_information", "other")
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+async def on(db) -> bool:
+    from app.services import creator_push
+    return await creator_push.on(db, SWITCH)
+
+
+def has_link(text: str) -> bool:
+    from app.services import messages, quick_posts
+    t = text or ""
+    return messages.has_link(t) or bool(quick_posts._MORE_LINKS.search(t.lower()))
+
+
+def _ids(v) -> Set[ObjectId]:
+    return {x for x in v if isinstance(x, ObjectId)} if isinstance(v, list) else set()
+
+
+def blocked_between(user: Optional[dict], other_id) -> bool:
+    """True if `user` blocked `other_id` or was blocked by them."""
+    if not user or not isinstance(other_id, ObjectId):
+        return False
+    return other_id in _ids(user.get("blocked_users")) or other_id in _ids(user.get("blocked_by"))
+
+
+async def _take(db, key: str, cap: int, window: timedelta, bucket: str) -> bool:
+    """Count one against `cap` for this window; False (and not counted) when over."""
+    doc = await db.comment_limits.find_one_and_update(
+        {"_id": f"{key}:{bucket}"}, {"$inc": {"n": 1}, "$setOnInsert": {"at": _now()}},
+        upsert=True, return_document=ReturnDocument.AFTER)
+    if (doc or {}).get("n", 0) > cap:
+        await db.comment_limits.update_one({"_id": f"{key}:{bucket}"}, {"$inc": {"n": -1}})
+        return False
+    return True
+
+
+async def too_fast(db, user_id: ObjectId, video_id: ObjectId, now: Optional[datetime] = None,
+                   own_post: bool = False) -> bool:
+    """A creator answering fans on their own post only has the daily cap."""
+    now = now or _now()
+    u = str(user_id)
+    if not own_post:
+        if not await _take(db, f"m:{u}", PER_MINUTE, timedelta(minutes=1), now.strftime("%Y%m%d%H%M")):
+            return True
+        if not await _take(db, f"p:{u}:{video_id}", PER_POST_HOUR, timedelta(hours=1), now.strftime("%Y%m%d%H")):
+            return True
+    if not await _take(db, f"d:{u}", PER_DAY, timedelta(days=1), now.strftime("%Y%m%d")):
+        return True
+    return False
+
+
+async def hold_reason(db, *, user: dict, video: dict, parent: Optional[dict], content: str) -> Optional[str]:
+    """Why a new comment should be held, or None. Only call with the switch on."""
+    creator = video.get("creator_id")
+    if blocked_between(user, creator):
+        return "blocked"
+    if parent is not None and blocked_between(user, parent.get("user_id")):
+        return "blocked"
+    if has_link(content):
+        return "link"
+    if await too_fast(db, user["_id"], video["_id"], own_post=creator == user["_id"]):
+        return "too_fast"
+    return None
+
+
+def visible_filter(viewer: Optional[dict]) -> dict:
+    """Mongo filter for comments a viewer may see (with the switch on)."""
+    hidden_people: List[ObjectId] = []
+    if viewer:
+        hidden_people = list(_ids(viewer.get("blocked_users")) | _ids(viewer.get("blocked_by")))
+    me = viewer.get("_id") if viewer else None
+    shown = {"held": {"$exists": False}, "hidden": {"$ne": True}}
+    q: dict = {"$or": [shown, {"user_id": me}]} if me is not None else dict(shown)
+    if hidden_people:
+        q = {"$and": [q, {"user_id": {"$nin": hidden_people}}]}
+    return q
+
+
+async def viewer_doc(db, current_user: Optional[str]) -> Optional[dict]:
+    if not current_user or not ObjectId.is_valid(str(current_user)):
+        return None
+    return await db.users.find_one({"_id": ObjectId(current_user)},
+                                   {"blocked_users": 1, "blocked_by": 1, "created_at": 1})
+
+
+async def report(db, *, me_id: str, comment: dict, reason: str) -> dict:
+    """Report a comment. Hidden after REPORTS_TO_HIDE reports from established accounts."""
+    from fastapi import HTTPException
+    me = ObjectId(me_id)
+    if comment.get("user_id") == me:
+        raise HTTPException(status_code=400, detail="You can't report your own comment")
+    try:
+        await db.comment_reports.insert_one({
+            "_id": f"{comment['_id']}:{me}", "comment_id": comment["_id"], "video_id": comment.get("video_id"),
+            "reporter_id": me, "owner_id": comment.get("user_id"), "reason": reason,
+            "text": (comment.get("content") or "")[:500], "status": "open", "created_at": _now()})
+    except DuplicateKeyError:
+        return {"reported": True}
+    reporter = await db.users.find_one({"_id": me}, {"created_at": 1})
+    made = (reporter or {}).get("created_at")
+    if isinstance(made, datetime) and made.tzinfo is not None:
+        made = made.astimezone(timezone.utc).replace(tzinfo=None)
+    trusted = isinstance(made, datetime) and made < _now() - timedelta(days=TRUSTED_ACCOUNT_DAYS)
+    if trusted and await _take(db, f"r:{me}", REPORTS_PER_DAY, timedelta(days=1), _now().strftime("%Y%m%d")):
+        upd = await db.comments.find_one_and_update({"_id": comment["_id"]}, {"$inc": {"reports": 1}},
+                                                    return_document=ReturnDocument.AFTER)
+        if (upd or {}).get("reports", 0) >= REPORTS_TO_HIDE and upd.get("hidden") is not True:
+            await hide(db, upd)
+    return {"reported": True}
+
+
+async def hide(db, comment: dict) -> None:
+    """Hide a live comment and take it off the counts (once)."""
+    res = await db.comments.update_one({"_id": comment["_id"], "hidden": {"$ne": True}},
+                                       {"$set": {"hidden": True, "hidden_at": _now()}})
+    if res.modified_count and comment.get("held") is None and comment.get("is_active", True):
+        await db.videos.update_one({"_id": comment.get("video_id"), "comments_count": {"$gt": 0}},
+                                   {"$inc": {"comments_count": -1}})
+        if comment.get("parent_id"):
+            await db.comments.update_one({"_id": comment["parent_id"], "replies_count": {"$gt": 0}},
+                                         {"$inc": {"replies_count": -1}})
+
+
+async def open_reports(db, limit: int = 100) -> List[dict]:
+    """One row per reported comment, newest report first."""
+    rows = await db.comment_reports.aggregate([
+        {"$match": {"status": "open"}},
+        {"$sort": {"created_at": -1}},
+        {"$group": {"_id": "$comment_id", "video_id": {"$first": "$video_id"}, "owner_id": {"$first": "$owner_id"},
+                    "text": {"$first": "$text"}, "reasons": {"$addToSet": "$reason"}, "n": {"$sum": 1},
+                    "last": {"$first": "$created_at"}}},
+        {"$sort": {"last": -1}},
+        {"$limit": limit},
+    ]).to_list(limit)
+    out = []
+    for r in rows:
+        c = await db.comments.find_one({"_id": r["_id"]}, {"hidden": 1, "is_active": 1})
+        out.append({"comment_id": str(r["_id"]), "video_id": str(r.get("video_id")),
+                    "owner_id": str(r.get("owner_id")), "reason": ", ".join(sorted(r.get("reasons") or [])),
+                    "text": r.get("text", ""), "reports": r.get("n", 0), "hidden": bool((c or {}).get("hidden")),
+                    "deleted": not (c or {}).get("is_active", False), "created_at": r.get("last")})
+    return out

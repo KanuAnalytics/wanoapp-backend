@@ -181,10 +181,11 @@ from typing import Dict, Iterable, List, Optional
 from datetime import datetime
 from bson import ObjectId
 from app.core.database import get_database
-from app.api.deps import get_current_active_user
+from app.api.deps import get_current_active_user, get_optional_active_user, require_admin
+from pydantic import BaseModel, Field
 from app.models.comment import CommentCreate, CommentUpdate, CommentResponse
 from app.services.expo import send_push_message
-from app.services import recommendations, trending
+from app.services import comment_guard, recommendations, trending
 from app.services.recombee_service import recombee_send
 
 router = APIRouter()
@@ -292,6 +293,13 @@ async def create_comment(
                 detail="Parent comment belongs to a different video"
             )
 
+    # comment_guard: a comment that breaks a rule is saved for its author only
+    # (old apps show no error for a refused comment; see comment_guard.py).
+    held = None
+    if await comment_guard.on(db):
+        held = await comment_guard.hold_reason(db, user=user, video=video, parent=parent_comment,
+                                               content=comment.content)
+
     # Create comment document with user display name (fallback to Anonymous)
     comment_doc = {
         "video_id": video_oid,
@@ -310,10 +318,17 @@ async def create_comment(
         "updated_at": datetime.utcnow(),
         "is_active": True
     }
+    if held:
+        comment_doc["held"] = held
 
     # Insert comment
     result = await db.comments.insert_one(comment_doc)
     comment_doc["_id"] = str(result.inserted_id)
+    if held:
+        # Only its author sees it: no counts, no notifications, no signals.
+        return CommentResponse(**{**comment_doc, "video_id": str(comment_doc["video_id"]),
+                                  "user_id": str(comment_doc["user_id"]),
+                                  "parent_id": str(parent_oid) if parent_oid else None, "is_liked": False})
     from app.services import mentions as _mentions
     _mentions.notify_later(db, current_user, comment.content, video_oid, result.inserted_id)
 
@@ -421,6 +436,8 @@ async def search_comments(
     db = get_database()
     video = _object_id(video_id, "video ID") if video_id else None
     rows = await search.find_comments(db, q, current_user, video, skip, limit)
+    rows = [c for c in rows if str(c.get("user_id")) == str(current_user)
+            or (not c.get("held") and c.get("hidden") is not True)]
     return [_stored_comment_response(c, current_user) for c in rows]
 
 @router.get("/user/{user_id}", response_model=List[CommentResponse])
@@ -442,35 +459,53 @@ async def get_user_comments(
             detail="User not found"
         )
 
-    cursor = db.comments.find({
-        "user_id": user_oid,
-        "is_active": True
-    }).sort("created_at", -1).skip(skip).limit(limit)
+    q = {"user_id": user_oid, "is_active": True}
+    if str(user_oid) != str(current_user):
+        # comment_guard: held and hidden comments are for their author only.
+        q.update({"held": {"$exists": False}, "hidden": {"$ne": True}})
+    cursor = db.comments.find(q).sort("created_at", -1).skip(skip).limit(limit)
     return [_stored_comment_response(c, current_user) async for c in cursor]
+
+async def _guarded(db, q: dict, current_user: Optional[str], video_oid) -> dict:
+    """Signed-out reading and the comment_guard filters. Before the switch,
+    reading still needs an account, exactly as before."""
+    if not await comment_guard.on(db):
+        if not current_user:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated",
+                                headers={"WWW-Authenticate": "Bearer"})
+        return q
+    video = await db.videos.find_one({"_id": video_oid}, {"privacy": 1, "creator_id": 1, "is_active": 1}) \
+        if isinstance(video_oid, ObjectId) else None
+    if not video or video.get("is_active") is False or (
+            video.get("privacy") == "private" and str(video.get("creator_id")) != str(current_user)):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video not found")
+    viewer = await comment_guard.viewer_doc(db, current_user)
+    return {"$and": [q, comment_guard.visible_filter(viewer)]}
+
 
 @router.get("/video/{video_id}", response_model=List[CommentResponse])
 async def get_video_comments(
     video_id: str,
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=MAX_PAGE_SIZE),
-    current_user: str = Depends(get_current_active_user)
+    current_user: Optional[str] = Depends(get_optional_active_user)
 ):
-    """Get comments for a video (top-level only, not replies)"""
+    """Get comments for a video (top-level only, not replies). With
+    comment_guard on, signed-out people can read them too, and blocked people's
+    and held comments are left out."""
     db = get_database()
     video_oid = _object_id(video_id, "video ID")
+    q = {"video_id": video_oid, "parent_id": None, "is_active": True}
+    q = await _guarded(db, q, current_user, video_oid)
 
     # Get top-level comments (no parent_id)
-    docs = await db.comments.find({
-        "video_id": video_oid,
-        "parent_id": None,
-        "is_active": True
-    }).sort([
+    docs = await db.comments.find(q).sort([
         ("is_pinned", -1),  # Pinned comments first
         ("created_at", -1)   # Then by newest
     ]).skip(skip).limit(limit).to_list(length=limit)
 
     users = await _users_by_id(db, docs)
-    viewer = ObjectId(current_user)
+    viewer = ObjectId(current_user) if current_user else None
     comments = []
     for comment in docs:
         comments.append(CommentResponse(**{
@@ -489,27 +524,26 @@ async def get_comment_replies(
     comment_id: str,
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=MAX_PAGE_SIZE),
-    current_user: str = Depends(get_current_active_user)
+    current_user: Optional[str] = Depends(get_optional_active_user)
 ):
     """Get replies to a comment"""
     db = get_database()
     comment_oid = _object_id(comment_id, "comment ID")
 
     # Verify parent comment exists
-    parent_comment = await db.comments.find_one({"_id": comment_oid}, {"_id": 1})
+    parent_comment = await db.comments.find_one({"_id": comment_oid}, {"_id": 1, "video_id": 1})
     if not parent_comment:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Comment not found"
         )
+    q = {"parent_id": comment_oid, "is_active": True}
+    q = await _guarded(db, q, current_user, parent_comment.get("video_id"))
 
-    docs = await db.comments.find({
-        "parent_id": comment_oid,
-        "is_active": True
-    }).sort("created_at", 1).skip(skip).limit(limit).to_list(length=limit)  # Oldest first for replies
+    docs = await db.comments.find(q).sort("created_at", 1).skip(skip).limit(limit).to_list(length=limit)  # Oldest first for replies
 
     users = await _users_by_id(db, docs)
-    viewer = ObjectId(current_user)
+    viewer = ObjectId(current_user) if current_user else None
     replies = []
     for reply in docs:
         replies.append(CommentResponse(**{
@@ -558,6 +592,13 @@ async def update_comment(
         "edited_at": datetime.utcnow(),
         "updated_at": datetime.utcnow()
     }
+
+    # comment_guard: editing a link into a liked comment (bait and switch)
+    # hides it from everyone else, like a new comment with a link.
+    if (await comment_guard.on(db) and not comment.get("held")
+            and comment_guard.has_link(comment_update.content)):
+        await comment_guard.hide(db, comment)
+        update_doc["held"] = "link"
 
     await db.comments.update_one(
         {"_id": comment_oid, "is_active": True},
@@ -610,13 +651,15 @@ async def delete_comment(
             detail="Comment not found"
         )
 
-    if deleted.get("parent_id"):
+    # A held comment never counted, and a hidden one was taken off already.
+    counted = not deleted.get("held") and deleted.get("hidden") is not True
+    if counted and deleted.get("parent_id"):
         await db.comments.update_one(
             {"_id": deleted["parent_id"], "replies_count": {"$gt": 0}},
             {"$inc": {"replies_count": -1}}
         )
 
-    if video:
+    if counted and video:
         await db.videos.update_one(
             {"_id": deleted["video_id"], "comments_count": {"$gt": 0}},
             {"$inc": {"comments_count": -1}}
@@ -676,3 +719,53 @@ async def like_comment(
 
     fresh = await db.comments.find_one({"_id": comment_oid}, {"likes_count": 1}) or {}
     return {"liked": liked, "likes_count": max(int(fresh.get("likes_count", 0) or 0), 0)}
+
+
+# ------------------------------------------------------------------ reports
+# comment_guard: report a comment (app 2.3.59+); Admin sees open reports.
+
+class CommentReportIn(BaseModel):
+    reason: str = Field(..., max_length=40)
+
+
+@router.post("/{comment_id}/report")
+async def report_comment(comment_id: str, body: CommentReportIn,
+                         current_user: str = Depends(get_current_active_user)):
+    db = get_database()
+    from app.services import creator_push
+    await creator_push.require(db, comment_guard.SWITCH)
+    if body.reason not in comment_guard.REASONS:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Pick a reason")
+    comment = await db.comments.find_one({"_id": _object_id(comment_id, "comment ID"), "is_active": True})
+    if not comment:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Comment not found")
+    return await comment_guard.report(db, me_id=current_user, comment=comment, reason=body.reason)
+
+
+@router.get("/admin/comment-reports")
+async def admin_comment_reports(admin: str = Depends(require_admin)):
+    return {"items": await comment_guard.open_reports(get_database())}
+
+
+class ReportAction(BaseModel):
+    action: str = Field(..., pattern="^(hide|keep)$")
+
+
+@router.post("/admin/comment-reports/{comment_id}")
+async def admin_comment_report_action(comment_id: str, body: ReportAction, admin: str = Depends(require_admin)):
+    """hide: take the comment down for everyone; keep: leave it and close the reports."""
+    db = get_database()
+    oid = _object_id(comment_id, "comment ID")
+    comment = await db.comments.find_one({"_id": oid})
+    if not comment:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Comment not found")
+    if body.action == "hide":
+        await comment_guard.hide(db, comment)
+    else:
+        await db.comments.update_one({"_id": oid}, {"$set": {"hidden": False, "reports_kept": True}})
+    await db.comment_reports.update_many({"comment_id": oid, "status": "open"},
+                                         {"$set": {"status": body.action, "closed_by": ObjectId(admin),
+                                                   "closed_at": datetime.utcnow()}})
+    from app.services import admin_log
+    await admin_log.record(db, admin, f"comment_report_{body.action}", {"comment_id": comment_id})
+    return {"ok": True}
