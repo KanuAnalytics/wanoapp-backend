@@ -446,6 +446,9 @@ async def register(request: RegisterRequest, x_device_id: Optional[str] = Header
             detail="Display name contains inappropriate language"
         )
 
+    from app.services import reserved_names
+    await reserved_names.check(db, username=request.username, display_name=request.display_name)
+
     # Check if username already exists
     existing_username = await db.users.find_one({"username": request.username})
     if existing_username:

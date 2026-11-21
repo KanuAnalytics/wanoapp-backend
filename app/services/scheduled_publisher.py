@@ -105,7 +105,14 @@ async def publish_post(video_id) -> bool:
     # scheduling it: it never goes live (deleting an account hides every post,
     # and a scheduled one would otherwise come back on its own at its time).
     creator = await db.users.find_one({"_id": video.get("creator_id")},
-                                      {"is_active": 1, "is_banned": 1, "deleted_at": 1})
+                                      {"is_active": 1, "is_banned": 1, "deleted_at": 1, "mod_state": 1})
+    if creator and (creator.get("mod_state") or {}).get("state") == "frozen":
+        # Suspended (safe_ban): paused, not cancelled, so lifting it brings the post back.
+        await db.videos.update_one({"_id": video["_id"], "status": PUBLISHING},
+                                   {"$set": {"status": "paused", "moderation.frozen": True,
+                                             "moderation.frozen_prev_status": "scheduled"},
+                                    "$unset": {"claimed_at": ""}})
+        return False
     if not creator or creator.get("is_active") is False or creator.get("is_banned") is True \
             or creator.get("deleted_at"):
         await db.videos.update_one({"_id": video["_id"], "status": PUBLISHING},
@@ -221,6 +228,13 @@ async def publish_due_posts() -> int:
         {"status": PUBLISHING, "claimed_at": {"$lt": now - STALE_CLAIM}},
         {"$set": {"status": SCHEDULED}, "$unset": {"claimed_at": ""}},
     )
+
+    # Account notices whose undo window has passed (warnings → Wano Team thread).
+    try:
+        from app.services import team
+        await team.deliver_due(db, now)
+    except Exception:
+        logger.warning("team notices not delivered this tick", exc_info=True)
 
     published = 0
     due = db.videos.find(

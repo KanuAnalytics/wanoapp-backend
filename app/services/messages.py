@@ -140,7 +140,7 @@ def _public_user(u: Optional[dict]) -> Optional[dict]:
         return None
     s = lambda k: u.get(k) if isinstance(u.get(k), str) else None  # noqa: E731
     return {"id": str(u["_id"]), "username": s("username"), "display_name": s("display_name"),
-            "profile_picture": s("profile_picture")}
+            "profile_picture": s("profile_picture"), "official": u.get("official") is True}
 
 
 def _check_pair(me: dict, other: Optional[dict]):
@@ -281,7 +281,7 @@ async def inbox(db, me_id: str, folder: str, cursor: Optional[str]) -> dict:
     async def flush(rows: List[dict]):
         others = {_other_id(c, me_oid) for c in rows}
         users = {u["_id"]: u async for u in db.users.find(
-            {"_id": {"$in": list(others)}}, {"username": 1, "display_name": 1, "profile_picture": 1, "is_active": 1})}
+            {"_id": {"$in": list(others)}}, {"username": 1, "display_name": 1, "profile_picture": 1, "is_active": 1, "official": 1})}
         for c in rows:
             o = _other_id(c, me_oid)
             u = users.get(o)
@@ -667,7 +667,7 @@ async def page(db, me_id: str, cid: str, limit: int, before: Optional[str],
             out["changed"] = changed
             out["gap"] = more or too_many
         return out
-    other = await db.users.find_one({"_id": other_oid}, {"username": 1, "display_name": 1, "profile_picture": 1})
+    other = await db.users.find_one({"_id": other_oid}, {"username": 1, "display_name": 1, "profile_picture": 1, "official": 1})
     seen = om.get("seen_id")
     out = {"items": items,
            "next_before": str(rows[-1]["_id"]) if more and rows else None,
@@ -704,7 +704,7 @@ async def accept(db, me_id: str, cid: str) -> dict:
     if conv.get("state") in ("request", "declined"):
         await db.conversations.update_one({"_id": conv["_id"]}, {"$set": {"state": "active", f"m.{me_oid}.hidden": False}})
     conv = await db.conversations.find_one({"_id": conv["_id"]})
-    other = await db.users.find_one({"_id": _other_id(conv, me_oid)}, {"username": 1, "display_name": 1, "profile_picture": 1})
+    other = await db.users.find_one({"_id": _other_id(conv, me_oid)}, {"username": 1, "display_name": 1, "profile_picture": 1, "official": 1})
     return _summary(conv, me_oid, other)
 
 

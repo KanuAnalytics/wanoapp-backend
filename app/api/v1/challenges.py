@@ -5,7 +5,7 @@ from typing import Optional
 
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.api.deps import get_optional_active_user, require_admin
 from app.core.database import get_database
@@ -80,11 +80,57 @@ async def leaderboard(challenge_id: str, limit: int = Query(50, ge=1, le=100),
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Challenge not found")
     from app.services import challenge_fair
     if challenge_fair.fair(ch):
-        rows = await challenge_fair.board(db, ch)
+        rows = svc.without_example(ch, await challenge_fair.board(db, ch))
         return {"challenge": svc.public(ch, svc._utcnow()), "entries": rows[:limit],
                 "mine": await challenge_fair.mine(db, ch, rows, current_user)}
-    rows = await svc.ranking(db, ch)
+    rows = svc.without_example(ch, await svc.ranking(db, ch))
     return {"challenge": svc.public(ch, svc._utcnow()), "entries": rows[:limit]}
+
+
+class LookIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    cover: Optional[str] = Field(None, max_length=1024)
+    cover_small: Optional[str] = Field(None, max_length=1024)
+    alt: Optional[str] = Field(None, max_length=200)
+    example_video: Optional[str] = Field(None, max_length=40)
+    sound_id: Optional[str] = Field(None, max_length=40)
+    discover: bool = False
+
+
+@router.put("/{challenge_id}/look")
+async def set_look(challenge_id: str, body: LookIn, admin: str = Depends(require_admin)):
+    """challenge_plus: cover picture (uploaded on the Admin page), an example
+    video Wano picks (its creator can't win), a sound and a Discover banner."""
+    db = get_database()
+    if not ObjectId.is_valid(challenge_id):
+        raise HTTPException(status_code=400, detail="Invalid challenge ID")
+    ch = await db.challenges.find_one({"_id": ObjectId(challenge_id)})
+    if not ch:
+        raise HTTPException(status_code=404, detail="Challenge not found")
+    from app.services.whats_new import _cdn
+    for u in (body.cover, body.cover_small):
+        if u is not None and not _cdn(u):
+            raise HTTPException(400, "Pictures must be on Wano's own storage")
+    if body.cover and not (body.alt or "").strip():
+        raise HTTPException(400, "Describe the cover (for people using a screen reader)")
+    look = {"cover": body.cover, "cover_small": body.cover_small, "alt": (body.alt or "").strip(),
+            "discover": body.discover}
+    if body.example_video:
+        if not ObjectId.is_valid(body.example_video):
+            raise HTTPException(400, "Invalid video")
+        v = await db.videos.find_one({"_id": ObjectId(body.example_video), "is_active": True, "privacy": "public"},
+                                     {"creator_id": 1})
+        if not v:
+            raise HTTPException(404, "That video isn't public")
+        look.update({"example_video": body.example_video, "example_creator": v.get("creator_id")})
+    if body.sound_id:
+        # Only a sound from Wano's own music catalogue (one already used on a post).
+        if not await db.videos.find_one({"sound.id": body.sound_id, "is_active": True}, {"_id": 1}):
+            raise HTTPException(404, "Sound not found in Wano's music")
+        look["sound_id"] = body.sound_id
+    await db.challenges.update_one({"_id": ch["_id"]}, {"$set": {"look": look}})
+    await admin_log.record(db, admin, "challenge_look", {"id": challenge_id})
+    return svc.public({**ch, "look": look}, svc._utcnow())
 
 
 class ChallengeEdit(BaseModel):

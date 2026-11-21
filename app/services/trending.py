@@ -138,6 +138,12 @@ async def count_view_once(db, *, viewer: str, video_id: str, ip: Optional[str]) 
     """True if this watch should count as a new view."""
     now = _now()
     anonymous = viewer.startswith("anon-") or viewer == "temp-user"
+    if not anonymous:
+        # staff_quiet: moderators watching reported videos must not count as
+        # views (or trending, challenge views and milestones, which follow this).
+        from app.services import staff
+        if await staff.quiet(db, viewer):
+            return False
     if viewer == "temp-user" and ip:
         viewer = f"ip:{ip}"   # old app builds send no device id: one viewer per address
     key = f"{viewer}:{video_id}"

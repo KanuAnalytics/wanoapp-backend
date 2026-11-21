@@ -89,6 +89,8 @@ async def get_messages(cid: str, limit: int = Query(30, ge=1, le=100), before: O
 
 @router.post("/conversations/{cid}/messages", status_code=201)
 async def send_message(cid: str, body: SendIn, response: Response, me: str = Depends(get_current_active_user)):
+    from app.services import safe_mod
+    await safe_mod.ensure_can(get_database(), me, "send messages")
     msg, created = await svc.send(await _db(), me, cid, body.text, body.post_id, body.client_id, reply_to=body.reply_to,
                                     quick_id=body.quick_id)
     if not created:
@@ -101,6 +103,8 @@ async def send_voice(cid: str, response: Response, file: UploadFile = File(...),
                      client_id: Optional[str] = Form(None, max_length=64), reply_to: Optional[str] = Form(None, max_length=40),
                      me: str = Depends(get_current_active_user)):
     db = await _db_with("msg_voice")
+    from app.services import safe_mod
+    await safe_mod.ensure_can(db, me, "send messages")
     data = await file.read(svc.VOICE_MAX_BYTES + 1)      # never more than this is read into memory
     if len(data) > svc.VOICE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="That voice message is too long")

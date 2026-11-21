@@ -132,7 +132,7 @@ $("logout").addEventListener("click", () => logout());
 
 const PAGES = [
   ["overview", "Overview"], ["payouts", "Payouts"], ["pool", "Cash pool"], ["creators", "Creators"],
-  ["kampala", "Kampala growth"], ["moderation", "Reported posts"], ["messagereports", "Reported messages"], ["quickreports", "Reported quick posts"], ["commentreports", "Reported comments"], ["safety", "Safety record"], ["whatsnew", "What's new"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["cities", "Cities"], ["categories", "Categories"], ["films", "Film submissions"], ["tvtitles", "Wano TV titles"], ["tvnumbers", "Wano TV numbers"], ["tvstrip", "Wano TV strip"], ["siteenq", "Website enquiries"], ["sitemail", "Mailing list"], ["sitedel", "Account deletion"], ["flyers", "Local flyers"], ["places", "Places"], ["failedups", "Failed uploads"], ["switches", "Feature switches"], ["updates", "Force update"], ["speed", "Speed"], ["storage", "Video storage"], ["log", "Activity log"],
+  ["kampala", "Kampala growth"], ["moderation", "Reported posts"], ["messagereports", "Reported messages"], ["quickreports", "Reported quick posts"], ["commentreports", "Reported comments"], ["safety", "Safety record"], ["mod", "Moderation"], ["staff", "Staff"], ["team", "Wano Team"], ["whatsnew", "What's new"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["cities", "Cities"], ["categories", "Categories"], ["films", "Film submissions"], ["tvtitles", "Wano TV titles"], ["tvnumbers", "Wano TV numbers"], ["tvstrip", "Wano TV strip"], ["siteenq", "Website enquiries"], ["sitemail", "Mailing list"], ["sitedel", "Account deletion"], ["flyers", "Local flyers"], ["places", "Places"], ["failedups", "Failed uploads"], ["switches", "Feature switches"], ["updates", "Force update"], ["speed", "Speed"], ["storage", "Video storage"], ["log", "Activity log"],
 ];
 let current = "overview";
 const counts = {};
@@ -161,7 +161,8 @@ function head(title, sub) {
 // ------------------------------------------------------------ pages
 
 const ACTION_TEXT = { none: "Nothing (just the message)", quick_post: "Make a quick post", wano_tv: "Wano TV",
-  my_profile: "Their profile", settings: "Settings", categories: "Points categories", points: "Wano points" };
+  my_profile: "Their profile", settings: "Settings", categories: "Points categories", points: "Wano points",
+  challenges: "Challenges (app 2.3.60+)", challenge: "One challenge (app 2.3.60+)" };
 const FEATURES = {
   points: ["Wano points", "Creators earn points for real views on their posts."],
   boost: ["Boost", "Creators spend points to show a post to more people. Needs Wano points."],
@@ -238,7 +239,51 @@ const FEATURES = {
   trial_posts: ["Trial posts", "Creators can post without telling followers, then share it later."],
   milestones: ["Creator milestones", "Celebrations at follower and view milestones, tier badges (Rising, Star, Gold, Legend) next to names, achievements page."],
   tv_play: ["Play Wano TV films", "Films play inside the app. Needs Wano TV series. Turn on only after testing a film on a phone."],
+  safe_ban: ["Safe ban and remove", "Ban (including the team phone's Ban) suspends instead of wiping: the account is frozen and hidden, nothing is deleted, it can be undone for 10 minutes and every action needs a reason and goes in the Moderation log. Wiping is a separate owner step after 30 days. Works for every app version."],
+  warnings: ["Warnings", "Staff can warn an account (warn, then limit, then suspend). The person sees it after the undo window, with what it was about, and can appeal once. Child-safety cases are never warned. Needs Safe ban; the in-app notice needs app 2.3.60, older apps get it from Wano Team."],
+  staff_view: ["Staff see past blocks", "Staff accounts see comments from people who blocked them, and held or report-hidden ones, each labelled. Other people see nothing new."],
+  staff_quiet: ["Staff activity counts nowhere", "Staff watching and liking never count as views, trending, challenge views or recommender signals (moderators watch reported videos)."],
+  mod_tools: ["Moderation in the app", "Staff get Moderate, the reports inbox and the account card in the app, after a code from an authenticator app (set up on the Staff page). Needs Safe ban and app 2.3.60."],
+  reserved_names: ["Reserved names", "Nobody but staff can sign up or rename to something that looks official (Wano Support, W4no Team, a check mark…). Real names like Wanojiru are fine. Existing accounts are untouched."],
+  wano_team: ["Wano Team thread", "The official Wano Team thread: your updates (no pushes) and account notices (warnings) that can't be muted. Older apps get notices as a message from Wano Team; teens on older apps get a push that says nothing but 'You have a note from Wano'. Mark the account on the Staff page first."],
+  whats_new_plus: ["What's new, visual", "Posters, stories, update notes, tips and event banners (app 2.3.60), audiences, and safe sending: staff first, then 1%, 10%, everyone. Older apps keep the plain card."],
+  attention_cap: ["One attention limit", "What's new, the TV strip, flyers, quick-post rings and the review prompt share at most 3 a day per person (by their local day); the last one is kept for the first in your order. Safety notices are never limited. App 2.3.60."],
+  challenge_plus: ["Challenges, visual", "A cover picture, entry grid, Join button, example video and Discover banner (app 2.3.60). Older apps keep the text version."],
 };
+
+// Challenges, visual (challenge_plus): cover, example video, sound, Discover banner.
+function challengeLook(c, main) {
+  let cover = c.cover || null, coverSmall = c.cover_small || null;
+  const file = el("input", { type: "file", accept: "image/jpeg,image/png,image/webp" });
+  const preview = el("img", { style: "max-width: 200px; border-radius: 8px; display: " + (cover ? "block" : "none") + ";", src: safeUrl(coverSmall || cover) || "" });
+  const alt = el("input", { type: "text", maxlength: 200, value: c.cover_alt || "", placeholder: "Describe the cover" });
+  const example = el("input", { type: "text", maxlength: 40, value: c.example_video || "", placeholder: "Example post ID (its creator can't win)" });
+  const sound = el("input", { type: "text", maxlength: 40, value: c.sound_id || "", placeholder: "Sound id from Wano's music (optional)" });
+  const discover = el("input", { type: "checkbox" }); discover.checked = !!c.discover;
+  file.addEventListener("change", async () => {
+    const form = new FormData(); form.append("file", file.files[0]);
+    try {
+      const res = await fetch(API + "/admin/announcements/image", { method: "POST", headers: { Authorization: "Bearer " + token }, body: form });
+      const d = await res.json().catch(() => null);
+      if (!res.ok) throw new Error((d && d.detail) || "Upload failed");
+      cover = d.image; coverSmall = d.image_small; preview.src = safeUrl(coverSmall) || ""; preview.style.display = "block"; toast("Cover ready");
+    } catch (e) { toast(e.message, true); }
+  });
+  main.replaceChildren(...head("#" + c.hashtag + ": look", "Shown in app 2.3.60 with Challenges, visual on. Older apps keep the text version."),
+    el("div", { class: "card" },
+      el("label", { class: "field" }, el("span", { text: "Cover picture" }), file, preview),
+      el("label", { class: "field" }, el("span", { text: "Cover description" }), alt),
+      el("label", { class: "field" }, el("span", { text: "Example video" }), example),
+      el("label", { class: "field" }, el("span", { text: "Sound" }), sound),
+      el("label", { class: "row", style: "gap: 8px; margin: 8px 0;" }, discover, el("span", { text: "Banner on Discover" })),
+      el("div", { class: "row", style: "gap: 8px;" },
+        el("button", { class: "btn", text: "Save", onclick: async (e) => {
+          const body = { cover, cover_small: coverSmall, alt: alt.value.trim() || null, example_video: example.value.trim() || null,
+            sound_id: sound.value.trim() || null, discover: discover.checked };
+          if (await act(e.target, () => api("PUT", `/challenges/${c.id}/look`, body), "Saved")) RENDER.challenges(main);
+        } }),
+        el("button", { class: "btn secondary", text: "Back", onclick: () => RENDER.challenges(main) }))));
+}
 
 const CHECKS = {
   age: (c) => "18 or older",
@@ -765,30 +810,96 @@ const RENDER = {
   async whatsnew(main) {
     const r = await api("GET", "/admin/announcements");
     const keys = Object.keys(FEATURES);
-    let editing = null;
+    let editing = null, image = null, current = null;
+    const STYLE_TEXT = { card: "Card (every app)", poster: "Poster: big picture (2.3.60)", story: "Story: 2-4 pages on opening (2.3.60)",
+      update_notes: "Update notes for one version (2.3.60)", tip: "Tip the first time someone reaches a feature (2.3.60)",
+      banner: "Event banner until an end date (2.3.60)" };
     const f = {
       title: el("input", { type: "text", maxlength: 60, placeholder: "New: quick posts on your photo" }),
       body: el("textarea", { rows: 3, maxlength: 180, placeholder: "One or two short sentences." }),
       button: el("input", { type: "text", maxlength: 24, placeholder: "Make one (optional)" }),
       action: el("select", {}, ...r.actions.map((a) => el("option", { value: a, text: ACTION_TEXT[a] || a }))),
+      target: el("input", { type: "text", maxlength: 24, placeholder: "Challenge id (for One challenge)" }),
       feature: el("select", {}, el("option", { value: "", text: "Always (no switch)" }),
         ...keys.map((k) => el("option", { value: k, text: (FEATURES[k] || [k])[0] }))),
       min_app: el("input", { type: "text", maxlength: 10, placeholder: "2.3.28" }),
       priority: el("input", { type: "number", min: 0, max: 100, value: 0 }),
       active: el("input", { type: "checkbox" }),
+      style: el("select", {}, ...Object.entries(STYLE_TEXT).map(([k, v]) => el("option", { value: k, text: v }))),
+      alt: el("input", { type: "text", maxlength: 200, placeholder: "Describe the picture for screen readers" }),
+      ends: el("input", { type: "datetime-local" }),
+      version: el("input", { type: "text", maxlength: 10, placeholder: "2.3.60 (update notes)" }),
+      tip_key: el("input", { type: "text", maxlength: 40, placeholder: "reactions (tip: which feature)" }),
+      who: el("select", {}, el("option", { value: "all", text: "Everyone" }), el("option", { value: "creators", text: "Creators (have posted)" }),
+        el("option", { value: "viewers", text: "Viewers (never posted)" })),
+      countries: el("input", { type: "text", maxlength: 120, placeholder: "ug, ke, ng (empty: all)" }),
+      platform: el("select", {}, el("option", { value: "any", text: "Android and iPhone" }), el("option", { value: "android", text: "Android" }),
+        el("option", { value: "ios", text: "iPhone" })),
+      adults: el("input", { type: "checkbox" }),
+      file: el("input", { type: "file", accept: "image/jpeg,image/png,image/webp" }),
     };
+    const preview = el("img", { style: "display:none; max-width: 180px; border-radius: 8px; margin-top: 6px;" });
+    const pagesBox = el("div", {});
+    const pages = [];
+    const pageRow = (p) => {
+      const t = el("input", { type: "text", maxlength: 60, placeholder: "Page title", value: (p && p.title) || "" });
+      const b = el("input", { type: "text", maxlength: 180, placeholder: "Page text", value: (p && p.body) || "" });
+      const a = el("input", { type: "text", maxlength: 200, placeholder: "Picture description", value: (p && p.alt) || "" });
+      const up = el("input", { type: "file", accept: "image/jpeg,image/png,image/webp" });
+      const row = { t, b, a, image: (p && p.image) || null };
+      up.addEventListener("change", async () => { const d = await upload(up.files[0]); if (d) { row.image = d.image; toast("Page picture ready"); } });
+      pages.push(row);
+      pagesBox.append(el("div", { class: "card", style: "padding: 8px; margin: 6px 0;" }, t, b, a, up));
+    };
+    async function upload(file) {
+      if (!file) return null;
+      const form = new FormData(); form.append("file", file);
+      try {
+        const res = await fetch(API + "/admin/announcements/image", { method: "POST", headers: { Authorization: "Bearer " + token }, body: form });
+        const data = await res.json().catch(() => null);
+        if (!res.ok) throw new Error((data && data.detail) || "Upload failed");
+        return data;
+      } catch (e) { toast(e.message, true); return null; }
+    }
+    f.file.addEventListener("change", async () => {
+      const d = await upload(f.file.files[0]);
+      if (d) { image = d.image; preview.src = safeUrl(d.image_small) || ""; preview.style.display = "block"; toast("Picture ready"); }
+    });
+    const reachBox = el("div", { class: "small muted" });
+    const REACH = ["team", 1, 10, 100];
+    const reachText = (x) => (x === "team" ? "Staff only" : x + "% of people");
     const fill = (a) => {
-      editing = a ? a.id : null;
+      editing = a ? a.id : null; current = a;
       f.title.value = a ? a.title : ""; f.body.value = a ? a.body : ""; f.button.value = a ? a.button : "";
       f.action.value = a ? a.action : "none"; f.feature.value = a && a.feature ? a.feature : "";
       f.min_app.value = a && a.min_app ? a.min_app : ""; f.priority.value = a ? a.priority : 0; f.active.checked = !!(a && a.active);
+      f.style.value = (a && a.style) || "card"; f.alt.value = (a && a.alt) || ""; f.version.value = (a && a.version) || "";
+      f.tip_key.value = (a && a.tip_key) || ""; f.target.value = (a && a.target) || "";
+      const aud = (a && a.audience) || {};
+      f.who.value = aud.who || "all"; f.countries.value = (aud.countries || []).join(", "); f.platform.value = aud.platform || "any";
+      f.adults.checked = aud.teens === false;
+      f.ends.value = a && a.ends_at ? String(a.ends_at).slice(0, 16) : "";
+      image = a ? a.image : null; preview.style.display = image ? "block" : "none"; preview.src = safeUrl(image) || "";
+      pages.length = 0; pagesBox.replaceChildren();
+      ((a && a.pages) || []).forEach(pageRow);
+      const reach = a ? (a.reach === undefined ? 100 : a.reach) : null;
+      reachBox.replaceChildren(a ? el("span", { text: "Now reaching: " + reachText(reach) }) : el("span", { text: "New items go to staff first (with What's new, visual on)." }),
+        a && REACH.indexOf(reach) >= 0 && REACH.indexOf(reach) < 3 ? el("button", { class: "btn small", style: "margin-left: 8px;",
+          text: "Next: " + reachText(REACH[REACH.indexOf(reach) + 1]),
+          onclick: async (e) => { if (await act(e.target, () => api("PUT", `/admin/announcements/${encodeURIComponent(a.id)}`, { ...collect(), reach: REACH[REACH.indexOf(reach) + 1] }), "Reach widened")) RENDER.whatsnew(main); } }) : null);
       save.textContent = a ? "Save changes" : "Add announcement";
     };
+    const collect = () => ({ title: f.title.value.trim(), body: f.body.value.trim(), button: f.button.value.trim(), action: f.action.value,
+      feature: f.feature.value || null, min_app: f.min_app.value.trim() || null, priority: Number(f.priority.value) || 0,
+      active: f.active.checked, image: image || null, style: f.style.value, alt: f.alt.value.trim() || null,
+      ends_at: f.ends.value ? new Date(f.ends.value).toISOString() : null, version: f.version.value.trim() || null,
+      tip_key: f.tip_key.value.trim() || null, target: f.target.value.trim() || null,
+      pages: f.style.value === "story" ? pages.map((p) => ({ title: p.t.value.trim(), body: p.b.value.trim(), alt: p.a.value.trim(), image: p.image })) : null,
+      audience: { who: f.who.value, countries: f.countries.value.split(",").map((x) => x.trim()).filter(Boolean),
+        platform: f.platform.value, teens: !f.adults.checked } });
     const save = el("button", { class: "btn", text: "Add announcement", onclick: async (e) => {
-      const body = { title: f.title.value.trim(), body: f.body.value.trim(), button: f.button.value.trim(), action: f.action.value,
-        feature: f.feature.value || null, min_app: f.min_app.value.trim() || null, priority: Number(f.priority.value) || 0,
-        active: f.active.checked };
-      if (body.active && !(await confirmBox("Send this out?", `"${body.title}"\nPeople see it the next time they open the app (one a day at most, once each)${body.feature ? ", while " + ((FEATURES[body.feature] || [body.feature])[0]) + " is on" : ""}.`, "Send"))) return;
+      const body = collect();
+      if (body.active && !(await confirmBox("Send this out?", `"${body.title}"\nPeople see it the next time they open the app (one a day at most, once each)${body.feature ? ", while " + ((FEATURES[body.feature] || [body.feature])[0]) + " is on" : ""}. With What's new, visual on, it goes to staff first.`, "Send"))) return;
       const call = editing ? api("PUT", `/admin/announcements/${encodeURIComponent(editing)}`, body) : api("POST", "/admin/announcements", body);
       if (await act(e.target, () => call, editing ? "Saved" : "Added")) RENDER.whatsnew(main);
     }});
@@ -796,33 +907,52 @@ const RENDER = {
     main.replaceChildren(...head("What's new", "Short announcements in the app. One a day at most, each once per person, never to brand-new accounts, only while its switch is on and on apps new enough. Turn on the What's new switch for any of them to go out."),
       el("div", { class: "two" },
         el("div", { class: "card" }, el("h3", { text: "Write one" }),
+          el("label", { class: "field" }, el("span", { text: "Look" }), f.style),
           el("label", { class: "field" }, el("span", { text: "Title (60)" }), f.title),
           el("label", { class: "field" }, el("span", { text: "Message (180)" }), f.body),
+          el("label", { class: "field" }, el("span", { text: "Picture (shrunk to a few tens of KB)" }), f.file, preview),
+          el("label", { class: "field" }, el("span", { text: "Picture description (needed for posters and stories)" }), f.alt),
+          el("div", {}, el("div", { class: "small muted", text: "Story pages (2-4, for the Story look):" }), pagesBox,
+            el("button", { class: "btn small secondary", text: "Add a page", onclick: () => { if (pages.length < 4) pageRow(null); } })),
           el("div", { class: "two", style: "gap: 10px;" },
             el("label", { class: "field" }, el("span", { text: "Button text" }), f.button),
             el("label", { class: "field" }, el("span", { text: "Button opens" }), f.action)),
+          el("label", { class: "field" }, el("span", { text: "Challenge (for One challenge)" }), f.target),
           el("div", { class: "two", style: "gap: 10px;" },
             el("label", { class: "field" }, el("span", { text: "Only while this is on" }), f.feature),
             el("label", { class: "field" }, el("span", { text: "From app version" }), f.min_app)),
+          el("div", { class: "two", style: "gap: 10px;" },
+            el("label", { class: "field" }, el("span", { text: "Who" }), f.who),
+            el("label", { class: "field" }, el("span", { text: "Phones" }), f.platform)),
+          el("label", { class: "field" }, el("span", { text: "Countries" }), f.countries),
+          el("label", { class: "row", style: "gap: 8px; margin: 4px 0;" }, f.adults, el("span", { text: "Adults only (never to under-18s)" })),
+          el("div", { class: "two", style: "gap: 10px;" },
+            el("label", { class: "field" }, el("span", { text: "Ends (banners must)" }), f.ends),
+            el("label", { class: "field" }, el("span", { text: "Update notes for version" }), f.version)),
+          el("label", { class: "field" }, el("span", { text: "Tip: feature key" }), f.tip_key),
           el("label", { class: "field" }, el("span", { text: "Priority (higher goes first)" }), f.priority),
           el("label", { class: "row", style: "gap: 8px; margin: 8px 0;" }, f.active, el("span", { text: "On (sends it out)" })),
-          el("div", { class: "row", style: "gap: 8px;" }, save,
+          reachBox,
+          el("div", { class: "row", style: "gap: 8px; margin-top: 8px;" }, save,
             el("button", { class: "btn secondary", text: "Clear", onclick: () => fill(null) }),
             el("button", { class: "btn secondary", text: "Add Claude's 3 drafts", onclick: async (e) => {
               if (await act(e.target, () => api("POST", "/admin/announcements/suggested"), "Drafts added (all off)")) RENDER.whatsnew(main);
             } }))),
         el("div", { class: "card" }, el("h3", { text: "All announcements" }), r.items.length ? el("table", {}, el("thead", {}, el("tr", {},
-            ...["", "Shown", "Tapped", "Closed", "Tap rate", ""].map((h) => el("th", { text: h })))),
+            ...["", "Shown", "Tapped", "Closed", "Not now", "Tap rate", ""].map((h) => el("th", { text: h })))),
           el("tbody", {}, ...r.items.map((a) => el("tr", {},
             el("td", {}, el("div", { style: "font-weight: 600;", text: a.title }), el("div", { class: "small muted", text: a.body }),
               el("div", { class: "row small", style: "margin-top: 4px; gap: 6px;" },
                 el("span", { class: "pill " + (a.active ? "green" : "grey"), text: a.active ? "On" : "Off" }),
+                el("span", { class: "muted", text: STYLE_TEXT[a.style || "card"].split(" (")[0].split(":")[0] }),
+                a.reach !== undefined && a.reach !== 100 ? el("span", { class: "pill grey", text: reachText(a.reach) }) : null,
                 a.feature ? el("span", { class: "muted", text: "while " + ((FEATURES[a.feature] || [a.feature])[0]) }) : null,
                 a.min_app ? el("span", { class: "muted", text: "app " + a.min_app + "+" }) : null)),
             el("td", { text: num(a.shown) }), el("td", { text: num(a.tap) }), el("td", { text: num(a.close) }),
-            el("td", { text: pct(a.tap_rate) }),
+            el("td", { text: num(a.not_now) }), el("td", { text: pct(a.tap_rate) }),
             el("td", { style: "text-align: right;" }, el("button", { class: "btn small secondary", text: "Edit", onclick: () => { fill(a); f.title.focus(); } }))))))
           : el("div", { class: "empty", text: "None yet. \"Add Claude's 3 drafts\" gives you three to edit." }))));
+    fill(null);
   },
 
   async challenges(main) {
@@ -864,7 +994,7 @@ const RENDER = {
           el("td", { style: "text-align: right;" }, c.state !== "ended" ? el("button", { class: "btn ghost-danger small", text: "End now", onclick: async (e) => {
             if (!(await confirmBox(`End #${c.hashtag} now?`, "The leaderboard freezes as it is now.", "End now", true))) return;
             if (await act(e.target, () => api("POST", `/admin/challenges/${c.id}/end`), "Challenge ended")) RENDER.challenges(main);
-          }}) : null))))) : el("div", { class: "empty", text: "No challenges yet." }))));
+          }}) : null, el("button", { class: "btn small secondary", style: "margin-left: 6px;", text: "Look", onclick: () => challengeLook(c, main) })))))) : el("div", { class: "empty", text: "No challenges yet." }))));
   },
 
   async picks(main) {
@@ -1191,6 +1321,143 @@ const RENDER = {
           const u = resetName.value.trim().replace(/^@/, "");
           if (u && await act(e.target, () => api("POST", "/admin/home-ground/reset", { username: u }), `Reset @${u}`)) resetName.value = "";
         } })));
+  },
+
+  // ---------------------------------------------------------- moderation (safe_ban)
+  async mod(main) {
+    let reasons;
+    try { reasons = await api("GET", "/mod/reasons"); }
+    catch (e) { main.replaceChildren(...head("Moderation", "Turn on Safe ban and remove (Feature switches) to use this page.")); return; }
+    const [inbox, appeals, recent] = await Promise.all([api("GET", "/mod/inbox"), api("GET", "/mod/appeals"), api("GET", "/mod/actions?days=7")]);
+    const reasonSel = () => el("select", {}, ...reasons.reasons.map((r) => el("option", { value: r.key, text: r.label })));
+    const key = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+    const doAct = async (btn, path, body, label) => {
+      const out = await act(btn, () => api("POST", path, { ...body, key: key() }), label);
+      if (out && out.id) toast(label + " — Undo is on the Moderation page for 10 minutes");
+      if (out) RENDER.mod(main);
+    };
+    const lookup = el("input", { type: "text", maxlength: 40, placeholder: "User ID" });
+    const cardBox = el("div", {});
+    const showCard = async (uid) => {
+      const c = await act(null, () => api("GET", `/mod/users/${encodeURIComponent(uid)}/card`));
+      if (!c) return;
+      const why = reasonSel(), note = el("input", { type: "text", maxlength: 500, placeholder: "Note (staff only)" });
+      const hours = el("select", {}, ...reasons.limit_hours.map((h) => el("option", { value: h, text: h === 24 ? "24 hours" : h === 72 ? "3 days" : "7 days" })));
+      const sug = el("span", { class: "small muted" });
+      why.addEventListener("change", async () => { const s = await act(null, () => api("GET", `/mod/suggest?user_id=${c.id}&reason=${why.value}`)); if (s) sug.textContent = "Suggested next step: " + s.step.replace("_", " "); });
+      cardBox.replaceChildren(el("div", { class: "card" },
+        el("h3", { text: `${c.display_name || ""} @${c.username || ""}` }),
+        el("p", { class: "small muted", text: `${c.account_days ?? "?"} days old · ${num(c.followers)} followers · ${num(c.posts)} posts · app ${c.app_version || "?"} · ${c.teen ? "TEEN" : "adult"} · ${c.email || "no email"} · ${c.phone || "no phone"}` }),
+        el("p", { class: "small", text: `State: ${c.state}${c.evidence ? " (kept as evidence)" : ""} · warnings: ${c.recent} in 90 days, ${c.lifetime} ever · reports on posts: ${c.reports_on_posts} · held comments: ${c.held_comments} · failed uploads: ${c.failed_uploads}` }),
+        el("div", { class: "row", style: "gap: 6px; flex-wrap: wrap;" }, why, note, sug),
+        el("div", { class: "row", style: "gap: 6px; margin-top: 8px; flex-wrap: wrap;" },
+          el("button", { class: "btn small secondary", text: "Warn", onclick: (e) => doAct(e.target, "/mod/actions/warn", { user_id: c.id, reason: why.value, note: note.value }, "Warned") }),
+          hours, el("button", { class: "btn small secondary", text: "Limit", onclick: (e) => doAct(e.target, "/mod/actions/limit", { user_id: c.id, reason: why.value, hours: Number(hours.value), note: note.value }, "Limited") }),
+          c.state === "frozen" ? el("button", { class: "btn small", text: "Lift suspension", onclick: (e) => doAct(e.target, "/mod/actions/unfreeze", { user_id: c.id, reason: why.value, note: note.value }, "Suspension lifted") })
+            : el("button", { class: "btn small ghost-danger", text: "Suspend", onclick: async (e) => {
+              if (!(await confirmBox("Suspend this account?", "Frozen and hidden, nothing deleted. Undo for 10 minutes.", "Suspend", true))) return;
+              doAct(e.target, "/mod/actions/freeze", { user_id: c.id, reason: why.value, note: note.value }, "Suspended"); } }),
+          c.state === "frozen" ? el("button", { class: "btn small secondary", text: c.evidence ? "Stop keeping as evidence" : "Keep as evidence", onclick: async (e) => {
+            if (await act(e.target, () => api("POST", `/mod/users/${c.id}/evidence`, { on: !c.evidence }), "Saved")) showCard(c.id); } }) : null,
+          c.state === "frozen" ? el("button", { class: "btn small ghost-danger", text: "Wipe (owners, after 30 days)", onclick: async (e) => {
+            const typed = prompt("This deletes the account's posts and pictures for good. Type the username to confirm:");
+            if (!typed) return;
+            if (await act(e.target, () => api("POST", `/mod/users/${c.id}/wipe`, { confirm: typed.trim() }), "Wiped")) showCard(c.id); } }) : null),
+        c.actions && c.actions.length ? el("table", { style: "margin-top: 8px;" }, el("tbody", {}, ...c.actions.map((a) => el("tr", {},
+          el("td", { text: when(a.at) }), el("td", { text: a.kind }), el("td", { text: a.reason_label }), el("td", { text: a.state }), el("td", { text: a.by || "" }))))) : null));
+    };
+    const item = (it) => {
+      const why = reasonSel();
+      const btns = [];
+      if (it.type === "comment") btns.push(el("button", { class: "btn small secondary", text: "Hide comment", onclick: (e) => doAct(e.target, "/mod/actions/hide-comment", { comment_id: it.id, reason: why.value }, "Comment hidden") }));
+      if (it.type === "post") btns.push(el("button", { class: "btn small secondary", text: "Hide post", onclick: (e) => doAct(e.target, "/mod/actions/hide-post", { post_id: it.id, reason: why.value }, "Post hidden") }));
+      if (it.user_id) btns.push(el("button", { class: "btn small secondary", text: "Account", onclick: () => { lookup.value = it.user_id; showCard(it.user_id); } }));
+      return el("tr", {},
+        el("td", {}, it.urgent ? el("span", { class: "pill red", text: "URGENT" }) : null, el("span", { class: "pill grey", text: it.type }),
+          el("div", { class: "small", text: it.text || "" }),
+          el("div", { class: "small muted", text: `${it.reasons || ""} · ${it.reports} report(s) · reporters ${((it.reporter_days || []).join(", ") || "?")} days old · ${when(it.at)}` })),
+        el("td", {}, why, ...btns));
+    };
+    main.replaceChildren(...head("Moderation", "Freeze and hide, never wipe: every action needs a reason, can be undone for 10 minutes and is listed below. Child-safety reports come first."),
+      el("div", { class: "card" }, el("h3", { text: "Look up an account" }), el("div", { class: "row", style: "gap: 8px;" }, lookup,
+        el("button", { class: "btn small", text: "Open", onclick: () => lookup.value.trim() && showCard(lookup.value.trim()) })), cardBox),
+      el("div", { class: "card" }, el("h3", { text: `Reports inbox (${inbox.items.length})` }),
+        inbox.items.length ? el("table", {}, el("tbody", {}, ...inbox.items.map(item))) : el("div", { class: "empty", text: "Nothing waiting." })),
+      el("div", { class: "card" }, el("h3", { text: `Appeals (${appeals.items.length})` }),
+        appeals.items.length ? el("table", {}, el("tbody", {}, ...appeals.items.map((ap) => el("tr", {},
+          el("td", {}, el("div", { text: ap.text }), ap.rude ? el("span", { class: "pill red", text: "rude words" }) : null,
+            el("div", { class: "small muted", text: `${ap.decision ? ap.decision.kind + " · " + ap.decision.reason_label : ""} · ${when(ap.at)}` })),
+          el("td", {}, el("button", { class: "btn small", text: "Reverse", onclick: async (e) => { if (await act(e.target, () => api("POST", `/mod/appeals/${ap.id}`, { outcome: "reversed" }), "Reversed")) RENDER.mod(main); } }),
+            el("button", { class: "btn small secondary", text: "Keep decision", onclick: async (e) => { if (await act(e.target, () => api("POST", `/mod/appeals/${ap.id}`, { outcome: "upheld" }), "Kept")) RENDER.mod(main); } })))))) : el("div", { class: "empty", text: "No appeals." })),
+      el("div", { class: "card" }, el("h3", { text: `Last 7 days: ${recent.items.length} actions, ${recent.card_views} account looks` }),
+        recent.items.length ? el("table", {}, el("tbody", {}, ...recent.items.map((a) => el("tr", {},
+          el("td", { text: when(a.at) }), el("td", { text: a.kind }), el("td", { text: a.reason_label }), el("td", { text: a.by || "" }), el("td", { text: a.state }),
+          el("td", {}, a.state === "done" && a.undo_until && Date.parse(a.undo_until + (String(a.undo_until).endsWith("Z") ? "" : "Z")) > Date.now()
+            ? el("button", { class: "btn small secondary", text: "Undo", onclick: async (e) => { if (await act(e.target, () => api("POST", `/mod/actions/${a.id}/undo`), "Undone")) RENDER.mod(main); } }) : null))))) : el("div", { class: "empty", text: "No actions yet." })));
+  },
+
+  async staff(main) {
+    let r;
+    try { r = await api("GET", "/mod/staff"); }
+    catch (e) { main.replaceChildren(...head("Staff", "Turn on Safe ban and remove (Feature switches) to manage staff.")); return; }
+    const who = el("input", { type: "text", maxlength: 40, placeholder: "User ID" });
+    const role = el("select", {}, ...["moderator", "admin", "owner"].map((x) => el("option", { value: x, text: x })));
+    const official = el("input", { type: "text", maxlength: 40, placeholder: "User ID of the Wano Team account" });
+    main.replaceChildren(...head("Staff", "Moderators work in the app after a 6-digit code from an authenticator app. Admin and owner need an admin account. Staff must be 18 or over. Until someone is made owner, every admin counts as one."),
+      el("div", { class: "card" }, el("table", {}, el("tbody", {}, ...r.items.map((u) => el("tr", {},
+        el("td", { text: `${u.display_name || ""} @${u.username || ""}` }), el("td", { text: u.role }),
+        el("td", { text: u.has_code ? "code set" : "no code yet" }),
+        el("td", {}, el("button", { class: "btn small secondary", text: "New code", onclick: async (e) => {
+            if (!(await confirmBox("Make a new staff code?", "Their old code and sessions stop working. The new secret is shown once: type it into their authenticator app.", "Make code"))) return;
+            const out = await act(e.target, () => api("POST", `/mod/staff/${u.id}/code`));
+            if (out) confirmBox("Staff code secret (shown once)", `Secret: ${out.secret}\n\nIn Google Authenticator or similar: add a code, enter a setup key, paste the secret.`, "Done");
+          } }),
+          el("button", { class: "btn small ghost-danger", text: "Remove", onclick: async (e) => {
+            if (!(await confirmBox("Remove from staff?", "They lose staff tools at once.", "Remove", true))) return;
+            if (await act(e.target, () => api("POST", "/mod/staff", { user_id: u.id, role: null }), "Removed")) RENDER.staff(main); } }))))))),
+      el("div", { class: "card" }, el("h3", { text: "Add or change" }), el("div", { class: "row", style: "gap: 8px;" }, who, role,
+        el("button", { class: "btn small", text: "Save", onclick: async (e) => { if (await act(e.target, () => api("POST", "/mod/staff", { user_id: who.value.trim(), role: role.value }), "Saved")) RENDER.staff(main); } }))),
+      el("div", { class: "card" }, el("h3", { text: "Wano Team badge" }), el("p", { class: "small muted", text: "Only the official account gets the badge. Owners only." }),
+        el("div", { class: "row", style: "gap: 8px;" }, official,
+          el("button", { class: "btn small", text: "Give badge", onclick: (e) => act(e.target, () => api("POST", "/mod/official", { user_id: official.value.trim(), on: true }), "Badge on") }),
+          el("button", { class: "btn small secondary", text: "Take away", onclick: (e) => act(e.target, () => api("POST", "/mod/official", { user_id: official.value.trim(), on: false }), "Badge off") }))),
+      el("div", { class: "card" }, el("h3", { text: "Lost phone?" }),
+        el("button", { class: "btn ghost-danger", text: "Sign out every staff session now", onclick: async (e) => {
+          if (!(await confirmBox("Sign out all staff?", "Every moderator has to enter a code again.", "Sign out all", true))) return;
+          act(e.target, () => api("POST", "/mod/sessions/end-all"), "All staff sessions ended"); } })));
+  },
+
+  async team(main) {
+    let r;
+    try { r = await api("GET", "/team/posts"); }
+    catch (e) { main.replaceChildren(...head("Wano Team", "Turn on the Wano Team thread switch (and Safe ban) to post.")); return; }
+    let image = null;
+    const title = el("input", { type: "text", maxlength: 80, placeholder: "Wano now uses less data" });
+    const body = el("textarea", { rows: 4, maxlength: 600, placeholder: "What's new, a tip, or a safety note. Never promise money." });
+    const kind = el("select", {}, ...["update", "tip", "safety", "event"].map((k) => el("option", { value: k, text: k })));
+    const alt = el("input", { type: "text", maxlength: 200, placeholder: "Describe the picture" });
+    const adults = el("input", { type: "checkbox" });
+    const file = el("input", { type: "file", accept: "image/jpeg,image/png,image/webp" });
+    file.addEventListener("change", async () => {
+      const form = new FormData(); form.append("file", file.files[0]);
+      try {
+        const res = await fetch(API + "/admin/announcements/image", { method: "POST", headers: { Authorization: "Bearer " + token }, body: form });
+        const d = await res.json().catch(() => null);
+        if (!res.ok) throw new Error((d && d.detail) || "Upload failed");
+        image = d.image; toast("Picture ready");
+      } catch (e) { toast(e.message, true); }
+    });
+    main.replaceChildren(...head("Wano Team", (r.account ? "" : "No account has the Wano Team badge yet (Staff page). ") + "Posts appear in the official thread (app 2.3.60). They're never pushed. Account notices to one person are sent automatically."),
+      el("div", { class: "two" },
+        el("div", { class: "card" }, el("h3", { text: "Post" }), kind, title, body, file, alt,
+          el("label", { class: "row", style: "gap: 8px; margin: 6px 0;" }, adults, el("span", { text: "Adults only" })),
+          el("button", { class: "btn", text: "Post as Wano Team", onclick: async (e) => {
+            if (!(await confirmBox("Post as Wano Team?", title.value, "Post"))) return;
+            if (await act(e.target, () => api("POST", "/team/posts", { title: title.value.trim(), body: body.value.trim(), kind: kind.value,
+              image, alt: alt.value.trim() || null, audience: { teens: !adults.checked } }), "Posted")) RENDER.team(main); } })),
+        el("div", { class: "card" }, el("h3", { text: "Posted" }), r.items.length ? el("table", {}, el("tbody", {}, ...r.items.map((p) => el("tr", {},
+          el("td", {}, el("div", { style: "font-weight: 600;", text: p.title }), el("div", { class: "small muted", text: p.body }), el("div", { class: "small muted", text: when(p.at) })),
+          el("td", {}, el("button", { class: "btn small ghost-danger", text: "Remove", onclick: async (e) => { if (await act(e.target, () => api("DELETE", `/team/posts/${p.id}`), "Removed")) RENDER.team(main); } })))))) : el("div", { class: "empty", text: "Nothing posted yet." }))));
   },
 
   async switches(main) {

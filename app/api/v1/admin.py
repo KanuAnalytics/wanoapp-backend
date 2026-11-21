@@ -7,10 +7,10 @@ POST /challenges; moderation uses /reports/admin/*."""
 import logging
 import re
 from datetime import datetime, timedelta, timezone
-from typing import List, Literal, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from bson import ObjectId
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, StrictInt
 
 from app.api.deps import require_admin
@@ -56,7 +56,8 @@ async def login(body: LoginIn, request: Request):
     # The exp claim is set here, not via expires_delta: app logins don't expire
     # (create_access_token ignores expires_delta), but an admin session must.
     exp = int((datetime.now(timezone.utc) + timedelta(hours=SESSION_HOURS)).timestamp())
-    token = create_access_token({"sub": str(user["_id"]), "exp": exp})
+    # scope marks an Admin page sign-in (staff.need() trusts only these, plus app staff sessions).
+    token = create_access_token({"sub": str(user["_id"]), "exp": exp, "scope": "admin_web"})
     return {"access_token": token, "username": user["username"], "expires_in": SESSION_HOURS * 3600}
 
 
@@ -485,6 +486,26 @@ class AnnouncementIn(BaseModel):
     image: Optional[str] = Field(None, max_length=1024)
     priority: int = 0
     active: StrictBool = False
+    # whats_new_plus
+    style: Optional[str] = Field(None, max_length=20)
+    alt: Optional[str] = Field(None, max_length=300)
+    pages: Optional[List[Dict[str, Any]]] = Field(None, max_length=4)
+    ends_at: Optional[str] = Field(None, max_length=40)
+    starts_at: Optional[str] = Field(None, max_length=40)
+    version: Optional[str] = Field(None, max_length=20)
+    tip_key: Optional[str] = Field(None, max_length=40)
+    target: Optional[str] = Field(None, max_length=40)
+    audience: Optional[Dict[str, Any]] = None
+    reach: Optional[Union[Literal["team"], int]] = None
+
+
+@router.post("/announcements/image")
+async def announcement_image(file: UploadFile = File(...), admin: str = Depends(require_admin)):
+    """A picture for What's new, the Wano Team thread or a challenge: re-made as
+    small WebP copies (a few tens of KB) on Wano's own storage."""
+    from app.services import flyers as flyers_svc
+    data = await file.read(flyers_svc.IMAGE_MAX_BYTES + 1)
+    return await flyers_svc.store_image(data)
 
 
 @router.get("/announcements")

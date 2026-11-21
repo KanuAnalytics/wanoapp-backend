@@ -44,9 +44,27 @@ def state(ch: dict, now: datetime) -> str:
 
 
 def public(ch: dict, now: datetime) -> dict:
-    return {"id": str(ch["_id"]), "hashtag": ch["hashtag"], "title": ch["title"],
-            "description": ch.get("description", ""), "starts_at": ch["starts_at"], "ends_at": ch["ends_at"],
-            "prize_points": ch.get("prize_points", 0), "state": state(ch, now)}
+    out = {"id": str(ch["_id"]), "hashtag": ch["hashtag"], "title": ch["title"],
+           "description": ch.get("description", ""), "starts_at": ch["starts_at"], "ends_at": ch["ends_at"],
+           "prize_points": ch.get("prize_points", 0), "state": state(ch, now)}
+    look = ch.get("look") or {}
+    if look:
+        # challenge_plus (app 2.3.60): older apps ignore these fields.
+        out.update({"cover": look.get("cover"), "cover_small": look.get("cover_small"),
+                    "cover_alt": look.get("alt") or "", "example_video": look.get("example_video"),
+                    "sound_id": look.get("sound_id"), "discover": bool(look.get("discover"))})
+    return out
+
+
+def without_example(ch: dict, rows: List[dict]) -> List[dict]:
+    """The example video's creator can't win (or rank): Wano picked their video."""
+    who = (ch.get("look") or {}).get("example_creator")
+    if not who:
+        return rows
+    out = [r for r in rows if (r.get("user") or {}).get("id") != str(who)]
+    for i, r in enumerate(out, 1):
+        r["rank"] = i
+    return out
 
 
 async def ranking(db, ch: dict) -> List[dict]:
@@ -94,6 +112,7 @@ async def finish(db) -> int:
     async for ch in db.challenges.find({"ends_at": {"$lte": _naive(now) - FINISH_DELAY}, "finished": {"$ne": True}}):
         from app.services import challenge_fair
         rows = await challenge_fair.board(db, ch) if challenge_fair.fair(ch) else await ranking(db, ch)
+        rows = without_example(ch, rows)
         for row in rows[:TOP]:
             uid = ObjectId(row["user"]["id"])
             if await leaderboard._award(db, uid, "challenge_top3", now, week=str(ch["_id"]), rank=row["rank"],

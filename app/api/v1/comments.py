@@ -213,7 +213,7 @@ async def _users_by_id(db, comments: Iterable[dict]) -> Dict[ObjectId, dict]:
         return {}
     cursor = db.users.find(
         {"_id": {"$in": list(ids)}},
-        {"display_name": 1, "profile_picture": 1, "is_active": 1},
+        {"display_name": 1, "profile_picture": 1, "is_active": 1, "official": 1},
     )
     return {u["_id"]: u async for u in cursor}
 
@@ -223,6 +223,8 @@ def _live_user_fields(user: Optional[dict]) -> dict:
         "user_display_name": user["display_name"] if user and "display_name" in user else "Anonymous",
         "profile_picture": user["profile_picture"] if user and "profile_picture" in user else None,
         "is_user_active": user["is_active"] if user and "is_active" in user else False,
+        # The Wano Team badge: set only by owners (POST /mod/official), drawn by the app.
+        "is_official": bool(user) and user.get("official") is True,
     }
 
 
@@ -248,6 +250,8 @@ async def create_comment(
 ):
     """Create a new comment or reply"""
     db = get_database()
+    from app.services import safe_mod
+    await safe_mod.ensure_can(db, current_user, "comment")
     video_oid = _object_id(comment.video_id, "video ID")
 
     # Verify the video exists and the caller may comment on it
@@ -463,7 +467,7 @@ async def get_user_comments(
             detail="User not found"
         )
 
-    q = {"user_id": user_oid, "is_active": True}
+    q = {"user_id": user_oid, "is_active": True, "mod_hidden": {"$ne": True}}
     if str(user_oid) != str(current_user):
         # comment_guard: held and hidden comments are for their author only.
         q.update({"held": {"$exists": False}, "hidden": {"$ne": True}})
@@ -473,6 +477,9 @@ async def get_user_comments(
 async def _guarded(db, q: dict, current_user: Optional[str], video_oid) -> dict:
     """Signed-out reading and the comment_guard filters. Before the switch,
     reading still needs an account, exactly as before."""
+    # safe_mod: a comment hidden by staff (or by suspending its author) is
+    # hidden from everyone, its author included, switch or not.
+    q = {**q, "mod_hidden": {"$ne": True}}
     if not await comment_guard.on(db):
         if not current_user:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated",
@@ -484,6 +491,8 @@ async def _guarded(db, q: dict, current_user: Optional[str], video_oid) -> dict:
             video.get("privacy") == "private" and str(video.get("creator_id")) != str(current_user)):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video not found")
     viewer = await comment_guard.viewer_doc(db, current_user)
+    if await comment_guard.staff_sees(db, viewer):
+        return q
     return {"$and": [q, comment_guard.visible_filter(viewer)]}
 
 
@@ -532,6 +541,8 @@ async def get_video_comments(
         users = await _users_by_id(db, docs)
     viewer = ObjectId(current_user) if current_user else None
     mine_under = await comment_guard.my_reply_counts(db, [d["_id"] for d in docs], viewer)
+    staff_viewer = await comment_guard.viewer_doc(db, current_user)
+    sees = await comment_guard.staff_sees(db, staff_viewer)
     comments = []
     for comment in docs:
         comments.append(CommentResponse(**{
@@ -543,6 +554,7 @@ async def get_video_comments(
             "user_id": str(comment["user_id"]),
             "parent_id": None,
             "is_liked": viewer in comment.get("liked_by", []),
+            "staff_note": comment_guard.staff_note(comment, staff_viewer) if sees else None,
         }))
     return comments
 
@@ -572,6 +584,8 @@ async def get_comment_replies(
     users = await _users_by_id(db, docs)
     viewer = ObjectId(current_user) if current_user else None
     mine_under = await comment_guard.my_reply_counts(db, [d["_id"] for d in docs], viewer)
+    staff_viewer = await comment_guard.viewer_doc(db, current_user)
+    sees = await comment_guard.staff_sees(db, staff_viewer)
     replies = []
     for reply in docs:
         replies.append(CommentResponse(**{
@@ -583,6 +597,7 @@ async def get_comment_replies(
             **_live_user_fields(users.get(reply.get("user_id"))),
             "parent_id": str(reply["parent_id"]),
             "is_liked": viewer in reply.get("liked_by", []),
+            "staff_note": comment_guard.staff_note(reply, staff_viewer) if sees else None,
         }))
     return replies
 
@@ -835,7 +850,10 @@ async def get_teen_comments(current_user: str = Depends(get_current_active_user)
     from app.services import home_ground
     me = await db.users.find_one({"_id": ObjectId(current_user)}, {"date_of_birth": 1, "teen_comments": 1})
     age = home_ground.age_of((me or {}).get("date_of_birth")) if me and home_ground.is_minor(me) else None
-    if age is None:
+    # The rules below are enforced only with the teen_comments switch on. While
+    # it's off the app (2.3.59 shows this row with comment_plus) must not tell a
+    # teen they're protected, so they get the adult answer and no row.
+    if age is None or not await comment_guard.teen_on(db):
         return {"teen": False, "who": "everyone", "locked": False}
     if age < 16:
         return {"teen": True, "who": "friends", "locked": True}

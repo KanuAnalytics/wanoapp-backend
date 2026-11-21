@@ -142,6 +142,11 @@ async def test_TC8_reading_my_setting(client, db):
     _, ah = await make_user(db)
     _, yh = await make_user(db, date_of_birth=_born(14))
     _, oh = await make_user(db, date_of_birth=_born(17))
+    # Switch off: the rules aren't enforced, so nobody is told they are (the
+    # 2.3.59 app shows this row with comment_plus alone).
+    for h in (ah, yh, oh):
+        assert (await client.get(f"{C}me/teen-comments", headers=h)).json() == {"teen": False, "who": "everyone", "locked": False}
+    await _on(db)
     assert (await client.get(f"{C}me/teen-comments", headers=ah)).json() == {"teen": False, "who": "everyone", "locked": False}
     assert (await client.get(f"{C}me/teen-comments", headers=yh)).json() == {"teen": True, "who": "friends", "locked": True}
     assert (await client.get(f"{C}me/teen-comments", headers=oh)).json()["who"] == "following"

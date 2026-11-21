@@ -68,7 +68,10 @@ APP_FEATURES = ("points", "boost", "earnings", "replies", "challenges", "sounds"
                 "recombee_fast", "recombee_tune", "recombee_eu",
                 "lean_preload", "loop_cap", "data_saver", "fast_start", "quick_replies",
                 "tv_age_gate", "tv_loves", "tv_coming_soon", "tv_clips", "tv_downloads", "tv_pip", "tv_player_plus",
-                "comment_guard", "challenge_fair", "teen_comments", "comment_plus", "brand_links", "reaction_country", "upload_locked", "share_play", "open_after_install", "post_limits")
+                "comment_guard", "challenge_fair", "teen_comments", "comment_plus", "brand_links", "reaction_country", "upload_locked", "share_play", "open_after_install", "post_limits",
+                # Nov 2026 (server first; the app parts need 2.3.60)
+                "safe_ban", "warnings", "staff_view", "staff_quiet", "mod_tools", "reserved_names",
+                "wano_team", "whats_new_plus", "attention_cap", "challenge_plus")
 
 
 @router.get("/features")
@@ -77,4 +80,11 @@ async def get_app_features():
     doc = await db.config.find_one({"features": {"$type": "object"}}, projection={"features": 1},
                                    sort=[("_id", -1)]) or {}
     on = doc.get("features") if isinstance(doc.get("features"), dict) else {}
-    return {k: on.get(k) is True for k in APP_FEATURES}
+    out = {k: on.get(k) is True for k in APP_FEATURES}
+    # A switch that needs another one is off to the apps while that one is off
+    # (comment_plus without comment_guard would break signed-out reading).
+    from app.services.features import NEEDS
+    for k, needed in NEEDS.items():
+        if out.get(k) and not out.get(needed):
+            out[k] = False
+    return out

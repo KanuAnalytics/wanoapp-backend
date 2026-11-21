@@ -210,6 +210,10 @@ async def recombee_send(request):
     RecombeeClient.send() is synchronous (uses `requests` under the hood),
     so it must run in a worker thread when called from async endpoints.
     """
+    # staff_quiet: staff watching and liking (often reported videos) never
+    # teaches the recommender anything.
+    if await staff_skip(request):
+        return None
     fast = await refresh_switch()
     main, copy = _clients()
     t = time.perf_counter()
@@ -242,6 +246,22 @@ async def _run(client, request, fast: bool):
 
 # Requests that only read (recommendations, lists): never copied to the new database.
 _READ_PREFIXES = ("Recommend", "List", "Get", "Search", "Composite")
+
+
+async def staff_skip(request) -> bool:
+    uid = getattr(request, "user_id", None)
+    if not uid or _kind(request) not in _STAFF_QUIET_KINDS:
+        return False
+    try:
+        from app.core.database import get_database
+        from app.services import staff
+        return await staff.quiet(get_database(), uid)
+    except Exception:
+        return False
+
+
+_STAFF_QUIET_KINDS = ("SetViewPortion", "AddRating", "AddBookmark", "AddCartAddition", "AddPurchase",
+                      "AddDetailView")
 
 
 def _is_write(request) -> bool:

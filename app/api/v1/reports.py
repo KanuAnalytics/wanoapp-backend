@@ -159,6 +159,10 @@ async def report_video(
         await moderation.on_report(db, video, current_user, report_id)
     except Exception:
         logger.exception("Safety check failed for report %s", report_id)
+    # Child exploitation: staff get a push that names nobody (once per video).
+    if str(getattr(report_data.category, "value", report_data.category) or "") == "child_exploitation":
+        from app.services import staff_alerts
+        await staff_alerts.urgent(db, f"video:{video_id}")
     
     # Prepare response
     report_doc["_id"] = report_id

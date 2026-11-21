@@ -12,7 +12,12 @@ from pymongo import ReturnDocument
 from app.api.v1.config import APP_FEATURES
 
 # A feature that only works when another one is on.
-NEEDS = {"boost": "points", "earnings": "points", "tv_play": "tv_series"}
+NEEDS = {"boost": "points", "earnings": "points", "tv_play": "tv_series",
+         # The new comments (app 2.3.59) read signed out and report through
+         # Comment safety; without it they'd show "Couldn't load comments".
+         "comment_plus": "comment_guard",
+         # Warnings and the in-app staff tools sit on safe moderation.
+         "warnings": "safe_ban", "mod_tools": "safe_ban"}
 
 _lock = asyncio.Lock()
 
@@ -69,6 +74,11 @@ async def set_feature(db, key: str, on: bool) -> Dict[str, bool]:
 
 
 def _forget_cached():
+    try:
+        from app.services import staff
+        staff.forget()
+    except Exception:
+        pass
     try:
         from app.core import gzip_switch
         gzip_switch.forget()

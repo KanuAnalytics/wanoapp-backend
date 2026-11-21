@@ -56,6 +56,8 @@ async def for_user(uid: str, me: str = Depends(get_current_active_user)):
 @router.post("/card", status_code=201)
 async def make_card(body: CardIn, me: str = Depends(get_current_active_user)):
     db = await _db()
+    from app.services import safe_mod
+    await safe_mod.ensure_can(db, me, "post")
     comments = body.comments and await creator_push.on(db, "quick_replies")
     return await svc.make_card(db, me, body.text[:2000], body.color, comments=comments)
 
@@ -64,6 +66,8 @@ async def make_card(body: CardIn, me: str = Depends(get_current_active_user)):
 async def make_voice(file: UploadFile = File(...), duration_ms: int = Form(...), comments: bool = Form(False),
                      me: str = Depends(get_current_active_user)):
     db = await _db()
+    from app.services import safe_mod
+    await safe_mod.ensure_can(db, me, "post")
     data = await file.read(svc.VOICE_MAX_BYTES + 1)     # never more than this is read into memory
     if len(data) > svc.VOICE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="That voice note is too big")
@@ -84,7 +88,10 @@ async def comments(qid: str, me: str = Depends(get_current_active_user)):
 
 @router.post("/{qid}/comments", status_code=201)
 async def add_comment(qid: str, body: CommentIn, me: str = Depends(get_current_active_user)):
-    return await svc.add_comment(await _replies_db(), me, qid[:40], body.text[:1000])
+    db = await _replies_db()
+    from app.services import safe_mod
+    await safe_mod.ensure_can(db, me, "comment")
+    return await svc.add_comment(db, me, qid[:40], body.text[:1000])
 
 
 @router.post("/{qid}/comments-on")

@@ -125,6 +125,8 @@ async def db(monkeypatch, calls):
     recombee_service.forget()
     recombee_service.reset_stats()
     trending.reset_limits()
+    from app.services import staff as _staff
+    _staff.forget()
     from app.services.metrics_service import metrics_buffer
     metrics_buffer.views_buffer.clear()
     metrics_buffer.likes_buffer.clear()

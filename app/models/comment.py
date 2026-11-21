@@ -53,6 +53,8 @@ class CommentResponse(BaseModel):
     edited_at: Optional[datetime] = None
     is_pinned: bool = False
     is_hearted: bool = False
+    is_official: bool = False          # Wano Team badge (server-set)
+    staff_note: Optional[str] = None   # staff_view: why others can't see it (staff only)
     created_at: datetime
     updated_at: datetime
     

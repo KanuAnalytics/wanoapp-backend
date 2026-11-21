@@ -46,6 +46,10 @@ api_router.include_router(feed_fx_router, prefix="/videos", tags=["feed-fx"])
 from app.api.v1.profile_plus import router as profile_plus_router  # noqa: E402
 api_router.include_router(profile_plus_router, prefix="/users", tags=["profile"])
 api_router.include_router(videos_router, prefix="/videos", tags=["videos"])
+from app.api.v1.mod import router as mod_router  # noqa: E402
+api_router.include_router(mod_router, prefix="/mod", tags=["moderation"])
+from app.api.v1.team import router as team_router  # noqa: E402
+api_router.include_router(team_router, prefix="/team", tags=["wano-team"])
 api_router.include_router(comments_router, prefix="", tags=["comments"])
 api_router.include_router(feed_router, prefix="/feed", tags=["feed"])
 api_router.include_router(metrics_router, prefix="/metrics", tags=["metrics"])

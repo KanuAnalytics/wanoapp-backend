@@ -132,7 +132,8 @@ async def find_videos(db, q, skip: int = 0, limit: int = 20, tail: Optional[List
 # ---------------------------------------------------------------- comments
 
 async def _comment_candidates(db, term: str, video: Optional[ObjectId]):
-    base = {"is_active": True}
+    # Held, report-hidden and staff-hidden comments never show in search.
+    base = {"is_active": True, "mod_hidden": {"$ne": True}, "held": {"$exists": False}, "hidden": {"$ne": True}}
     if video is not None:
         base["video_id"] = video
     if _atlas_ok(COMMENT_INDEX):

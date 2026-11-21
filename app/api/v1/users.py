@@ -541,6 +541,8 @@ async def patch_user_profile(
     if "display_name" in updates_dict:
         if updates.display_name is not None and user.get("display_name") != updates.display_name:
             _check_profile_names(display_name=updates.display_name)
+            from app.services import reserved_names
+            await reserved_names.check(get_database(), display_name=updates.display_name, user_id=current_user)
         update_doc["display_name"] = updates.display_name
         if user.get("display_name") != updates.display_name:
             display_name_changed = True
@@ -759,6 +761,18 @@ async def ban_user(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found"
         )
+
+    # safe_ban: Ban on the team phone suspends (freeze and hide, nothing
+    # deleted, undoable); the wipe is a separate owner step on the Admin page.
+    from app.services import safe_mod, staff as staff_svc
+    if await safe_mod.on(db):
+        me = await db.users.find_one({"_id": ObjectId(current_user)})
+        role = await staff_svc.effective_role(db, me) or "admin"
+        if (user.get("mod_state") or {}).get("state") == "frozen":
+            return
+        await safe_mod.freeze(db, staff_svc.Staff(me, role, "app-ban"), user_id, "other",
+                              note="Ban from the app (suspended, not wiped)")
+        return
 
     # Read before the anonymize update below clears them.
     profile_picture_url = user.get("profile_picture")
@@ -1196,6 +1210,8 @@ async def update_me(
         # Check if display name is changing
         if user.get("display_name") != user_update.display_name:
             _check_profile_names(display_name=user_update.display_name)
+            from app.services import reserved_names
+            await reserved_names.check(get_database(), display_name=user_update.display_name, user_id=current_user)
             display_name_changed = True
             
     if user_update.bio is not None:
@@ -1860,6 +1876,8 @@ async def update_user(
     if new_display_name is not None and new_display_name == current_user_doc.get("display_name"):
         new_display_name = None
     _check_profile_names(username=new_username, display_name=new_display_name)
+    from app.services import reserved_names
+    await reserved_names.check(get_database(), username=new_username, display_name=new_display_name, user_id=current_user)
     
     if new_username is not None:
         # Check if the new username is already taken

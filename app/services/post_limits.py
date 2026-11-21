@@ -24,7 +24,8 @@ async def _made(db, oid: ObjectId, since: datetime) -> int:
 
 
 async def check(db, user_id: str) -> None:
-    from app.services import creator_push
+    from app.services import creator_push, safe_mod
+    await safe_mod.ensure_can(db, user_id, "post")          # a staff limit, if any
     if not await creator_push.on(db, "post_limits"):
         return
     oid = ObjectId(user_id)

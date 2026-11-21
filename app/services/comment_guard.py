@@ -37,7 +37,11 @@ PER_DAY = 200
 REPORTS_TO_HIDE = 3
 TRUSTED_ACCOUNT_DAYS = 3
 REPORTS_PER_DAY = 20
-REASONS = ("spam", "harassment", "hate", "scam", "nudity", "violence", "self_harm", "false_information", "other")
+REASONS = ("spam", "harassment", "hate", "scam", "nudity", "violence", "self_harm", "false_information", "other",
+           "child_safety")
+# "Involves a child": goes to the top of Admin and staff get a push that names
+# nobody and shows nothing ("1 urgent safety report").
+URGENT_REASONS = ("child_safety",)
 
 
 def _now() -> datetime:
@@ -209,7 +213,27 @@ async def viewer_doc(db, current_user: Optional[str]) -> Optional[dict]:
     if not current_user or not ObjectId.is_valid(str(current_user)):
         return None
     return await db.users.find_one({"_id": ObjectId(current_user)},
-                                   {"blocked_users": 1, "blocked_by": 1, "created_at": 1})
+                                   {"blocked_users": 1, "blocked_by": 1, "created_at": 1, "user_type": 1,
+                                    "staff_role": 1, "is_active": 1})
+
+
+async def staff_sees(db, viewer: Optional[dict]) -> bool:
+    """"staff_view" switch: staff see comments past blocks (someone blocking the
+    Wano Team account must not hide their comments from moderators), and held
+    and report-hidden ones, each labelled (staff_note). They can't interact
+    with them: that's enforced where likes and replies are made."""
+    from app.services import creator_push, staff
+    return bool(viewer) and staff.is_staff(viewer) and await creator_push.on(db, "staff_view")
+
+
+def staff_note(c: dict, viewer: Optional[dict]) -> Optional[str]:
+    if c.get("held"):
+        return f"Held: only its writer sees it ({c.get('held')})"
+    if c.get("hidden") is True:
+        return "Hidden after reports"
+    if viewer and blocked_between(viewer, c.get("user_id")):
+        return "Hidden from you by a block"
+    return None
 
 
 async def report(db, *, me_id: str, comment: dict, reason: str) -> dict:
@@ -225,6 +249,9 @@ async def report(db, *, me_id: str, comment: dict, reason: str) -> dict:
             "text": (comment.get("content") or "")[:500], "status": "open", "created_at": _now()})
     except DuplicateKeyError:
         return {"reported": True}
+    if reason in URGENT_REASONS:
+        from app.services import staff_alerts
+        await staff_alerts.urgent(db, f"comment:{comment['_id']}")
     reporter = await db.users.find_one({"_id": me}, {"created_at": 1})
     made = (reporter or {}).get("created_at")
     if isinstance(made, datetime) and made.tzinfo is not None:
@@ -259,14 +286,17 @@ async def open_reports(db, limit: int = 100) -> List[dict]:
                     "text": {"$first": "$text"}, "reasons": {"$addToSet": "$reason"}, "n": {"$sum": 1},
                     "last": {"$first": "$created_at"}}},
         {"$sort": {"last": -1}},
-        {"$limit": limit},
-    ]).to_list(limit)
+    ]).to_list(None)
+    # "Involves a child" first, then newest.
+    rows.sort(key=lambda r: not any(x in URGENT_REASONS for x in (r.get("reasons") or [])))
+    rows = rows[:limit]
     out = []
     for r in rows:
         c = await db.comments.find_one({"_id": r["_id"]}, {"hidden": 1, "is_active": 1})
         out.append({"comment_id": str(r["_id"]), "video_id": str(r.get("video_id")),
                     "owner_id": str(r.get("owner_id")), "reason": ", ".join(sorted(r.get("reasons") or [])),
                     "text": r.get("text", ""), "reports": r.get("n", 0), "hidden": bool((c or {}).get("hidden")),
+                    "urgent": any(x in URGENT_REASONS for x in (r.get("reasons") or [])),
                     "deleted": not (c or {}).get("is_active", False), "created_at": r.get("last")})
     return out
 
@@ -284,8 +314,9 @@ RANK_SCAN = 500
 
 
 async def plus_on(db) -> bool:
+    """comment_plus counts as on only with Comment safety on as well."""
     from app.services import creator_push
-    return await creator_push.on(db, PLUS_SWITCH)
+    return await creator_push.on(db, PLUS_SWITCH) and await creator_push.on(db, SWITCH)
 
 
 def _rank_key(c: dict):
