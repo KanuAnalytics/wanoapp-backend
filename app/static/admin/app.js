@@ -225,7 +225,10 @@ const FEATURES = {
   fast_start: ["Faster start on slow connections", "For places where videos are slow to start (Uganda median 3 s, Kenya 5 s vs 0.1 s in the US). Android starts a video after 1 s of it has arrived instead of 2.5 s and resumes after a pause sooner. Each phone measures its own connection: the slower it is, the smaller the video (about 480p when videos take over 2 s to start, 360p over 4 s, the smallest copy over 8 s), back to full quality when starts are quick. Less waiting and less data. \"HD on mobile data\" is respected. Needs app 2.3.58."],
   challenge_fair: ["Fair challenge scoring", "Challenges created while this is on are scored so they can't be bought: only accounts at least 3 days old count (never the creator), each viewer once, signed-out views at a tenth with a cap, one point-earning comment per person, held comments never count. A post enters one challenge, and not with more than 10 hashtags. Admin accounts never rank. The board freezes at the end time. Challenges made before keep their old scoring. Works for every app version (the hashtag still enters)."],
   reaction_country: ["Reactions by country", "People who haven't set a Home Ground city react \"+1 Uganda\" (their account's country) instead of being asked to pick a city, and a post whose creator has no city shows \"📍 Uganda · 3 reactions here\". Cities still win when set."],
-  upload_locked: ["Uploads need an account", "The upload address the video editor (Lambda) uses works without signing in, so anyone on the internet could store videos on our Cloudflare bill. On: without an account, only a running video-editor job gets an upload address (it asks under the job's own file name). Before turning on, check Uploads in Admin: \"Without an account: others\" should be 0."],
+  post_limits: ["Posting limits", "One account can post at most 30 times an hour and 100 times a day (ordinary, photo, scheduled and multi-clip posts together), so a script can't flood feeds or fill our Cloudflare storage. Far above what real creators post. Admins are exempt. Someone over the limit sees: \"You've posted a lot in a short time. Please try again a little later.\""],
+  open_after_install: ["Open the shared post after installing", "Someone on Android taps a shared Wano link without having the app: Google Play installs it and, on the first launch, the app opens that exact post (over the welcome screens) instead of a generic start. Needs app 2.3.59. iPhones can't pass this through the App Store, so they open as today."],
+  share_play: ["Play button on shared videos", "When someone shares a Wano video on WhatsApp, iMessage, Facebook or X, the preview picture gets a ▶ in the middle, like TikTok and Instagram previews, so people see it's a video and tap. Videos only; photo posts unchanged. Previews already cached by WhatsApp keep their old picture."],
+  upload_locked: ["Uploads need an account", "The upload address the video editor (Lambda) uses works without signing in, so anyone on the internet could store videos on our Cloudflare bill. On: without an account, only a running video-editor job gets an upload address (it asks under the job's own file name). Before turning on, open Failed uploads in Admin: \"Without an account: others\" should stay 0 for a few days while people use the video editor."],
   brand_links: ["Share links on wanoafrica.com", "Shared posts, profiles and Wano TV titles show wanoafrica.com instead of devbe.wanoafrica.com: the link previews and pages call themselves wanoafrica.com, and anyone opening an old devbe share link in a browser is sent to the same page on wanoafrica.com. Turn on after the website update is live. App 2.3.59 shares wanoafrica.com links itself."],
   comment_plus: ["Comments, new look", "In the app (2.3.59): anyone can open and read comments, signing in only to write, like or report; hearts on comments; a Creator label; \"...\" on a comment to report it with a reason or delete it (yours, or any on your own post), asking first; a comment that fails to send says so; teens 16-17 choose who can comment in Settings. Needs Comment safety on."],
   teen_comments: ["Teen comment safety", "On teen accounts' posts: under 16, only friends (people who follow each other) can comment, and it can't be opened up; 16 and 17, only people the teen follows unless they choose everyone (app 2.3.59). Comments with offensive words are held. A held comment is visible only to its writer. Every held comment and every switch change is kept in Safety record."],
@@ -1272,7 +1275,8 @@ const RENDER = {
 
   async speed(main) {
     const days = 7;
-    const [p, si] = await Promise.all([api("GET", `/admin/perf?days=${days}`), api("GET", "/admin/small-images")]);
+    const [p, si, pv] = await Promise.all([api("GET", `/admin/perf?days=${days}`), api("GET", "/admin/small-images"),
+      api("GET", `/admin/perf/versions?days=${days}`).catch(() => ({ rows: [] }))]);
     const MET = { first_video: "App open → first video", video_start: "Video on screen → playing", stall: "Buffering pause", feed_load: "Feed page load", swipe_lag: "Longest freeze in a swipe" };
     const s = (ms) => ms == null ? "–" : (ms >= 1000 ? `${(ms / 1000).toFixed(1)} s` : `${ms} ms`);
     const t = si.totals || {};
@@ -1287,7 +1291,13 @@ const RENDER = {
         el("div", { text: `${num(si.done || 0)} pictures done · ${num(si.failed || 0)} failed · ${num(si.working || 0)} in progress` }),
         el("div", { class: "small muted", text: `Backlog: ${walked}` }),
         t.n ? el("div", { class: "small muted", text: `Originals ${mb(t.orig)} → avatars ${mb(t.w320)}, previews ${mb(t.w480)}` }) : null),
-      el("div", { class: "card" }, el("h3", { text: "Timings" }), table));
+      el("div", { class: "card" }, el("h3", { text: "Timings" }), table),
+      el("div", { class: "card" }, el("h3", { text: "By app version" }),
+        el("p", { class: "small muted", text: "Is a new version slower or buffering more than the one before? Compare \"Buffering pause\" and \"Video on screen → playing\" between versions. Versions from 2.3.59 send their number; older iPhone apps are known from their connection; older Android apps show as \"older Android\"." }),
+        pv.rows.length ? el("table", {}, el("thead", {}, el("tr", {}, ...["App version", "What", "Count", "Typical (p50)", "Slow (p90)"].map((h) => el("th", { text: h })))),
+          el("tbody", {}, ...pv.rows.map((r) => el("tr", {}, el("td", { text: r.version }), el("td", { text: MET[r.metric] || r.metric }),
+            el("td", { text: num(r.count) }), el("td", { text: s(r.p50) }), el("td", { text: s(r.p90) })))))
+          : el("div", { class: "empty", text: "No timings by version yet." })));
   },
 
   async kampala(main) {

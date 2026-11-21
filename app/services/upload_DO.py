@@ -346,6 +346,8 @@ def get_stream_video_status(uid: str):
     }
 
     resp = requests.get(url, headers=headers, timeout=REQUESTS_TIMEOUT)
+    if resp.status_code == 404:
+        raise LookupError(uid)          # no such video: "not found", not a server error
     if not resp.ok:
         raise RuntimeError(
             f"Failed to fetch video status from Cloudflare Stream: "

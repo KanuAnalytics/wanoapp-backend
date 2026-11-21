@@ -673,6 +673,15 @@ def _stream_url(v: dict) -> Optional[str]:
     return _https(v.get("remoteUrl_CF")) or _https((v.get("urls") or {}).get("hls_playlist"))
 
 
+async def _preview_image(db, v: dict) -> Optional[str]:
+    """The link-preview picture with a play button, when share_play is on."""
+    from app.services import creator_push
+    from app.core.config import settings
+    if not _stream_url(v) or not await creator_push.on(db, "share_play"):
+        return None
+    return f"{settings.SHARE_BASE_URL.rstrip('/')}/og/{v['_id']}.jpg"
+
+
 async def video(db, video_id: str) -> Optional[dict]:
     if not ObjectId.is_valid(video_id):
         return None
@@ -696,6 +705,7 @@ async def video(db, video_id: str) -> Optional[dict]:
         "views_count": int(v.get("views_count") or 0), "likes_count": int(v.get("likes_count") or 0),
         "comments_count": int(v.get("comments_count") or 0),
         "remoteUrl_CF": _stream_url(v), "urls": {"thumbnail": _https(thumbnails.best_thumbnail(v))},
+        "preview_image": await _preview_image(db, v),
         "photo": bool(v.get("images")) and not _stream_url(v),
         "images": [i for i in (_https(x) for x in (v.get("images") or [])) if i][:10],
         "created_at": when.isoformat() + ("Z" if when.tzinfo is None else "") if isinstance(when, datetime) else None,

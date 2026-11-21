@@ -275,6 +275,8 @@ async def post_video(
 ):
     try: 
         """Endpoint to handle video posting logic"""
+        from app.services import post_limits
+        await post_limits.check(get_database(), current_user)
         is_photo_post = input.media_type == "photo"
 
         if is_photo_post:
@@ -397,6 +399,8 @@ async def stitch_video(
 
 
 async def _stitch_video(input: VideoStitch, current_user: str):
+    from app.services import post_limits
+    await post_limits.check(get_database(), current_user)
     sound = await sound_for_post(input.audio.id, input.audio.uri) if input.audio else None
     scheduled_at, scheduled_timezone = normalize_schedule(
         input.scheduled_at, input.timezone, require_lead_time=False

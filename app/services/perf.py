@@ -156,3 +156,70 @@ async def langs_report(db, days: int = 14, now: Optional[datetime] = None) -> Li
         {"$group": {"_id": {"lang": "$lang", "country": "$country"}, "launches": {"$sum": "$launches"}}},
         {"$sort": {"launches": -1}}, {"$limit": 300}]).to_list(300)
     return [{"lang": r["_id"]["lang"], "country": r["_id"]["country"], "launches": r["launches"]} for r in rows]
+
+
+# ------------------------------------------------------------------ by app version
+# The same timings, counted per app version, so a version that buffers more
+# shows up next to the one before it. App 2.3.59+ sends its version; older
+# iPhone apps are known from their User-Agent ("Wano/2.3.41 CFNetwork/..."),
+# older Android apps are "older Android".
+VERSION_RE = r"^\d{1,3}(\.\d{1,4}){1,3}$"
+_UA_VERSION = r"^Wano/(\d{1,3}(?:\.\d{1,4}){1,3})\b"
+
+
+def version_of(sent: Optional[str], user_agent: Optional[str]) -> str:
+    import re as _re
+    if isinstance(sent, str) and _re.fullmatch(VERSION_RE, sent):
+        return sent
+    m = _re.match(_UA_VERSION, user_agent or "")
+    if m:
+        return m.group(1)
+    if "okhttp" in (user_agent or "").lower():
+        return "older Android"
+    return "unknown"
+
+
+async def record_version(db, events: List[dict], version: str, now: Optional[datetime] = None) -> int:
+    now = now or datetime.utcnow()
+    day = now.strftime("%Y-%m-%d")
+    ops = []
+    for e in events[:MAX_EVENTS]:
+        name, ms = e.get("name"), e.get("ms")
+        if name not in METRICS or isinstance(ms, bool) or not isinstance(ms, (int, float)) or not (0 <= ms <= MAX_MS):
+            continue
+        ops.append(UpdateOne(
+            {"_id": f"{day}:{version}:{name}"},
+            {"$inc": {"count": 1, "sum": int(ms), f"b.{bucket(ms)}": 1},
+             "$setOnInsert": {"day": now.replace(hour=0, minute=0, second=0, microsecond=0),
+                              "version": version, "metric": name}},
+            upsert=True))
+    if ops:
+        await db.perf_versions.bulk_write(ops, ordered=False)
+    return len(ops)
+
+
+def _version_key(v: str):
+    try:
+        return (0, [-int(x) for x in v.split(".")])
+    except ValueError:
+        return (1, [])
+
+
+async def versions_report(db, days: int = 7, now: Optional[datetime] = None) -> List[dict]:
+    """Per (app version, metric) over the last `days`: count, p50, p90, avg; newest version first."""
+    now = now or datetime.utcnow()
+    since = (now - timedelta(days=days - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    merged: Dict[tuple, dict] = {}
+    async for d in db.perf_versions.find({"day": {"$gte": since}}):
+        k = (d.get("version"), d.get("metric"))
+        m = merged.setdefault(k, {"count": 0, "sum": 0, "b": {}})
+        m["count"] += int(d.get("count") or 0)
+        m["sum"] += int(d.get("sum") or 0)
+        for b, c in (d.get("b") or {}).items():
+            m["b"][b] = m["b"].get(b, 0) + int(c or 0)
+    rows = [{"version": v, "metric": metric, "count": m["count"],
+             "avg": round(m["sum"] / m["count"]) if m["count"] else None,
+             "p50": percentile(m["b"], 0.5), "p90": percentile(m["b"], 0.9)}
+            for (v, metric), m in merged.items()]
+    rows.sort(key=lambda r: (_version_key(str(r["version"])), METRICS.index(r["metric"]) if r["metric"] in METRICS else 9))
+    return rows

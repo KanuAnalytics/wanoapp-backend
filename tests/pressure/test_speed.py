@@ -224,3 +224,23 @@ async def test_SI8_wano_tv_trailer_and_episode_pictures_get_small_copies(db, sto
         await si.sweep(db)
     for k in ("wano-tv/a/poster", "wano-tv/a/thumb_16x9", "wano-tv/a/ep1", "wano-tv/genre"):
         assert f"small/w480/{k}.webp" in puts, k
+
+
+async def test_PF7_speed_by_app_version(client, db):
+    """New apps send their version; older iPhones are read from the User-Agent;
+    a made-up version is not stored as one."""
+    from app.api.v1 import perf as perf_api
+    perf_api._hits.clear()
+    await _on(db)
+    stall = {"events": [{"name": "stall", "ms": 2500}]}
+    assert (await client.post(P, json={**stall, "ver": "2.3.59"})).status_code == 200
+    await client.post(P, json=stall, headers={"User-Agent": "Wano/2.3.41 CFNetwork/1568.200.51 Darwin/24.1.0"})
+    await client.post(P, json=stall, headers={"User-Agent": "okhttp/4.12.0"})
+    await client.post(P, json={**stall, "ver": "<script>"}, headers={"User-Agent": "okhttp/4.12.0"})
+    assert (await client.post(P, json={**stall, "ver": "x" * 30})).status_code == 422
+    _, adh = await make_user(db, user_type="admin")
+    rows = (await client.get("/api/v1/admin/perf/versions", headers=adh)).json()["rows"]
+    got = {r["version"]: r["count"] for r in rows if r["metric"] == "stall"}
+    assert got == {"2.3.59": 1, "2.3.41": 1, "older Android": 2}
+    assert [r["version"] for r in rows][:2] == ["2.3.59", "2.3.41"]       # newest first
+    perf_api._hits.clear()

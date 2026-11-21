@@ -334,6 +334,19 @@ async def call_video_service_check_status_api_background(uId: str, videoId: str)
             print(f"Video compilation failed for uid {uId}: {str(e)}")
             # You might want to log this properly or store in database
     
+STATUS_CHECKS_PER_MINUTE = 30
+_status_hits: dict = {}
+
+
+def _status_allowed(user_id: str) -> bool:
+    minute = int(time.time() // 60)
+    if len(_status_hits) > 20_000:
+        _status_hits.clear()
+    k = (user_id, minute)
+    _status_hits[k] = _status_hits.get(k, 0) + 1
+    return _status_hits[k] <= STATUS_CHECKS_PER_MINUTE
+
+
 @router.get("/{uid}")
 async def video_status(
     uid: str,
@@ -341,8 +354,14 @@ async def video_status(
 ):
     if not _STREAM_UID_RE.match(uid):
         raise HTTPException(status_code=400, detail="Invalid video UID")
+    # Each call uses our Cloudflare API allowance (shared by every upload), so
+    # one account can't spend it: the app asks a few times per upload.
+    if not _status_allowed(current_user):
+        raise HTTPException(status_code=429, detail="Too many checks. Try again in a minute.")
     try:
         return await asyncio.to_thread(get_stream_video_status, uid)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Video not found")
     except Exception:
         logger.exception("Could not fetch Stream status for %s", uid)
         raise HTTPException(status_code=500, detail="Could not fetch video status")

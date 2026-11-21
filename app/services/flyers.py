@@ -482,6 +482,13 @@ async def record(db, viewer_id: str, fid: str, kind: str, now: Optional[datetime
     country = hg.country_of(viewer)
     city = hg.city_of(viewer) or ""
     inc = {kind: 1}
+    if kind == "tap":
+        # One tap per person per flyer per day: tapping again and again (or a
+        # rival business doing it) doesn't inflate what the flyer's owner sees.
+        try:
+            await db.flyer_reach.insert_one({"_id": f"t:{day:%Y%m%d}:{fid}:{viewer_id}", "at": now})
+        except DuplicateKeyError:
+            return False
     if kind == "shown":
         try:
             await db.flyer_reach.insert_one({"_id": f"{day:%Y%m%d}:{fid}:{viewer_id}", "at": now})

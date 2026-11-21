@@ -64,6 +64,11 @@ _TITLE_MAX, _DESC_MAX = 100, 200
 # and sitemaps here keep the server's address (a sitemap lists its own host).
 SITE = "https://wanoafrica.com"
 _BRAND = {"on": False, "at": 0.0}
+# share_play switch: link previews of videos show a play button (/og/<id>.jpg).
+_PLAY = {"on": False}
+# open_after_install switch: the Google Play link carries the post
+# (wano_path=v/<id>) so app 2.3.59+ opens it on its first launch.
+_OPEN = {"on": False}
 
 
 def _server_base() -> str:
@@ -80,8 +85,10 @@ async def _refresh_brand() -> bool:
         try:
             from app.services import creator_push
             _BRAND["on"] = await creator_push.on(get_database(), "brand_links")
+            _PLAY["on"] = await creator_push.on(get_database(), "share_play")
+            _OPEN["on"] = await creator_push.on(get_database(), "open_after_install")
         except Exception:
-            _BRAND["on"] = False
+            _BRAND["on"] = _PLAY["on"] = _OPEN["on"] = False
         _BRAND["at"] = time.monotonic()
     return _BRAND["on"]
 
@@ -227,9 +234,11 @@ def _meta(video: dict, creator: dict) -> dict:
         thumb = images[0] if images else thumb
     elif not thumb or thumb == DEFAULT_THUMBNAIL:
         thumb = _stream_thumbnail(host, uid)
+    # The picture link previews show: with a play button when share_play is on.
+    preview = f"{_server_base()}/og/{vid}.jpg" if (_PLAY["on"] and not photo and thumb) else thumb
     return {
         "id": vid, "title": title, "description": description, "creator": name,
-        "photo": photo, "images": images, "thumbnail": thumb,
+        "photo": photo, "images": images, "thumbnail": thumb, "preview": preview,
         "player": None if photo else _player_url(host, uid),
         "unlisted": video.get("privacy") == "unlisted",
         "url": share_url(vid), "embed": f"{_base()}/embed/{vid}",
@@ -305,8 +314,10 @@ def _store_links(path: str):
     if ios:
         ios += ("&" if "?" in ios else "?") + f"ct=share_{kind}"
     if android:
-        android += ("&" if "?" in android else "?") + "referrer=" + quote(
-            f"utm_source=wano_share&utm_medium={kind}&utm_campaign=share", safe="")
+        ref = f"utm_source=wano_share&utm_medium={kind}&utm_campaign=share"
+        if _OPEN["on"] and re.fullmatch(r"(v|u|tv)/[0-9a-f]{24}", path or ""):
+            ref += "&wano_path=" + quote(path, safe="")
+        android += ("&" if "?" in android else "?") + "referrer=" + quote(ref, safe="")
     return ios, android
 
 
@@ -393,11 +404,11 @@ async def watch_page(video_id: str, request: Request):
 
     og = [
         ("og:site_name", "Wano"), ("og:url", m["url"]), ("og:title", m["title"]),
-        ("og:description", m["description"]), ("og:image", m["thumbnail"]),
-        ("og:image:secure_url", m["thumbnail"]),
+        ("og:description", m["description"]), ("og:image", m["preview"]),
+        ("og:image:secure_url", m["preview"]),
     ]
     tw = [("twitter:title", m["title"]), ("twitter:description", m["description"]),
-          ("twitter:image", m["thumbnail"])]
+          ("twitter:image", m["preview"])]
     if m["photo"]:
         og.append(("og:type", "website"))
         tw.insert(0, ("twitter:card", "summary_large_image"))
@@ -443,6 +454,25 @@ async def watch_page(video_id: str, request: Request):
     cache = "private, max-age=60" if m["unlisted"] else "public, max-age=300"
     return Response(body, media_type="text/html; charset=utf-8",
                     headers=_headers(cache=cache, noindex=m["unlisted"], frameable=False))
+
+
+@router.api_route("/og/{video_id}.jpg", methods=["GET", "HEAD"], include_in_schema=False)
+async def preview_picture(video_id: str):
+    """A video's link-preview picture with a play button (share_play switch)."""
+    from app.services import og_image
+    await _refresh_brand()
+    db = get_database()
+    video, creator = await _shareable(db, video_id)
+    if not video or _is_photo(video) or _young(creator) or not _PLAY["on"]:
+        return Response(status_code=404)
+    m = _meta(video, creator)
+    if not m["thumbnail"]:
+        return Response(status_code=404)
+    data = await og_image.picture(f'{m["id"]}:{m["thumbnail"]}', m["thumbnail"])
+    if not data:
+        return RedirectResponse(m["thumbnail"], status_code=302)
+    return Response(data, media_type="image/jpeg",
+                    headers={"Cache-Control": "public, max-age=86400", "X-Robots-Tag": "noindex"})
 
 
 @router.api_route("/embed/{video_id}", methods=["GET", "HEAD"], include_in_schema=False)

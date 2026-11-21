@@ -216,7 +216,8 @@ async def test_FY14_events_counted_per_city_with_reach(client, db):
     b, bh = await _viewer(db, city="gulu")
     for h in (ah, ah, bh):
         await client.post(f"{F}/event", json={"flyer_id": f["id"], "kind": "shown"}, headers=h)
-    await client.post(f"{F}/event", json={"flyer_id": f["id"], "kind": "tap"}, headers=ah)
+    for _ in range(5):                       # tapping again and again counts once a day
+        await client.post(f"{F}/event", json={"flyer_id": f["id"], "kind": "tap"}, headers=ah)
     _, adm = await _admin(db)
     rep = (await client.get(f"{A}/{f['id']}/report", headers=adm)).json()
     places = {p["place"]: p for p in rep["places"]}
@@ -240,7 +241,7 @@ async def test_FY15_events_cant_be_faked(client, db):
     assert (await client.post(f"{F}/event", json={"flyer_id": f["id"], "kind": "tap"})).status_code == 401
     counted = 0
     for _ in range(svc.EVENTS_PER_DAY + 10):
-        counted += (await client.post(f"{F}/event", json={"flyer_id": f["id"], "kind": "tap"}, headers=ug)).json()["counted"]
+        counted += (await client.post(f"{F}/event", json={"flyer_id": f["id"], "kind": "shown"}, headers=ug)).json()["counted"]
     assert counted == svc.EVENTS_PER_DAY
 
 

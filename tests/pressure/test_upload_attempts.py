@@ -146,3 +146,22 @@ async def test_UC1_upload_locked_only_the_video_editor_uploads_without_an_accoun
     assert await ask(f"stitched_{job}.mp4") == 401                  # a running job can't be farmed
     _, h = await make_user(db)
     assert await ask("cat.mp4", {**h, **ah}) == 200                 # signed in: never limited
+
+
+async def test_UC2_video_status_unknown_is_404_and_one_account_cant_spend_the_cloudflare_allowance(client, db, monkeypatch):
+    from tests.pressure.conftest import make_user
+    import app.routes.upload_video as uv
+    uv._status_hits.clear()
+
+    def fake(uid):
+        if uid.startswith("0"):
+            raise LookupError(uid)
+        return {"uid": uid, "readyToStream": True}
+    monkeypatch.setattr(uv, "get_stream_video_status", fake)
+    _, h = await make_user(db)
+    assert (await client.get("/video/" + "0" * 32, headers=h)).status_code == 404
+    codes = [(await client.get("/video/" + "a" * 32, headers=h)).status_code for _ in range(uv.STATUS_CHECKS_PER_MINUTE + 2)]
+    assert codes.count(429) >= 2 and codes[0] == 200
+    _, h2 = await make_user(db)
+    assert (await client.get("/video/" + "a" * 32, headers=h2)).status_code == 200
+    uv._status_hits.clear()

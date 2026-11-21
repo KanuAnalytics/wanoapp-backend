@@ -101,6 +101,19 @@ async def publish_post(video_id) -> bool:
     if not video:
         return False
 
+    # The creator deleted their account, was switched off or banned since
+    # scheduling it: it never goes live (deleting an account hides every post,
+    # and a scheduled one would otherwise come back on its own at its time).
+    creator = await db.users.find_one({"_id": video.get("creator_id")},
+                                      {"is_active": 1, "is_banned": 1, "deleted_at": 1})
+    if not creator or creator.get("is_active") is False or creator.get("is_banned") is True \
+            or creator.get("deleted_at"):
+        await db.videos.update_one({"_id": video["_id"], "status": PUBLISHING},
+                                   {"$set": {"status": CANCELLED, "is_active": False},
+                                    "$unset": {"claimed_at": ""}})
+        logger.info("Scheduled post %s cancelled: its creator is gone", video["_id"])
+        return False
+
     try:
         went_live = await _go_live(video, now)
     except Exception:

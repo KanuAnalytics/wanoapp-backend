@@ -566,6 +566,13 @@ async def perf_languages(days: int = Query(14, ge=1, le=90), admin: str = Depend
     return {"days": days, "rows": await perf.langs_report(get_database(), days)}
 
 
+@router.get("/perf/versions")
+async def perf_versions(days: int = Query(7, ge=1, le=90), admin: str = Depends(require_admin)):
+    """Speed per app version: does a new version buffer more than the one before?"""
+    from app.services import perf
+    return {"days": days, "rows": await perf.versions_report(get_database(), days)}
+
+
 @router.get("/perf")
 async def speed_report(days: int = Query(7, ge=1, le=90), admin: str = Depends(require_admin)):
     """How fast the app is on real phones, by country and connection."""
