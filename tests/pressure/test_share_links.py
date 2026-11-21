@@ -366,6 +366,7 @@ async def test_BL1_brand_links_pages_call_themselves_wanoafrica_and_old_links_mo
     assert r.status_code == 200
     assert f'og:url" content="https://wanoafrica.com/v/{vid}"' in r.text
     assert 'devbe' not in r.text.split("<body")[0]
+    assert f'rel="canonical" href="https://wanoafrica.com/pages/feed/{vid}"' in r.text
     r = await client.get(f"/u/{owner}", follow_redirects=False)
     assert r.headers["location"] == f"https://wanoafrica.com/u/{owner}"
     assert (await client.get("/app", follow_redirects=False)).headers["location"] == "https://wanoafrica.com/app"
@@ -382,3 +383,17 @@ async def test_BL2_switch_off_nothing_moves(client, db):
     vid = await make_video(db, owner)
     r = await client.get(f"/v/{vid}", follow_redirects=False)
     assert r.status_code == 200 and "https://wanoafrica.com/v/" not in r.text
+
+
+
+async def test_BL3_tv_share_goes_to_the_titles_own_page(client, db):
+    from app.routes import share as share_mod
+    share_mod._BRAND.update(on=False, at=0.0)
+    await db.config.insert_one({"features": {"brand_links": True}})
+    tid = (await db.tv_titles.insert_one({"title": "One Field", "slug": "one-field", "is_active": True})).inserted_id
+    r = await client.get(f"/tv/{tid}", params={"via": "site"}, follow_redirects=False)
+    assert r.status_code == 302 and r.headers["location"] == "https://wanoafrica.com/tv/one-field"
+    bare = (await db.tv_titles.insert_one({"title": "No Page", "is_active": True})).inserted_id
+    r = await client.get(f"/tv/{bare}", params={"via": "site"}, follow_redirects=False)
+    assert r.status_code == 200
+    share_mod._BRAND.update(on=False, at=0.0)

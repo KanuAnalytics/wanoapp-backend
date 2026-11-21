@@ -147,3 +147,18 @@ async def test_TC8_reading_my_setting(client, db):
     assert (await client.get(f"{C}me/teen-comments", headers=oh)).json()["who"] == "following"
     await client.put(f"{C}me/teen-comments", json={"who": "everyone"}, headers=oh)
     assert (await client.get(f"{C}me/teen-comments", headers=oh)).json()["who"] == "everyone"
+
+
+async def test_TC9_editing_a_swear_into_a_friends_comment_on_a_teen_post_hides_it(client, db):
+    await _on(db)
+    teen, th = await make_user(db, date_of_birth=_born(15))
+    vid = await make_video(db, teen)
+    friend, fh = await make_user(db)
+    await _follow(db, friend, teen)
+    await _follow(db, teen, friend)
+    cid = (await _post(client, fh, vid, "nice dance"))["_id"]
+    assert (await db.videos.find_one({"_id": ObjectId(vid)}))["comments_count"] == 1
+    r = await client.put(f"{C}{cid}", json={"content": "nice dance b1tch"}, headers=fh)
+    assert r.status_code == 200
+    assert await _held(db, cid) == "teen_word_filter"
+    assert (await db.videos.find_one({"_id": ObjectId(vid)}))["comments_count"] == 0

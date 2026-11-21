@@ -170,6 +170,10 @@ async def hold_reason(db, *, user: dict, video: dict, parent: Optional[dict], co
                       guard: bool = True, teen: bool = False) -> Optional[str]:
     """Why a new comment should be held, or None."""
     creator = video.get("creator_id")
+    # A reply under a comment nobody else can see stays with it: otherwise it
+    # would count on the post while sitting under something invisible.
+    if parent is not None and (parent.get("held") or parent.get("hidden") is True):
+        return "parent_hidden"
     if teen:
         owner = await db.users.find_one({"_id": creator}, {"date_of_birth": 1, "following": 1, "teen_comments": 1})
         why = await teen_reason(db, user=user, owner=owner, content=content)

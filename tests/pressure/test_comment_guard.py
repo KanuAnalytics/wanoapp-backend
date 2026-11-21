@@ -213,3 +213,14 @@ async def test_CG12_admin_keep_puts_the_count_back_once(client, db):
     for _ in range(2):                                   # a double tap in Admin
         await client.post(f"{C}admin/comment-reports/{c['_id']}", json={"action": "keep"}, headers=ah)
     assert await _count(db, vid) == 1
+
+
+async def test_CG13_replies_under_a_held_comment_stay_with_it(client, db):
+    await _on(db)
+    owner, _ = await make_user(db)
+    spammer, sh = await make_user(db)
+    vid = await make_video(db, owner)
+    held = await _post(client, sh, vid, "deals at scam.ug")
+    r = await _post(client, sh, vid, "reply to myself", parent=held["_id"])
+    assert await _count(db, vid) == 0
+    assert (await db.comments.find_one({"_id": ObjectId(r["_id"])}))["held"] == "parent_hidden"

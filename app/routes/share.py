@@ -225,6 +225,9 @@ def _meta(video: dict, creator: dict) -> dict:
         "player": None if photo else _player_url(host, uid),
         "unlisted": video.get("privacy") == "unlisted",
         "url": share_url(vid), "embed": f"{_base()}/embed/{vid}",
+        # One indexed page per video: the website's player page (it's the one
+        # its video sitemap lists), so this share page doesn't compete with it.
+        "canon": f"{SITE}/pages/feed/{vid}" if _BRAND["on"] else share_url(vid),
         "uploaded": _iso(video.get("published_at") or video.get("created_at")),
         "duration": None if photo else _iso_duration(video.get("duration")),
     }
@@ -413,7 +416,7 @@ async def watch_page(video_id: str, request: Request):
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{_e(m["title"])} · Wano</title>
 <meta name="description" content="{_e(m["description"])}">
-<link rel="canonical" href="{_e(m["url"])}">
+<link rel="canonical" href="{_e(m["canon"])}">
 {robots}
 {tags}
 {_smart_banner(m["url"])}
@@ -654,9 +657,14 @@ async def tv_page(title_id: str, request: Request):
         return _gone("title")
     db = get_database()
     t = await db.tv_titles.find_one({"_id": ObjectId(title_id), "is_active": True},
-                                    {"title": 1, "description": 1, "poster": 1, "backdrop": 1, "year": 1})
+                                    {"title": 1, "description": 1, "poster": 1, "backdrop": 1, "year": 1, "slug": 1})
     if not t:
         return _gone("title")
+    # brand_links: a title with a page on wanoafrica.com (trailer, cast, how to
+    # watch) goes there, rather than this thin share page duplicating it.
+    slug = t.get("slug")
+    if _BRAND["on"] and isinstance(slug, str) and re.fullmatch(r"[a-z0-9-]{1,80}", slug):
+        return RedirectResponse(f"{SITE}/tv/{slug}", status_code=302)
     tid = str(t["_id"])
     name = _clean(t.get("title"), _TITLE_MAX) or "Wano TV"
     desc = _clean(t.get("description"), _DESC_MAX) or f"Watch {name} on Wano TV"

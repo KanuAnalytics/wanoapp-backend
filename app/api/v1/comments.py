@@ -623,11 +623,25 @@ async def update_comment(
     }
 
     # comment_guard: editing a link into a liked comment (bait and switch)
-    # hides it from everyone else, like a new comment with a link.
-    if (await comment_guard.on(db) and not comment.get("held")
-            and comment_guard.has_link(comment_update.content)):
-        await comment_guard.hide(db, comment)
-        update_doc["held"] = "link"
+    # hides it from everyone else, like a new comment with a link; on a teen's
+    # post, so does editing in an offensive word (teen_comments).
+    if not comment.get("held"):
+        why = None
+        if await comment_guard.on(db) and comment_guard.has_link(comment_update.content):
+            why = "link"
+        elif await comment_guard.teen_on(db):
+            v = await db.videos.find_one({"_id": comment.get("video_id")}, {"creator_id": 1})
+            owner = await db.users.find_one({"_id": (v or {}).get("creator_id")},
+                                            {"date_of_birth": 1}) if v else None
+            if (owner and owner["_id"] != comment.get("user_id") and comment_guard._age(owner) is not None
+                    and comment_guard.has_blocked_word(comment_update.content,
+                                                      await comment_guard._blocked_words(db))):
+                why = "teen_word_filter"
+        if why:
+            await comment_guard.hide(db, comment)
+            update_doc["held"] = why
+            update_doc["held_at"] = datetime.utcnow()
+            update_doc["held_rule"] = comment_guard.TEEN_RULE if why.startswith("teen_") else "comment_guard:v1"
 
     await db.comments.update_one(
         {"_id": comment_oid, "is_active": True},
