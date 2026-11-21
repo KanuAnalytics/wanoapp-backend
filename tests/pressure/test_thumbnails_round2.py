@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import pytest
 from bson import ObjectId
 
-from tests.pressure.conftest import make_user, make_video
+from tests.pressure.conftest import make_user, make_video, time_limit
 from tests.pressure.test_for_you import ago, mix_on, rb  # noqa: F401
 from tests.pressure.test_thumbnails import CF, UID, _placeholder
 
@@ -52,4 +52,4 @@ async def test_TR4_backfill_in_batches(client, db, rb):
                                  for i in range(3000)])
     t = time.perf_counter()
     r = await thumbnails.backfill(db, apply=True)
-    assert r["fixed"] == 3000 and r["errors"] == 0 and time.perf_counter() - t < 30
+    assert r["fixed"] == 3000 and r["errors"] == 0 and time.perf_counter() - t < time_limit(30)

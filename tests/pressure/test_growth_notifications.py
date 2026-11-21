@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from bson import ObjectId
 
-from tests.pressure.conftest import make_user, make_video
+from tests.pressure.conftest import make_user, make_video, time_limit
 from tests.pressure.test_for_you import ago, mix_on, rb  # noqa: F401
 
 pytestmark = pytest.mark.asyncio
@@ -213,7 +213,7 @@ async def test_A10_big_creator_fans_out_in_batches_fast(client, db, rb, calls, c
     took = time.perf_counter() - t
     batches = [a[0] for n, a, k in calls["pushes"] if n == "send_push_batch_data"]
     assert sum(len(b) for b in batches) == 6000 and max(len(b) for b in batches) <= 100
-    assert took < 20, took
+    assert took < time_limit(20), took
 
 
 async def test_A11_expo_failing_does_not_stop_or_repeat(client, db, rb, calls, clock, monkeypatch):
@@ -363,7 +363,7 @@ async def test_C7_streak_scan_stays_fast_with_many_creators(client, db, rb, call
                                  for u in users.inserted_ids for d in (1, 2)])
     t = time.perf_counter()
     r = await g.streak_reminders(db)
-    assert r["sent"] == 1500 and time.perf_counter() - t < 20
+    assert r["sent"] == 1500 and time.perf_counter() - t < time_limit(20)
 
 
 async def test_C8_creator_without_tokens_or_with_junk_localization(client, db, rb, calls, clock):

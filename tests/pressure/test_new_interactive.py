@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from bson import ObjectId
 
-from tests.pressure.conftest import make_user, make_video
+from tests.pressure.conftest import make_user, make_video, time_limit
 from tests.pressure.test_for_you import ago, mix_on, rb  # noqa: F401
 from tests.pressure.test_new_feed import _ids, _spread
 
@@ -79,7 +79,7 @@ async def test_I3_count_is_capped_and_fast_with_a_flood(client, db):
                                   "remoteUrl_CF": "x"} for i in range(5000)])
     t = time.perf_counter()
     body, _ = await _ok(client, top)
-    assert time.perf_counter() - t < 2
+    assert time.perf_counter() - t < time_limit(2)
     assert body["count"] == 99 and body["more"] is True and len(body["creators"]) == 3
 
 
@@ -166,7 +166,7 @@ async def test_I10_polling_storm_is_cheap_and_writes_nothing(client, db):
     for i in range(300):
         r = await _count(client, top, h if i % 2 else None)
         assert r.status_code == 200
-    assert time.perf_counter() - t < 15
+    assert time.perf_counter() - t < time_limit(15)
     after = {n: await db[n].count_documents({}) for n in before}
     assert before == after
 

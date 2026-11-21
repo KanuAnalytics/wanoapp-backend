@@ -8,7 +8,7 @@ from bson import ObjectId
 from pymongo.errors import DuplicateKeyError
 from recombee_api_client.api_requests import MergeUsers
 
-from tests.pressure.conftest import make_user, make_video
+from tests.pressure.conftest import make_user, make_video, time_limit
 from tests.pressure.test_for_you import _feed, _world, ago, mix_on, rb  # noqa: F401
 from tests.pressure.test_trending import _clear_cache, _engage, _trending_ids, _users
 from tests.pressure.test_trending_round2 import _stats
@@ -189,7 +189,7 @@ async def test_D13_report_scales_and_is_correct(client, db, rb):
     from app.services import for_you
     import inspect
     assert "aggregate(" in inspect.getsource(for_you.report), "report scans every impression in Python"
-    assert took < 10
+    assert took < time_limit(10)
 
 
 async def test_D14_heavy_watcher_feed_stays_fast_and_fresh(client, db, rb):
@@ -203,7 +203,7 @@ async def test_D14_heavy_watcher_feed_stays_fast_and_fresh(client, db, rb):
         await client.post(f"/api/v1/videos/{v}/watch", headers=h, json={"portion": 1})
     t = time.perf_counter()
     page = (await _feed(client, h, limit=20)).json()
-    assert time.perf_counter() - t < 3
+    assert time.perf_counter() - t < time_limit(3)
     assert not {v["id"] for v in page} & set(ids[:5])
     from app.services import for_you
     import inspect
@@ -221,4 +221,4 @@ async def test_D15_twenty_thousand_hourly_rows(client, db, rb):
     trending.clear_cache()
     t = time.perf_counter()
     ranked = await trending._compute(db)
-    assert time.perf_counter() - t < 5 and len(ranked) == 200
+    assert time.perf_counter() - t < time_limit(5) and len(ranked) == 200

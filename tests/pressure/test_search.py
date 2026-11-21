@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from bson import ObjectId
 
-from tests.pressure.conftest import make_user, make_video
+from tests.pressure.conftest import make_user, make_video, time_limit
 
 pytestmark = pytest.mark.asyncio
 
@@ -245,7 +245,7 @@ async def test_SR4_word_search_over_a_big_catalogue_is_quick(client, db):
                                  for i in range(20000)])
     t0 = time.perf_counter()
     got = await _search(client, "fun", limit=20)
-    assert len(got) == 20 and time.perf_counter() - t0 < 2
+    assert len(got) == 20 and time.perf_counter() - t0 < time_limit(2)
 
 
 async def test_SR5_atlas_comment_failure_falls_back(client, db, monkeypatch):

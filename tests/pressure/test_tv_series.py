@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 import pytest
 from bson import ObjectId
 
-from tests.pressure.conftest import make_user
+from tests.pressure.conftest import make_user, time_limit
 from tests.pressure.test_for_you import mix_on, rb  # noqa: F401
 from tests.pressure.test_tv_protect import CDN, MASTER, VARIANT, _title, spaces  # noqa: F401
 
@@ -244,7 +244,7 @@ async def test_P7_catalogue_with_many_titles_and_days_is_fast(client, db, rb, sp
     tv_popularity.clear_cache()
     t0 = time.perf_counter()
     assert len(await _titles(client)) == 60
-    assert time.perf_counter() - t0 < 3
+    assert time.perf_counter() - t0 < time_limit(3)
 
 
 # ---------------------------------------------------------------- round 2

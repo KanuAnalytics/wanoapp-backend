@@ -160,28 +160,22 @@ async def upload_video(
             pass
 
 
-ANON_UPLOADS_PER_IP_HOUR = 60
-ANON_UPLOADS_PER_DAY = 1500
+_STITCHED_NAME = re.compile(r"^stitched_([0-9a-f]{24})\.mp4$")
+UPLOADS_PER_STITCH_JOB = 3      # the Lambda's one upload, plus room for a retry
 
 
-async def _anon_upload_ok(request: Request) -> bool:
-    """The "upload_cap" switch: upload addresses handed out without an account
-    are budgeted per network an hour and in total a day (each one can store a
-    video on our Cloudflare account)."""
-    from datetime import datetime, timezone
-    from app.api.v1.auth import _request_ip, _take_from_budget
-    from app.services import creator_push
-    db = get_database()
-    if not await creator_push.on(db, "upload_cap"):
-        return True
-    now = datetime.now(timezone.utc)
-    ip = _request_ip(request)
-    if ip and not await _take_from_budget(db, f"upip:{ip}:{now:%Y%m%d%H}", ANON_UPLOADS_PER_IP_HOUR):
-        return False
-    if not await _take_from_budget(db, f"up:{now:%Y%m%d}", ANON_UPLOADS_PER_DAY):
-        logger.warning("Anonymous upload budget for today is used up")
-        return False
-    return True
+async def _editor_job(filename: str) -> Optional[ObjectId]:
+    """The editVideo Lambda uploads the stitched video under the name the server
+    gave it, stitched_<job id>.mp4, while that job is processing. Each running
+    job may get a few upload addresses; anything else is not the Lambda."""
+    m = _STITCHED_NAME.match(filename or "")
+    if not m:
+        return None
+    job = await get_database().pending_videos.find_one_and_update(
+        {"_id": ObjectId(m.group(1)), "status": "processing",
+         "$or": [{"upload_addresses": {"$exists": False}}, {"upload_addresses": {"$lt": UPLOADS_PER_STITCH_JOB}}]},
+        {"$inc": {"upload_addresses": 1}}, projection={"_id": 1})
+    return job["_id"] if job else None
 
 
 @router.post("/v2/presigned-upload")
@@ -194,8 +188,14 @@ async def get_presigned_upload_url_v2(
     Get a Cloudflare Stream TUS upload URL. Called by the app (user token) and
     by the editVideo Lambda (no credentials).
     """
-    if uploader == "anonymous" and not await _anon_upload_ok(request):
-        raise HTTPException(status_code=429, detail="Too many uploads. Please sign in and try again.")
+    editor_job = None
+    if uploader == "anonymous":
+        # The "upload_locked" switch: without an account, only the video
+        # editor (a running stitch job) gets an upload address.
+        from app.services import creator_push
+        editor_job = await _editor_job(payload.filename)
+        if editor_job is None and await creator_push.on(get_database(), "upload_locked"):
+            raise HTTPException(status_code=401, detail="Please sign in to upload.")
     try:
         result = await asyncio.to_thread(
             generate_cf_tus_upload_url,
@@ -205,7 +205,8 @@ async def get_presigned_upload_url_v2(
         )
         from app.services import upload_attempts
         await upload_attempts.note_address(get_database(), result.get("stream_uid"), uploader, payload.fileSize,
-                                           payload.folder, request.headers.get("user-agent"))
+                                           payload.folder, request.headers.get("user-agent"),
+                                           anonymous=uploader == "anonymous", editor=editor_job is not None)
         return {
             "status": 200,
             "message": "Pre-signed upload URL generated successfully",

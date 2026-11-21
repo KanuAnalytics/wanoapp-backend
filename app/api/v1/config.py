@@ -68,7 +68,7 @@ APP_FEATURES = ("points", "boost", "earnings", "replies", "challenges", "sounds"
                 "recombee_fast", "recombee_tune", "recombee_eu",
                 "lean_preload", "loop_cap", "data_saver", "fast_start", "quick_replies",
                 "tv_age_gate", "tv_loves", "tv_coming_soon", "tv_clips", "tv_downloads", "tv_pip", "tv_player_plus",
-                "comment_guard", "challenge_fair", "teen_comments", "comment_plus", "brand_links", "reaction_country", "upload_cap")
+                "comment_guard", "challenge_fair", "teen_comments", "comment_plus", "brand_links", "reaction_country", "upload_locked")
 
 
 @router.get("/features")

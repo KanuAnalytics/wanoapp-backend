@@ -135,6 +135,28 @@ async def _take_budget(db, user: dict, now: datetime, field: str, limit: int) ->
         return False     # duplicate key: the day's doc exists and is at the limit
 
 
+async def _take_budgets(db, users: List[dict], now: datetime, field: str, limit: int) -> List[dict]:
+    """_take_budget for a whole batch in one database call: each user's count
+    still only moves if it is under the limit (a user already at the limit
+    fails as a duplicate key and is left out). Returns the users who got one."""
+    from pymongo import UpdateOne
+    from pymongo.errors import BulkWriteError
+    if not users:
+        return []
+    ops = [UpdateOne({"_id": _day_key(u, now), "$or": [{field: {"$lt": limit}}, {field: {"$exists": False}}]},
+                     {"$inc": {field: 1}, "$setOnInsert": {"user_id": u["_id"], "at": _naive(now)}}, upsert=True)
+           for u in users]
+    failed = set()
+    try:
+        await db.notif_daily.bulk_write(ops, ordered=False)
+    except BulkWriteError as e:
+        failed = {w.get("index") for w in (e.details or {}).get("writeErrors", [])}
+    except Exception:
+        logger.exception("Daily caps could not be read")
+        return []
+    return [u for i, u in enumerate(users) if i not in failed]
+
+
 async def _send_batch(messages: List[dict]) -> bool:
     from app.services import expo
     try:
@@ -221,9 +243,9 @@ async def _fan_out(db, post: dict, creator: dict, now: datetime) -> int:
         keys = {_day_key(u, now): u for u in users}
         full = {d["_id"] async for d in db.notif_daily.find(
             {"_id": {"$in": list(keys)}, "new_posts": {"$gte": NEW_POSTS_PER_DAY}}, {"_id": 1})}
-        for key, u in keys.items():
-            if key in full or not await _take_budget(db, u, now, "new_posts", NEW_POSTS_PER_DAY):
-                continue
+        allowed = await _take_budgets(db, [u for key, u in keys.items() if key not in full],
+                                      now, "new_posts", NEW_POSTS_PER_DAY)
+        for u in allowed:
             for t in _tokens(u):
                 pending.append({"to": t, "title": title, "body": body, "data": data, "sound": "default"})
             sent += 1

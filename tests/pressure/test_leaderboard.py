@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from bson import ObjectId
 
-from tests.pressure.conftest import REAL_MONGO, make_user, make_video
+from tests.pressure.conftest import REAL_MONGO, make_user, make_video, time_limit
 from tests.pressure.test_growth_notifications import _sent
 
 pytestmark = pytest.mark.asyncio
@@ -132,7 +132,7 @@ async def test_L8_big_week_is_quick(client, db, clock):
                                          "views": i % 97, "likes": d} for i, u in enumerate(ids) for d in range(3)])
     t0 = time.perf_counter()
     out = await _board(client, limit=50)
-    assert len(out["entries"]) == 50 and time.perf_counter() - t0 < 3
+    assert len(out["entries"]) == 50 and time.perf_counter() - t0 < time_limit(3)
 
 
 # ---------------------------------------------------------------- badges

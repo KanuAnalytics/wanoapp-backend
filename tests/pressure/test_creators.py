@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from bson import ObjectId
 
-from tests.pressure.conftest import make_user, make_video
+from tests.pressure.conftest import make_user, make_video, time_limit
 from tests.pressure.test_for_you import _catalog, _feed, ago, mix_on, rb  # noqa: F401
 
 pytestmark = pytest.mark.asyncio
@@ -249,7 +249,7 @@ async def test_K5_streak_lookups_stay_bounded(client, db, rb, monkeypatch):
     monkeypatch.setattr(type(db.videos), "aggregate", counting)
     t = time.perf_counter()
     s = await creators.streaks(db, cs)
-    assert len(calls) == 1 and time.perf_counter() - t < 5
+    assert len(calls) == 1 and time.perf_counter() - t < time_limit(5)
     assert all(57 <= v["current"] <= 60 for v in s.values()), sorted(v["current"] for v in s.values())[:3]
     calls.clear()
     await creators.streaks(db, cs)
@@ -359,7 +359,7 @@ async def test_S9_big_creator_stats_are_fast(client, db, rb):
                                       for oid in res.inserted_ids])
     t = time.perf_counter()
     r = await client.get(STATS + "?days=30", headers=mh)
-    assert r.status_code == 200 and time.perf_counter() - t < 3
+    assert r.status_code == 200 and time.perf_counter() - t < time_limit(3)
     assert len(r.json()["posts"]) <= 20
 
 

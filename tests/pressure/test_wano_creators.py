@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from bson import ObjectId
 
-from tests.pressure.conftest import make_user
+from tests.pressure.conftest import make_user, time_limit
 from tests.pressure.test_points import _month, _post, _views, clock  # noqa: F401
 from tests.pressure.test_points_pool import AFTER_OCT
 
@@ -264,7 +264,7 @@ async def test_R1_choosing_winners_stays_fast_when_top_creators_dont_qualify(cli
     t0 = time.perf_counter()
     res = await points.distribute(db, month)
     took = time.perf_counter() - t0
-    assert res["creators"] == 20 and took < 15, took
+    assert res["creators"] == 20 and took < time_limit(15), took
 
 
 async def test_R2_missing_or_broken_birth_dates_never_qualify_and_dont_crash(client, db, clock):

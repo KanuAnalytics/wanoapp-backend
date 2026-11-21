@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from bson import ObjectId
 
-from tests.pressure.conftest import make_user, make_video
+from tests.pressure.conftest import make_user, make_video, time_limit
 from tests.pressure.test_for_you import ago, mix_on, rb  # noqa: F401
 from tests.pressure.test_new_feed import _ids, _new, _spread
 
@@ -125,7 +125,7 @@ async def test_M10_ten_thousand_posts_page_fast(client, db):
                                  for i in range(10000)])
     t = time.perf_counter()
     seen, pages = await _walk(client, pages=5)
-    assert time.perf_counter() - t < 5 and len(seen) == 50 and len(set(seen)) == 50
+    assert time.perf_counter() - t < time_limit(5) and len(seen) == 50 and len(set(seen)) == 50
 
 
 async def test_M11_old_skip_app_pages_exactly_with_the_daily_cap(client, db):

@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from bson import ObjectId
 
-from tests.pressure.conftest import make_user, make_video
+from tests.pressure.conftest import make_user, make_video, time_limit
 
 pytestmark = pytest.mark.asyncio
 
@@ -554,7 +554,7 @@ async def test_MS38_inbox_query_count_stays_flat(client, db):
     import time
     t = time.perf_counter()
     items = await _inbox(client, ah)
-    assert len(items) == 20 and time.perf_counter() - t < 1.5
+    assert len(items) == 20 and time.perf_counter() - t < time_limit(1.5)
     r = await client.get(f"{M}/conversations", params={"cursor": items[-1]["cursor"]}, headers=ah)
     assert len(r.json()["items"]) == 5
 

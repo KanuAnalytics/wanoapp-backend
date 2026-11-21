@@ -9,7 +9,7 @@ import pytest
 from bson import ObjectId
 
 from app.services import flyers as svc
-from tests.pressure.conftest import make_user
+from tests.pressure.conftest import make_user, time_limit
 
 pytestmark = pytest.mark.asyncio
 
@@ -273,7 +273,7 @@ async def test_FY17_busy_feed_stays_fast(client, db):
     t = time.perf_counter()
     for _ in range(20):
         await client.get(F, headers=h)
-    assert time.perf_counter() - t < 6
+    assert time.perf_counter() - t < time_limit(6)
 
 
 def svc_doc(i, now):

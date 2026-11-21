@@ -60,7 +60,8 @@ def _oid(user) -> Optional[ObjectId]:
     return ObjectId(user) if isinstance(user, str) and ObjectId.is_valid(user) else None
 
 
-async def note_address(db, uid: Optional[str], user, size: int, folder: Optional[str], user_agent: Optional[str]):
+async def note_address(db, uid: Optional[str], user, size: int, folder: Optional[str], user_agent: Optional[str],
+                       anonymous: bool = False, editor: bool = False):
     if not uid:
         return
     try:
@@ -68,7 +69,8 @@ async def note_address(db, uid: Optional[str], user, size: int, folder: Optional
         await db.upload_attempts.update_one(
             {"_id": uid},
             {"$setOnInsert": {"user": _oid(user), "at": datetime.utcnow(), "size": int(size or 0),
-                              "folder": (folder or "videos")[:20], "platform": platform(user_agent)}},
+                              "folder": (folder or "videos")[:20], "platform": platform(user_agent),
+                              **({"anonymous": True, "editor": editor} if anonymous else {})}},
             upsert=True)
     except Exception:
         logger.warning("upload attempt not noted", exc_info=True)
@@ -134,4 +136,11 @@ async def summary(db, days: int = 7, now: Optional[datetime] = None) -> dict:
         reasons[key] = reasons.get(key, 0) + 1
     out["refusal_reasons"] = [{"reason": k, "count": n} for k, n in sorted(reasons.items(), key=lambda x: -x[1])[:15]]
     out["refusals"] = len(refusals)
+    # Upload addresses handed out without an account: the video editor's
+    # (matched to a running stitch job) and anyone else's. "Others" must be 0
+    # before the upload_locked switch goes on.
+    anon = await db.upload_attempts.find({"at": {"$gte": since}, "anonymous": True},
+                                         {"editor": 1}).to_list(20000)
+    out["without_account"] = {"video_editor": sum(1 for a in anon if a.get("editor")),
+                              "others": sum(1 for a in anon if not a.get("editor"))}
     return out

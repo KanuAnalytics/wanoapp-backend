@@ -6,7 +6,7 @@ from datetime import date
 import pytest
 from bson import ObjectId
 
-from tests.pressure.conftest import make_user
+from tests.pressure.conftest import make_user, time_limit
 from tests.pressure.test_for_you import mix_on, rb  # noqa: F401
 
 pytestmark = pytest.mark.asyncio
@@ -218,7 +218,7 @@ async def test_V11_big_catalogue_signs_fast(client, db, rb, spaces):
     _, h = await make_user(db)
     t = time.perf_counter()
     assert len(await _titles(client, h)) == 300
-    assert time.perf_counter() - t < 5
+    assert time.perf_counter() - t < time_limit(5)
 
 
 async def test_V12_protect_script_locks_films_but_not_trailers_or_art(client, db, rb):

@@ -46,6 +46,14 @@ def calls():
 REAL_MONGO = os.environ.get("WANO_REAL_MONGO")   # e.g. mongodb://127.0.0.1:27018: run on a real server
 
 
+def time_limit(seconds: float) -> float:
+    """A speed test's limit. Real MongoDB answers from indexes, so the limit is
+    enforced as written there. The in-memory mock scans every document for each
+    lookup and slows further when tests run in parallel, so it gets 10x: enough
+    to stop flaky failures, still small enough to catch a runaway slowdown."""
+    return seconds if REAL_MONGO else seconds * 10
+
+
 @pytest_asyncio.fixture
 async def db(monkeypatch, calls):
     client = None

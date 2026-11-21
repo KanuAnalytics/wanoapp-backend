@@ -119,18 +119,30 @@ async def test_UA6_summary_sorts_why_attempts_stopped(client, db):
     assert s["size_mb"]["posted"] in (9.0, 30.0) and s["size_mb"]["not_posted"] == 30.0
 
 
-async def test_UC1_upload_cap_limits_only_accountless_upload_addresses(client, db):
+async def test_UC1_upload_locked_only_the_video_editor_uploads_without_an_account(client, db):
+    from bson import ObjectId
     from tests.pressure.conftest import make_user
-    import app.routes.upload_video as uv
-    body = {"filename": "v.mp4", "fileSize": 20_000_000}
-    net = {"X-Forwarded-For": "7.7.7.7"}
-    for _ in range(3):                                     # switch off: unlimited, as today
-        assert (await client.post("/video/v2/presigned-upload", headers=net, json=body)).status_code == 200
-    await db.config.insert_one({"features": {"upload_cap": True}})
-    codes = [(await client.post("/video/v2/presigned-upload", headers=net, json=body)).status_code
-             for _ in range(uv.ANON_UPLOADS_PER_IP_HOUR + 3)]
-    assert codes.count(200) == uv.ANON_UPLOADS_PER_IP_HOUR and codes[-1] == 429
+    ah = {"X-Forwarded-For": "7.7.7.7"}
+    job = (await db.pending_videos.insert_one({"status": "processing"})).inserted_id
+    done = (await db.pending_videos.insert_one({"status": "completed"})).inserted_id
+
+    async def ask(name, h=ah):
+        return (await client.post("/video/v2/presigned-upload", headers=h,
+                                  json={"filename": name, "fileSize": 20_000_000})).status_code
+
+    # switch off: open as today, but each accountless address is noted (editor or not)
+    assert await ask("cat.mp4") == 200
+    assert await ask(f"stitched_{job}.mp4") == 200
+    _, admin_h = await make_user(db, user_type="admin")
+    s = (await client.get("/api/v1/admin/upload-attempts?days=7", headers=admin_h)).json()
+    assert s["without_account"] == {"video_editor": 1, "others": 1}
+
+    await db.config.insert_one({"features": {"upload_locked": True}})
+    assert await ask("cat.mp4") == 401                              # a stranger
+    assert await ask(f"stitched_{done}.mp4") == 401                 # a finished job
+    assert await ask(f"stitched_{ObjectId()}.mp4") == 401           # a made-up job
+    assert await ask(f"stitched_{job}.mp4") == 200                  # the editor, a retry
+    assert await ask(f"stitched_{job}.mp4") == 200
+    assert await ask(f"stitched_{job}.mp4") == 401                  # a running job can't be farmed
     _, h = await make_user(db)
-    assert (await client.post("/video/v2/presigned-upload", headers={**h, **net}, json=body)).status_code == 200
-    assert (await client.post("/video/v2/presigned-upload", headers={"X-Forwarded-For": "8.8.8.8"},
-                              json=body)).status_code == 200
+    assert await ask("cat.mp4", {**h, **ah}) == 200                 # signed in: never limited

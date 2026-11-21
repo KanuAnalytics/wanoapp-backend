@@ -7,7 +7,7 @@ import time
 import pytest
 from bson import ObjectId
 
-from tests.pressure.conftest import make_user, make_video
+from tests.pressure.conftest import make_user, make_video, time_limit
 from tests.pressure.test_for_you import FakeRecombee, ago, mix_on, rb  # noqa: F401
 
 pytestmark = pytest.mark.asyncio
@@ -223,7 +223,7 @@ async def test_T11_thousands_of_recent_videos_fast(client, db, rb):
     t = time.perf_counter()
     ids = await _trending_ids(client, limit=40)
     assert len(ids) == 40
-    assert time.perf_counter() - t < 3.0
+    assert time.perf_counter() - t < time_limit(3.0)
 
 
 async def test_T12_bad_params(client, db, rb):

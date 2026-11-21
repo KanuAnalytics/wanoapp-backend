@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from bson import ObjectId
 
-from tests.pressure.conftest import make_user, make_video
+from tests.pressure.conftest import make_user, make_video, time_limit
 from tests.pressure.test_for_you import mix_on, rb  # noqa: F401
 from tests.pressure.test_growth_notifications import _sent
 
@@ -191,7 +191,7 @@ async def test_R3_many_creators_stay_fast(client, db, rb, calls, clock):
                                  for u in users.inserted_ids for k in range(3)])
     t = time.perf_counter()
     r = await _run(db)
-    assert r["weekly"] == 1500 and time.perf_counter() - t < 20
+    assert r["weekly"] == 1500 and time.perf_counter() - t < time_limit(20)
 
 
 async def test_R4_junk_documents(client, db, rb, calls, clock):

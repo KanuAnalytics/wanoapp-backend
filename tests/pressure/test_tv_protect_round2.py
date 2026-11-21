@@ -6,7 +6,7 @@ import time
 import pytest
 from bson import ObjectId
 
-from tests.pressure.conftest import make_user
+from tests.pressure.conftest import make_user, time_limit
 from tests.pressure.test_for_you import mix_on, rb  # noqa: F401
 from tests.pressure.test_tv_protect import CDN, FakeSpaces, _title, spaces  # noqa: F401
 
@@ -62,7 +62,7 @@ async def test_VR4_two_hour_film_playlist_rewrites_fast(client, db, rb, spaces):
     token = tv_stream.sign(a, "u", int(time.time()) + 100)
     t = time.perf_counter()
     r = await client.get(f"/api/v1/tv/stream/{token}/1080p/index.m3u8")
-    assert r.status_code == 200 and time.perf_counter() - t < 2
+    assert r.status_code == 200 and time.perf_counter() - t < time_limit(2)
     assert r.text.count("https://signed.example/") == 1500 and r.text.rstrip().endswith("#EXT-X-ENDLIST")
 
 

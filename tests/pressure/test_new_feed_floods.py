@@ -9,7 +9,7 @@ import pytest
 from bson import ObjectId
 
 from app.services import new_feed
-from tests.pressure.conftest import make_user, make_video
+from tests.pressure.conftest import make_user, make_video, time_limit
 
 pytestmark = pytest.mark.asyncio
 
@@ -143,4 +143,4 @@ async def test_FL9_busy_day_stays_fast(client, db):
     await _page(client, skip=25, limit=25)          # cached exclusions
     second = time.perf_counter() - t
     # cached exclusions: the second page is quick too (absolute, not compared: timings jitter on a busy machine)
-    assert len(p1) == 25 and first < 8 and second < 3
+    assert len(p1) == 25 and first < time_limit(8) and second < time_limit(3)

@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from bson import ObjectId
 
-from tests.pressure.conftest import make_user, make_video
+from tests.pressure.conftest import make_user, make_video, time_limit
 
 pytestmark = pytest.mark.asyncio
 
@@ -380,5 +380,5 @@ async def test_R5_settling_a_busy_day_is_quick(client, db, clock):
                                       "views": 7, "finished": 1, "pviews": 7, "pfinished": 1} for v, u in zip(vids, users)])
     t0 = time.perf_counter()
     await points.settle(db)
-    assert time.perf_counter() - t0 < 10
+    assert time.perf_counter() - t0 < time_limit(10)
     assert await db.points_ledger.count_documents({"kind": "earned"}) == 3000

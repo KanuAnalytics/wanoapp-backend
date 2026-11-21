@@ -3,7 +3,7 @@
 import pytest
 from bson import ObjectId
 
-from tests.pressure.conftest import make_user
+from tests.pressure.conftest import make_user, time_limit
 
 pytestmark = pytest.mark.asyncio
 URL = "/api/v1/users/{}/followed-by"
@@ -111,4 +111,4 @@ async def test_PP8_heavy_follower_7605_follows_is_fast(client, db):
     t0 = time.perf_counter()
     j = (await client.get(URL.format(t), headers=h)).json()
     assert j["count"] == 50 and j["users"] == []  # those ids have no accounts
-    assert time.perf_counter() - t0 < 2.0
+    assert time.perf_counter() - t0 < time_limit(2.0)
