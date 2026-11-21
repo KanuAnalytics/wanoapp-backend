@@ -316,7 +316,22 @@ async def my_total(db, video: dict, viewer: Optional[dict]) -> int:
     comments (so a held comment never shows up as a missing number)."""
     n = video.get("comments_count") if isinstance(video.get("comments_count"), int) else 0
     if viewer:
+        # Held ones never counted and hidden ones were taken off; the author still
+        # sees both, so both go back into their own number.
         n += await db.comments.count_documents({"video_id": video["_id"], "user_id": viewer["_id"],
-                                                "is_active": True, "held": {"$exists": True},
-                                                "hidden": {"$ne": True}})
+                                                "is_active": True,
+                                                "$or": [{"held": {"$exists": True}}, {"hidden": True}]})
     return max(0, n)
+
+
+async def my_reply_counts(db, parent_ids: List[ObjectId], viewer_id) -> dict:
+    """The viewer's own held or hidden replies under each of these comments.
+    They never counted in replies_count, so without this the author would see
+    "0 replies" under a comment that has their reply, and couldn't open it."""
+    if not viewer_id or not parent_ids:
+        return {}
+    rows = await db.comments.aggregate([
+        {"$match": {"parent_id": {"$in": parent_ids}, "user_id": viewer_id, "is_active": True,
+                    "$or": [{"held": {"$exists": True}}, {"hidden": True}]}},
+        {"$group": {"_id": "$parent_id", "n": {"$sum": 1}}}]).to_list(None)
+    return {r["_id"]: r["n"] for r in rows}

@@ -531,10 +531,12 @@ async def get_video_comments(
         ]).skip(skip).limit(limit).to_list(length=limit)
         users = await _users_by_id(db, docs)
     viewer = ObjectId(current_user) if current_user else None
+    mine_under = await comment_guard.my_reply_counts(db, [d["_id"] for d in docs], viewer)
     comments = []
     for comment in docs:
         comments.append(CommentResponse(**{
             **comment,
+            "replies_count": int(comment.get("replies_count") or 0) + mine_under.get(comment["_id"], 0),
             "_id": str(comment["_id"]),
             "video_id": str(comment["video_id"]),
             **_live_user_fields(users.get(comment.get("user_id"))),
@@ -569,10 +571,12 @@ async def get_comment_replies(
 
     users = await _users_by_id(db, docs)
     viewer = ObjectId(current_user) if current_user else None
+    mine_under = await comment_guard.my_reply_counts(db, [d["_id"] for d in docs], viewer)
     replies = []
     for reply in docs:
         replies.append(CommentResponse(**{
             **reply,
+            "replies_count": int(reply.get("replies_count") or 0) + mine_under.get(reply["_id"], 0),
             "_id": str(reply["_id"]),
             "video_id": str(reply["video_id"]),
             "user_id": str(reply["user_id"]),
@@ -787,7 +791,15 @@ async def admin_comment_report_action(comment_id: str, body: ReportAction, admin
     if body.action == "hide":
         await comment_guard.hide(db, comment)
     else:
-        await db.comments.update_one({"_id": oid}, {"$set": {"hidden": False, "reports_kept": True}})
+        # Kept: visible again, and back on the counts it was taken off (once).
+        res = await db.comments.update_one({"_id": oid, "hidden": True},
+                                           {"$set": {"hidden": False, "reports_kept": True}})
+        if res.modified_count and not comment.get("held") and comment.get("is_active", True):
+            await db.videos.update_one({"_id": comment.get("video_id")}, {"$inc": {"comments_count": 1}})
+            if comment.get("parent_id"):
+                await db.comments.update_one({"_id": comment["parent_id"]}, {"$inc": {"replies_count": 1}})
+        else:
+            await db.comments.update_one({"_id": oid}, {"$set": {"reports_kept": True}})
     await db.comment_reports.update_many({"comment_id": oid, "status": "open"},
                                          {"$set": {"status": body.action, "closed_by": ObjectId(admin),
                                                    "closed_at": datetime.utcnow()}})

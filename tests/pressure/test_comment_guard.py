@@ -197,3 +197,19 @@ async def test_CG11_creator_answering_fans_on_own_post_is_not_slowed(client, db)
         await _post(client, oh, vid, f"thank you {i}")
     assert await db.comments.count_documents({"held": {"$exists": True}}) == 0
     assert await _count(db, vid) == 25
+
+
+async def test_CG12_admin_keep_puts_the_count_back_once(client, db):
+    await _on(db)
+    owner, _ = await make_user(db)
+    admin, ah = await make_user(db, user_type="admin")
+    fan, fh = await make_user(db)
+    vid = await make_video(db, owner)
+    c = await _post(client, fh, vid, "fine comment")
+    for _ in range(3):
+        _, rh = await make_user(db, created_at=OLD)
+        await client.post(f"{C}{c['_id']}/report", json={"reason": "spam"}, headers=rh)
+    assert await _count(db, vid) == 0
+    for _ in range(2):                                   # a double tap in Admin
+        await client.post(f"{C}admin/comment-reports/{c['_id']}", json={"action": "keep"}, headers=ah)
+    assert await _count(db, vid) == 1

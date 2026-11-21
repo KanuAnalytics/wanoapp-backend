@@ -108,3 +108,33 @@ async def test_CPL5_focus_from_a_notification_puts_that_comment_first_only_if_vi
     assert r.json()[0]["content"] == "first"
     r = await client.get(f"{C}video/{vid}", params={"focus": held}, headers=oh)
     assert all(c["content"] != "promo deals.ug" for c in r.json())
+
+
+async def test_CPL6_my_held_reply_is_counted_for_me_so_i_can_open_it(client, db):
+    await _on(db)
+    owner, oh = await make_user(db)
+    fan, fh = await make_user(db)
+    vid = await make_video(db, owner)
+    parent = await _post(client, oh, vid, "thanks for watching")
+    r = await client.post(C, json={"video_id": vid, "content": "deals at scam.ug", "parent_id": parent}, headers=fh)
+    assert r.status_code == 200
+    mine = (await client.get(f"{C}video/{vid}", headers=fh)).json()[0]
+    theirs = (await client.get(f"{C}video/{vid}", headers=oh)).json()[0]
+    assert mine["replies_count"] == 1 and theirs["replies_count"] == 0
+    reps = (await client.get(f"{C}{parent}/replies", headers=fh)).json()
+    assert [x["content"] for x in reps] == ["deals at scam.ug"]
+
+
+async def test_CPL7_a_comment_hidden_by_reports_still_counts_for_its_author(client, db):
+    await _on(db)
+    owner, oh = await make_user(db)
+    fan, fh = await make_user(db)
+    vid = await make_video(db, owner)
+    c = await _post(client, fh, vid, "my honest take")
+    for _ in range(3):
+        _, rh = await make_user(db, created_at=OLD)
+        await client.post(f"{C}{c}/report", json={"reason": "spam"}, headers=rh)
+    _, r = await _texts(client, vid, fh)
+    assert r.headers["X-Comments-Total"] == "1"
+    _, r = await _texts(client, vid, oh)
+    assert r.headers["X-Comments-Total"] == "0"
