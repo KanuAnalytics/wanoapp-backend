@@ -58,8 +58,40 @@ _TITLE_MAX, _DESC_MAX = 100, 200
 
 # ------------------------------------------------------------------ helpers
 
-def _base() -> str:
+# brand_links switch: share pages call themselves https://wanoafrica.com (the
+# website serves /v, /u, /tv/<id>, /embed and /app from here, adding via=site),
+# and a browser that lands on the server's own address is sent there. Robots
+# and sitemaps here keep the server's address (a sitemap lists its own host).
+SITE = "https://wanoafrica.com"
+_BRAND = {"on": False, "at": 0.0}
+
+
+def _server_base() -> str:
     return settings.SHARE_BASE_URL.rstrip("/")
+
+
+def _base() -> str:
+    return SITE if _BRAND["on"] else _server_base()
+
+
+async def _refresh_brand() -> bool:
+    import time
+    if time.monotonic() - _BRAND["at"] > 60:
+        try:
+            from app.services import creator_push
+            _BRAND["on"] = await creator_push.on(get_database(), "brand_links")
+        except Exception:
+            _BRAND["on"] = False
+        _BRAND["at"] = time.monotonic()
+    return _BRAND["on"]
+
+
+async def _to_site(request: Request, path: str) -> Optional[Response]:
+    """With brand_links on, a browser opening the server's own share address
+    (links shared by older app versions) goes to the same page on wanoafrica.com."""
+    if not await _refresh_brand() or request.query_params.get("via") == "site":
+        return None
+    return RedirectResponse(f"{SITE}/{path}", status_code=302)
 
 
 def share_url(video_id: str) -> str:
@@ -326,6 +358,9 @@ def _not_available() -> Response:
 @router.api_route("/v/{video_id}", methods=["GET", "HEAD"], include_in_schema=False)
 async def watch_page(video_id: str, request: Request):
     _UA.set(request.headers.get("user-agent", "")[:300])
+    go = await _to_site(request, f"v/{video_id}")
+    if go is not None:
+        return go
     db = get_database()
     video, creator = await _shareable(db, video_id)
     if not video:
@@ -396,6 +431,7 @@ async def watch_page(video_id: str, request: Request):
 
 @router.api_route("/embed/{video_id}", methods=["GET", "HEAD"], include_in_schema=False)
 async def embed_page(video_id: str):
+    await _refresh_brand()
     db = get_database()
     video, creator = await _shareable(db, video_id)
     if not video or _is_photo(video):
@@ -432,7 +468,7 @@ async def robots_txt():
     return PlainTextResponse(
         "User-agent: *\nAllow: /v/\nDisallow: /api/\nDisallow: /graphql\n"
         "Disallow: /video/\nDisallow: /embed/\nDisallow: /debug/\n"
-        f"Sitemap: {_base()}/sitemap.xml\n",
+        f"Sitemap: {_server_base()}/sitemap.xml\n",
         headers={"Cache-Control": "public, max-age=3600"},
     )
 
@@ -442,7 +478,7 @@ async def sitemap_index():
     db = get_database()
     total = await db.videos.count_documents(_SITEMAP_QUERY)
     pages = max(1, math.ceil(total / SITEMAP_PAGE_SIZE))
-    items = "".join(f"<sitemap><loc>{_x(_base())}/sitemaps/videos-{n}.xml</loc></sitemap>"
+    items = "".join(f"<sitemap><loc>{_x(_server_base())}/sitemaps/videos-{n}.xml</loc></sitemap>"
                     for n in range(1, pages + 1))
     xml = ('<?xml version="1.0" encoding="UTF-8"?>'
            f'<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{items}</sitemapindex>')
@@ -470,7 +506,7 @@ async def sitemap_videos(page: int):
             continue
         m = _meta(v, {"display_name": ""})
         parts = [
-            f"<loc>{_x(m['url'])}</loc><video:video>",
+            f"<loc>{_x(_server_base())}/v/{_x(m['id'])}</loc><video:video>",
             f"<video:thumbnail_loc>{_x(m['thumbnail'])}</video:thumbnail_loc>",
             f"<video:title>{_x(m['title'])}</video:title>",
             f"<video:description>{_x(m['description'])}</video:description>",
@@ -582,6 +618,9 @@ def _gone(what: str) -> Response:
 @router.api_route("/u/{user_id}", methods=["GET", "HEAD"], include_in_schema=False)
 async def profile_page(user_id: str, request: Request):
     _UA.set(request.headers.get("user-agent", "")[:300])
+    go = await _to_site(request, f"u/{user_id}")
+    if go is not None:
+        return go
     from app.services.home_ground import is_minor
     if not ObjectId.is_valid(user_id):
         return _gone("profile")
@@ -608,6 +647,9 @@ async def profile_page(user_id: str, request: Request):
 @router.api_route("/tv/{title_id}", methods=["GET", "HEAD"], include_in_schema=False)
 async def tv_page(title_id: str, request: Request):
     _UA.set(request.headers.get("user-agent", "")[:300])
+    go = await _to_site(request, f"tv/{title_id}") if ObjectId.is_valid(title_id) else None
+    if go is not None:
+        return go
     if not ObjectId.is_valid(title_id):
         return _gone("title")
     db = get_database()
@@ -626,6 +668,9 @@ async def tv_page(title_id: str, request: Request):
 @router.api_route("/app", methods=["GET", "HEAD"], include_in_schema=False)
 async def app_page(request: Request):
     _UA.set(request.headers.get("user-agent", "")[:300])
+    go = await _to_site(request, "app")
+    if go is not None:
+        return go
     return _simple_page(title="Wano", description="Watch, post and share African videos on Wano.",
                         image=None, url=f"{_base()}/app", path="", heading="Wano",
                         sub="Watch, post and share African videos.", noindex=False,

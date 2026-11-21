@@ -349,3 +349,36 @@ async def test_burst_of_crawler_requests(client, db):
     codes = {r.status_code for r in rs}
     assert codes <= {200, 404}, codes
     assert sum(r.status_code == 200 for r in rs) == 310
+
+
+# ------------------------------------------------------------------ brand_links
+
+async def test_BL1_brand_links_pages_call_themselves_wanoafrica_and_old_links_move(client, db):
+    from app.routes import share as share_mod
+    from tests.pressure.conftest import make_user, make_video
+    share_mod._BRAND.update(on=False, at=0.0)
+    await db.config.insert_one({"features": {"brand_links": True}})
+    owner, _ = await make_user(db)
+    vid = await make_video(db, owner, urls={"thumbnail": "https://img.example/t.jpg"})
+    r = await client.get(f"/v/{vid}", follow_redirects=False)        # an old devbe link in a browser
+    assert r.status_code == 302 and r.headers["location"] == f"https://wanoafrica.com/v/{vid}"
+    r = await client.get(f"/v/{vid}", params={"via": "site"})        # served through the website
+    assert r.status_code == 200
+    assert f'og:url" content="https://wanoafrica.com/v/{vid}"' in r.text
+    assert 'devbe' not in r.text.split("<body")[0]
+    r = await client.get(f"/u/{owner}", follow_redirects=False)
+    assert r.headers["location"] == f"https://wanoafrica.com/u/{owner}"
+    assert (await client.get("/app", follow_redirects=False)).headers["location"] == "https://wanoafrica.com/app"
+    robots = (await client.get("/robots.txt")).text
+    assert "wanoafrica.com/sitemap.xml" in robots and "https://wanoafrica.com/sitemap" not in robots
+    share_mod._BRAND.update(on=False, at=0.0)
+
+
+async def test_BL2_switch_off_nothing_moves(client, db):
+    from app.routes import share as share_mod
+    from tests.pressure.conftest import make_user, make_video
+    share_mod._BRAND.update(on=False, at=0.0)
+    owner, _ = await make_user(db)
+    vid = await make_video(db, owner)
+    r = await client.get(f"/v/{vid}", follow_redirects=False)
+    assert r.status_code == 200 and "https://wanoafrica.com/v/" not in r.text
