@@ -185,6 +185,9 @@ async def get_notifications(
             "post": {
                 "id": {"$toString": "$post._id"},
                 "thumbnail": "$post.urls.thumbnail",
+                # The top-level comment to open (a reply's parent), so the app can
+                # open the comments at it (comment_plus).
+                "comment_id": {"$toString": {"$ifNull": ["$parent_comment._id", "$comment._id"]}},
                 "comment": {
                     "$cond": [
                         {"$eq": ["$type", "comment_reply"]},

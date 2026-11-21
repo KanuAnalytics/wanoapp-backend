@@ -176,7 +176,7 @@
 Updates for app/api/v1/comments.py
 """
 import re
-from fastapi import APIRouter, Depends, HTTPException, Query, status, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status, BackgroundTasks
 from typing import Dict, Iterable, List, Optional
 from datetime import datetime
 from bson import ObjectId
@@ -492,7 +492,9 @@ async def get_video_comments(
     video_id: str,
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=MAX_PAGE_SIZE),
-    current_user: Optional[str] = Depends(get_optional_active_user)
+    current_user: Optional[str] = Depends(get_optional_active_user),
+    response: Response = None,
+    focus: Optional[str] = Query(None, max_length=24),
 ):
     """Get comments for a video (top-level only, not replies). With
     comment_guard on, signed-out people can read them too, and blocked people's
@@ -502,13 +504,32 @@ async def get_video_comments(
     q = {"video_id": video_oid, "parent_id": None, "is_active": True}
     q = await _guarded(db, q, current_user, video_oid)
 
-    # Get top-level comments (no parent_id)
-    docs = await db.comments.find(q).sort([
-        ("is_pinned", -1),  # Pinned comments first
-        ("created_at", -1)   # Then by newest
-    ]).skip(skip).limit(limit).to_list(length=limit)
-
-    users = await _users_by_id(db, docs)
+    if await comment_guard.plus_on(db):
+        # comment_plus: pinned, hearted, most liked, one spot for a small account;
+        # and the count this person should see (their own held ones included).
+        every = await db.comments.find(q).sort("created_at", -1).limit(comment_guard.RANK_SCAN).to_list(None)
+        users = await _users_by_id(db, every)
+        order = await comment_guard.ranked(db, every, users)
+        # Opened from a notification: that comment first (it's in the list only
+        # if this person may see it).
+        if focus and ObjectId.is_valid(focus):
+            hit = next((c for c in order if str(c["_id"]) == focus), None)
+            if hit is not None:
+                order = [hit] + [c for c in order if c is not hit]
+        docs = order[skip:skip + limit]
+        if response is not None:
+            video = await db.videos.find_one({"_id": video_oid}, {"comments_count": 1})
+            viewer_doc = await comment_guard.viewer_doc(db, current_user)
+            if video:
+                response.headers["X-Comments-Total"] = str(await comment_guard.my_total(db, video, viewer_doc))
+                response.headers["Access-Control-Expose-Headers"] = "X-Comments-Total"
+    else:
+        # Get top-level comments (no parent_id)
+        docs = await db.comments.find(q).sort([
+            ("is_pinned", -1),  # Pinned comments first
+            ("created_at", -1)   # Then by newest
+        ]).skip(skip).limit(limit).to_list(length=limit)
+        users = await _users_by_id(db, docs)
     viewer = ObjectId(current_user) if current_user else None
     comments = []
     for comment in docs:
@@ -816,3 +837,45 @@ async def set_teen_comments(body: TeenCommentsIn, current_user: str = Depends(ge
 async def admin_safety_record(days: int = Query(90, ge=1, le=730), admin: str = Depends(require_admin)):
     from app.services import safety_record
     return await safety_record.record(get_database(), days)
+
+
+
+# ------------------------------------------------------------------ creator heart and pin (comment_plus)
+async def _own_post_comment(db, comment_id: str, current_user: str) -> dict:
+    from app.services import creator_push
+    await creator_push.require(db, comment_guard.PLUS_SWITCH)
+    c = await db.comments.find_one({"_id": _object_id(comment_id, "comment ID"), "is_active": True,
+                                    "held": {"$exists": False}, "hidden": {"$ne": True}})
+    if not c:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Comment not found")
+    v = await db.videos.find_one({"_id": c["video_id"]}, {"creator_id": 1})
+    if not v or str(v.get("creator_id")) != str(current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the post's creator can do this")
+    return c
+
+
+class OnIn(BaseModel):
+    on: bool
+
+
+@router.post("/{comment_id}/heart")
+async def heart_comment(comment_id: str, body: OnIn, current_user: str = Depends(get_current_active_user)):
+    """The creator hearts a comment on their post ("Liked by creator")."""
+    db = get_database()
+    c = await _own_post_comment(db, comment_id, current_user)
+    await db.comments.update_one({"_id": c["_id"]}, {"$set": {"is_hearted": body.on}})
+    return {"hearted": body.on}
+
+
+@router.post("/{comment_id}/pin")
+async def pin_comment(comment_id: str, body: OnIn, current_user: str = Depends(get_current_active_user)):
+    """The creator pins one top-level comment on their post (pinning another unpins the first)."""
+    db = get_database()
+    c = await _own_post_comment(db, comment_id, current_user)
+    if c.get("parent_id"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only a comment, not a reply, can be pinned")
+    if body.on:
+        await db.comments.update_many({"video_id": c["video_id"], "is_pinned": True, "_id": {"$ne": c["_id"]}},
+                                      {"$set": {"is_pinned": False}})
+    await db.comments.update_one({"_id": c["_id"]}, {"$set": {"is_pinned": body.on}})
+    return {"pinned": body.on}

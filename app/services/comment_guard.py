@@ -265,3 +265,58 @@ async def open_reports(db, limit: int = 100) -> List[dict]:
                     "text": r.get("text", ""), "reports": r.get("n", 0), "hidden": bool((c or {}).get("hidden")),
                     "deleted": not (c or {}).get("is_active", False), "created_at": r.get("last")})
     return out
+
+
+# ------------------------------------------------------------------ order (comment_plus)
+# The order with comment_plus on: pinned, then what the creator hearted, then
+# the most liked (newest first on ties), with one spot (the 3rd) for a small
+# account so big accounts don't always own the top. The small account must be
+# established (signed up 3+ days ago), under SMALL_FOLLOWERS followers, and
+# its comment must not be held or hidden (those never reach this list).
+PLUS_SWITCH = "comment_plus"
+SMALL_FOLLOWERS = 100
+SMALL_SLOT = 2          # 0-based: the 3rd comment
+RANK_SCAN = 500
+
+
+async def plus_on(db) -> bool:
+    from app.services import creator_push
+    return await creator_push.on(db, PLUS_SWITCH)
+
+
+def _rank_key(c: dict):
+    # docs arrive newest first; the sort is stable, so ties stay newest first.
+    likes = c.get("likes_count") if isinstance(c.get("likes_count"), int) else 0
+    return (not c.get("is_pinned"), not c.get("is_hearted"), -likes)
+
+
+async def ranked(db, docs: List[dict], users: dict) -> List[dict]:
+    """Order a post's visible top-level comments (all of them, up to RANK_SCAN)."""
+    out = sorted(docs, key=_rank_key)
+    if len(out) <= SMALL_SLOT + 1:
+        return out
+    cutoff = _now() - timedelta(days=TRUSTED_ACCOUNT_DAYS)
+    ids = list({c.get("user_id") for c in out[SMALL_SLOT:]})
+    small = {u["_id"] async for u in db.users.find(
+        {"_id": {"$in": ids}, "created_at": {"$lte": cutoff},
+         "$or": [{"followers_count": {"$lt": SMALL_FOLLOWERS}}, {"followers_count": {"$exists": False}}]},
+        {"_id": 1})}
+    head = out[:SMALL_SLOT]
+    if any(c.get("user_id") in small for c in head):
+        return out
+    pick = next((c for c in out[SMALL_SLOT:] if c.get("user_id") in small), None)
+    if pick is None:
+        return out
+    rest = [c for c in out[SMALL_SLOT:] if c is not pick]
+    return head + [pick] + rest
+
+
+async def my_total(db, video: dict, viewer: Optional[dict]) -> int:
+    """The count this person should see: the post's count plus their own held
+    comments (so a held comment never shows up as a missing number)."""
+    n = video.get("comments_count") if isinstance(video.get("comments_count"), int) else 0
+    if viewer:
+        n += await db.comments.count_documents({"video_id": video["_id"], "user_id": viewer["_id"],
+                                                "is_active": True, "held": {"$exists": True},
+                                                "hidden": {"$ne": True}})
+    return max(0, n)
