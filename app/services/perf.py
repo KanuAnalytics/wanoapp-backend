@@ -121,3 +121,38 @@ async def report(db, days: int = 7, now: Optional[datetime] = None) -> List[dict
                      "p50": percentile(m["b"], 0.5), "p90": percentile(m["b"], 0.9)})
     rows.sort(key=lambda r: (-r["count"], r["country"], r["metric"], r["net"]))
     return rows
+
+
+# ------------------------------------------------------------------ phone languages
+# The app (2.3.59+) sends its phone's language once per launch with its first
+# batch, so we know who would read Wano in French, Swahili, Portuguese, ...
+# before translating anything. One counter per (day, country, language);
+# nothing about the person.
+LANG_RE = r"^[a-z]{2,3}$"
+
+
+async def record_lang(db, lang: Optional[str], tz: Optional[str], now: Optional[datetime] = None) -> bool:
+    import re as _re
+    if not isinstance(lang, str) or not _re.fullmatch(LANG_RE, lang):
+        return False
+    now = now or datetime.utcnow()
+    day = now.strftime("%Y-%m-%d")
+    country = country_of(tz)
+    await db.perf_langs.update_one(
+        {"_id": f"{day}:{country}:{lang}"},
+        {"$inc": {"launches": 1},
+         "$setOnInsert": {"day": now.replace(hour=0, minute=0, second=0, microsecond=0),
+                          "country": country, "lang": lang}},
+        upsert=True)
+    return True
+
+
+async def langs_report(db, days: int = 14, now: Optional[datetime] = None) -> List[dict]:
+    """Launches per phone language (and per country) over the last `days`."""
+    now = now or datetime.utcnow()
+    since = (now - timedelta(days=days - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    rows = await db.perf_langs.aggregate([
+        {"$match": {"day": {"$gte": since}}},
+        {"$group": {"_id": {"lang": "$lang", "country": "$country"}, "launches": {"$sum": "$launches"}}},
+        {"$sort": {"launches": -1}}, {"$limit": 300}]).to_list(300)
+    return [{"lang": r["_id"]["lang"], "country": r["_id"]["country"], "launches": r["launches"]} for r in rows]

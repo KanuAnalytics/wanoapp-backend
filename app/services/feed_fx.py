@@ -44,7 +44,8 @@ def _oid(video_id: str) -> ObjectId:
 
 async def _visible_post(db, vid: ObjectId, me: Optional[ObjectId]) -> dict:
     v = await db.videos.find_one({"_id": vid, "is_active": True},
-                                 {"creator_id": 1, "privacy": 1, "reactions": 1, "city_reactions": 1, "comments_count": 1})
+                                 {"creator_id": 1, "privacy": 1, "reactions": 1, "city_reactions": 1, "country_reactions": 1,
+                                  "comments_count": 1})
     if not v:
         raise HTTPException(status_code=404, detail="Post not found")
     own = me is not None and v.get("creator_id") == me
@@ -72,6 +73,28 @@ def _city_count(v: dict, city: Optional[str]) -> int:
     return max(0, n) if isinstance(n, int) else 0
 
 
+# reaction_country switch: people who haven't set a Home Ground city react
+# "+1" for their account's country ("+1 Uganda") instead of being asked to
+# pick a city, and a post whose creator has no city shows their country.
+COUNTRY_SWITCH = "reaction_country"
+
+
+async def _country_on(db) -> bool:
+    from app.services import creator_push
+    return await creator_push.on(db, COUNTRY_SWITCH)
+
+
+def _country(user: dict) -> Optional[str]:
+    cc = hg.country_of(user or {})
+    return cc if cc and cc in hg.COUNTRIES else None
+
+
+def _country_count(v: dict, cc: str) -> int:
+    raw = v.get("country_reactions") if isinstance(v.get("country_reactions"), dict) else {}
+    n = raw.get(cc)
+    return n if isinstance(n, int) and not isinstance(n, bool) and n > 0 else 0
+
+
 async def summary(db, video_id: str, me: Optional[str]) -> dict:
     vid = _oid(video_id)
     my_oid = ObjectId(me) if me and ObjectId.is_valid(me) else None
@@ -80,10 +103,16 @@ async def summary(db, video_id: str, me: Optional[str]) -> dict:
     # Where the post is from: the creator's Home Ground city (adults only),
     # with how many people from that city reacted. Same for everyone.
     creator = await db.users.find_one({"_id": v.get("creator_id")},
-                                      {"home_ground": 1, "date_of_birth": 1}) if v.get("creator_id") else None
+                                      {"home_ground": 1, "date_of_birth": 1, "localization": 1}) \
+        if v.get("creator_id") else None
     cc = hg.city_of(creator or {})
     if cc and not hg.is_minor(creator):
         out["creator_city"] = {"id": cc, "name": hg.CITY[cc]["name"], "count": _city_count(v, cc)}
+    country_on = await _country_on(db)
+    if country_on and not out["creator_city"]:
+        ctry = _country(creator or {})
+        if ctry:
+            out["creator_country"] = {"id": ctry, "name": hg.COUNTRIES[ctry], "count": _country_count(v, ctry)}
     # The city that reacted most, so a post shows real local pull.
     raw = v.get("city_reactions") if isinstance(v.get("city_reactions"), dict) else {}
     ranked = sorted(((n, c) for c, n in raw.items() if isinstance(n, int) and not isinstance(n, bool)
@@ -99,6 +128,9 @@ async def summary(db, video_id: str, me: Optional[str]) -> dict:
         city = hg.city_of(user)
         if city and not hg.is_minor(user):
             out["city"] = {"id": city, "name": hg.CITY[city]["name"], "count": _city_count(v, city)}
+        elif country_on and _country(user):
+            ctry = _country(user)
+            out["country"] = {"id": ctry, "name": hg.COUNTRIES[ctry], "count": _country_count(v, ctry)}
     return out
 
 
@@ -114,7 +146,8 @@ async def react(db, video_id: str, me: str, kind: str, on: bool) -> dict:
         raise HTTPException(status_code=404, detail="Post not found")
     city = hg.city_of(user)
     city = city if city and not hg.is_minor(user) else None
-    if kind == "plus_one" and not city:
+    country = _country(user) if not city and await _country_on(db) else None
+    if kind == "plus_one" and not city and not country:
         raise HTTPException(status_code=409, detail="Pick your Home Ground city first")
     key = f"{vid}:{my_oid}:{kind}"
     if on:
@@ -127,13 +160,16 @@ async def react(db, video_id: str, me: str, kind: str, on: bool) -> dict:
             raise HTTPException(status_code=429, detail="That's a lot of reactions today. Try again tomorrow.")
         try:
             await db.video_reactions.insert_one({"_id": key, "video_id": vid, "user_id": my_oid, "kind": kind,
-                                                 "city": city, "at": _now()})
+                                                 "city": city, "country": country if not city else None,
+                                                 "at": _now()})
         except DuplicateKeyError:
             await db.reaction_daily.update_one({"_id": f"{my_oid}:{day}"}, {"$inc": {"n": -1}})
             return await summary(db, video_id, me)       # already there: nothing changes
         inc = {f"reactions.{kind}": 1}
         if city:
             inc[f"city_reactions.{city}"] = 1
+        elif country:
+            inc[f"country_reactions.{country}"] = 1
         await db.videos.update_one({"_id": vid}, {"$inc": inc})
     else:
         doc = await db.video_reactions.find_one_and_delete({"_id": key})
@@ -145,6 +181,10 @@ async def react(db, video_id: str, me: str, kind: str, on: bool) -> dict:
             if isinstance(c, str) and c:
                 await db.videos.update_one({"_id": vid, f"city_reactions.{c}": {"$gt": 0}},
                                            {"$inc": {f"city_reactions.{c}": -1}})
+            k = doc.get("country")
+            if isinstance(k, str) and k:
+                await db.videos.update_one({"_id": vid, f"country_reactions.{k}": {"$gt": 0}},
+                                           {"$inc": {f"country_reactions.{k}": -1}})
     return await summary(db, video_id, me)
 
 

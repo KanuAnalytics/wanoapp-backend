@@ -230,6 +230,7 @@ async def create_indexes():
         (d.comment_reports, [("status", 1), ("created_at", -1)], {}),
         (d.comment_reports, [("comment_id", 1)], {}),
         (d.challenge_signals, [("video_id", 1), ("at", 1)], {}),
+        (d.perf_langs, [("day", 1)], {"expireAfterSeconds": 180 * 24 * 3600}),
         (d.videos, [("challenge_id", 1), ("created_at", 1)], {"sparse": True}),
         (d.quick_reports, [("status", 1), ("created_at", -1)], {}),
         (d.quick_reports, [("created_at", 1)], {"expireAfterSeconds": 30 * 24 * 3600}),

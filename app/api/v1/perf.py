@@ -27,6 +27,8 @@ class Batch(BaseModel):
     events: List[Event] = Field(max_length=perf.MAX_EVENTS)
     tz: Optional[str] = Field(None, max_length=64)
     net: Literal["wifi", "cellular", "unknown"] = "unknown"
+    # The phone's language, once per launch (app 2.3.59+); see perf.record_lang.
+    lang: Optional[str] = Field(None, max_length=3)
 
 
 def _allowed(request: Request) -> bool:
@@ -48,4 +50,6 @@ async def send_timings(body: Batch, request: Request):
     if not _allowed(request):
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many")
     n = await perf.record(db, [e.model_dump() for e in body.events], body.tz, body.net)
+    if body.lang:
+        await perf.record_lang(db, body.lang.lower(), body.tz)
     return {"recorded": n}

@@ -559,6 +559,13 @@ async def hg_reset(body: HgResetIn, admin: str = Depends(require_admin)):
     return {"reset": True, "was": before}
 
 
+@router.get("/perf/languages")
+async def perf_languages(days: int = Query(14, ge=1, le=90), admin: str = Depends(require_admin)):
+    """Phone languages people open Wano in (app 2.3.59+), for deciding translations."""
+    from app.services import perf
+    return {"days": days, "rows": await perf.langs_report(get_database(), days)}
+
+
 @router.get("/perf")
 async def speed_report(days: int = Query(7, ge=1, le=90), admin: str = Depends(require_admin)):
     """How fast the app is on real phones, by country and connection."""
