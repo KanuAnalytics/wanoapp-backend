@@ -39,6 +39,19 @@ async def creator(username: str):
     return out
 
 
+@router.get("/videos/{video_id}")
+async def video(video_id: str):
+    out = await ps.video(get_database(), video_id[:30])
+    if not out:
+        raise HTTPException(status_code=404, detail="Not found")
+    return out
+
+
+@router.get("/sitemap-videos")
+async def sitemap_videos(skip: int = Query(0, ge=0, le=100000), limit: int = Query(50, ge=1, le=50)):
+    return {"items": await ps.sitemap_videos(get_database(), skip, limit)}
+
+
 @router.get("/creators")
 async def creators_index():
     return {"items": await ps.creators_index(get_database())}

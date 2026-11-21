@@ -660,3 +660,73 @@ async def sound(db, sid: str) -> Optional[dict]:
     out = {"id": sid, "title": _clip(s.get("title"), 90), "artist": _clip(s.get("artist"), 60), "posts_count": total,
            "posts": posts, "creators": _top_creators(posts)}
     return _store(key, out)
+
+
+# ------------------------------------------------------------------ video pages
+# The website's video page and its video sitemap used to read the app's own
+# endpoints, which show every public post with its creator's name and picture,
+# a young person's included, and count a view on every page build. These say
+# only what an open web page may: public posts by adults; a young person's post
+# answers "limited" (the page says "open it in Wano", nothing else).
+
+def _stream_url(v: dict) -> Optional[str]:
+    return _https(v.get("remoteUrl_CF")) or _https((v.get("urls") or {}).get("hls_playlist"))
+
+
+async def video(db, video_id: str) -> Optional[dict]:
+    if not ObjectId.is_valid(video_id):
+        return None
+    v = await db.videos.find_one({**_visible_post(), "_id": ObjectId(video_id),
+                                  "privacy": {"$in": ["public", "unlisted"]}})
+    if not v or not v.get("creator_id"):
+        return None
+    u = await db.users.find_one({"_id": v["creator_id"]},
+                                {"username": 1, "display_name": 1, "profile_picture": 1, "date_of_birth": 1,
+                                 "is_active": 1, "is_banned": 1, "deleted_at": 1})
+    if not u or u.get("is_active") is False or u.get("is_banned") is True or u.get("deleted_at"):
+        return None
+    if home_ground.is_minor(u):
+        return {"_id": str(v["_id"]), "limited": True}
+    from app.services import thumbnails
+    handle = public_handle(u.get("username"))
+    when = v.get("published_at") or v.get("created_at")
+    return {
+        "_id": str(v["_id"]), "limited": False, "unlisted": v.get("privacy") == "unlisted",
+        "title": _clip(v.get("title"), 120) or None, "description": _clip(v.get("description"), 2000),
+        "views_count": int(v.get("views_count") or 0), "likes_count": int(v.get("likes_count") or 0),
+        "comments_count": int(v.get("comments_count") or 0),
+        "remoteUrl_CF": _stream_url(v), "urls": {"thumbnail": _https(thumbnails.best_thumbnail(v))},
+        "photo": bool(v.get("images")) and not _stream_url(v),
+        "images": [i for i in (_https(x) for x in (v.get("images") or [])) if i][:10],
+        "created_at": when.isoformat() + ("Z" if when.tzinfo is None else "") if isinstance(when, datetime) else None,
+        "duration": v.get("duration") if isinstance(v.get("duration"), (int, float)) else None,
+        "user": {"username": handle, "display_name": public_name(u.get("display_name"), handle),
+                 "profile_picture": _https(u.get("profile_picture"))},
+    }
+
+
+async def sitemap_videos(db, skip: int, limit: int) -> List[dict]:
+    """Newest public videos by adults, for the website's video sitemap."""
+    key = f"sv:{skip}:{limit}"
+    hit = _cached(key)
+    if hit is not None:
+        return hit
+    q = {**_visible_post(), "media_type": {"$ne": "photo"}}
+    vids = await db.videos.find(q).sort("_id", -1).skip(skip).limit(limit).to_list(limit)
+    adults = await _adults(db, [str(v.get("creator_id")) for v in vids])
+    users = {u["_id"]: u async for u in db.users.find(
+        {"_id": {"$in": [ObjectId(a) for a in adults]}}, {"username": 1, "display_name": 1})}
+    from app.services import thumbnails
+    out = []
+    for v in vids:
+        u = users.get(v.get("creator_id"))
+        stream = _stream_url(v)
+        if not u or not stream:
+            continue
+        handle = public_handle(u.get("username"))
+        out.append({"id": str(v["_id"]), "title": _clip(v.get("title"), 120) or None,
+                    "description": _clip(v.get("description"), 2000) or None,
+                    "thumbnail": _https(thumbnails.best_thumbnail(v)), "remoteUrl_CF": stream,
+                    "user": {"username": handle, "display_name": public_name(u.get("display_name"), handle)}})
+    _store(key, out)
+    return out

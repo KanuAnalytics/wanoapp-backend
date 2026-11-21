@@ -1040,7 +1040,7 @@ async def check_verification_status(username: str):
     }
 
 @router.post("/forgot-password")
-async def forgot_password(request: ForgotPasswordRequest):
+async def forgot_password(request: ForgotPasswordRequest, http_request: Request = None):
     """
     Create and email a 6-digit OTP to reset password for a specific user.
     - Accepts username or email.
@@ -1087,6 +1087,11 @@ async def forgot_password(request: ForgotPasswordRequest):
 
     # Generate & send OTP via WhatsApp or email
     if use_whatsapp:
+        # Each WhatsApp code costs money: the same daily and per-network budget
+        # as sign-in codes, so a script cycling through every phone account
+        # can't run up the bill.
+        if not user.get("phone_number") or not await _whatsapp_budget_ok(db, http_request):
+            return generic
         otp = _generate_numeric_otp(6)
         try:
             await twilio_whatsapp_service.send_template_message(

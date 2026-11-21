@@ -117,3 +117,20 @@ async def test_UA6_summary_sorts_why_attempts_stopped(client, db):
     assert s["by_platform"]["android"] == {"attempts": 3, "posted": 2}
     assert s["refusal_reasons"] == [{"reason": "400: Pick a category", "count": 1}]
     assert s["size_mb"]["posted"] in (9.0, 30.0) and s["size_mb"]["not_posted"] == 30.0
+
+
+async def test_UC1_upload_cap_limits_only_accountless_upload_addresses(client, db):
+    from tests.pressure.conftest import make_user
+    import app.routes.upload_video as uv
+    body = {"filename": "v.mp4", "fileSize": 20_000_000}
+    net = {"X-Forwarded-For": "7.7.7.7"}
+    for _ in range(3):                                     # switch off: unlimited, as today
+        assert (await client.post("/video/v2/presigned-upload", headers=net, json=body)).status_code == 200
+    await db.config.insert_one({"features": {"upload_cap": True}})
+    codes = [(await client.post("/video/v2/presigned-upload", headers=net, json=body)).status_code
+             for _ in range(uv.ANON_UPLOADS_PER_IP_HOUR + 3)]
+    assert codes.count(200) == uv.ANON_UPLOADS_PER_IP_HOUR and codes[-1] == 429
+    _, h = await make_user(db)
+    assert (await client.post("/video/v2/presigned-upload", headers={**h, **net}, json=body)).status_code == 200
+    assert (await client.post("/video/v2/presigned-upload", headers={"X-Forwarded-For": "8.8.8.8"},
+                              json=body)).status_code == 200

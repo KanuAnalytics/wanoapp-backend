@@ -160,6 +160,30 @@ async def upload_video(
             pass
 
 
+ANON_UPLOADS_PER_IP_HOUR = 60
+ANON_UPLOADS_PER_DAY = 1500
+
+
+async def _anon_upload_ok(request: Request) -> bool:
+    """The "upload_cap" switch: upload addresses handed out without an account
+    are budgeted per network an hour and in total a day (each one can store a
+    video on our Cloudflare account)."""
+    from datetime import datetime, timezone
+    from app.api.v1.auth import _request_ip, _take_from_budget
+    from app.services import creator_push
+    db = get_database()
+    if not await creator_push.on(db, "upload_cap"):
+        return True
+    now = datetime.now(timezone.utc)
+    ip = _request_ip(request)
+    if ip and not await _take_from_budget(db, f"upip:{ip}:{now:%Y%m%d%H}", ANON_UPLOADS_PER_IP_HOUR):
+        return False
+    if not await _take_from_budget(db, f"up:{now:%Y%m%d}", ANON_UPLOADS_PER_DAY):
+        logger.warning("Anonymous upload budget for today is used up")
+        return False
+    return True
+
+
 @router.post("/v2/presigned-upload")
 async def get_presigned_upload_url_v2(
     payload: PresignRequest,
@@ -170,6 +194,8 @@ async def get_presigned_upload_url_v2(
     Get a Cloudflare Stream TUS upload URL. Called by the app (user token) and
     by the editVideo Lambda (no credentials).
     """
+    if uploader == "anonymous" and not await _anon_upload_ok(request):
+        raise HTTPException(status_code=429, detail="Too many uploads. Please sign in and try again.")
     try:
         result = await asyncio.to_thread(
             generate_cf_tus_upload_url,

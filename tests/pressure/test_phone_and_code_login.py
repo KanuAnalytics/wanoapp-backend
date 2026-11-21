@@ -255,3 +255,17 @@ async def test_C13_password_sign_in_unchanged(client, db, mail):
     r = await client.post("/api/v1/auth/login/json", json={"username": "rita", "password": "Password1"})
     assert r.status_code == 200 and r.json()["user_id"] == uid
     assert (await client.post("/api/v1/auth/login/json", json={"username": "rita", "password": "nope"})).status_code == 401
+
+
+async def test_C14_password_reset_by_whatsapp_shares_the_code_budget(client, db, wa):
+    """A script asking for reset codes for every phone account from one network
+    stops at the per-network budget; the answer stays the same."""
+    for i in range(25):
+        await make_user(db, username=f"ph{i}", email=None, phone_number=num(i))
+    codes = []
+    for i in range(25):
+        r = await client.post("/api/v1/auth/forgot-password", json={"username_or_email": num(i)},
+                              headers={"X-Forwarded-For": "9.9.9.9"})
+        assert r.status_code == 200, r.text
+        codes.append(r.json()["message"])
+    assert len(wa) == 20 and len(set(codes)) == 1

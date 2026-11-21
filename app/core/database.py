@@ -76,6 +76,7 @@ async def create_indexes():
         (d.feed_impressions, [("at", 1)], {"expireAfterSeconds": 30 * 24 * 3600}),
         # Creator invite links (wanoafrica.com/get): one tap per phone per link per day
         (d.get_link_seen, [("at", 1)], {"expireAfterSeconds": 2 * 24 * 3600}),
+        (d.otp_budget, [("at", 1)], {"expireAfterSeconds": 3 * 24 * 3600}),
         (d.get_link_daily, [("day", 1)], {}),
         # Wano TV film submissions from the website
         (d.film_submissions, [("created_at", -1)], {}),

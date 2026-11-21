@@ -198,11 +198,19 @@ async def _shareable(db, video_id: str):
     if video.get("creator_id"):
         creator = await db.users.find_one(
             {"_id": video["creator_id"]},
-            {"display_name": 1, "username": 1, "is_active": 1},
+            {"display_name": 1, "username": 1, "is_active": 1, "date_of_birth": 1,
+             "is_banned": 1, "deleted_at": 1},
         )
-    if not creator or creator.get("is_active") is False:
+    if not creator or creator.get("is_active") is False or creator.get("is_banned") is True \
+            or creator.get("deleted_at"):
         return None, None
     return video, creator
+
+
+def _young(creator: Optional[dict]) -> bool:
+    """A young person's post: no name, picture, title or player on the open web."""
+    from app.services.home_ground import is_minor
+    return bool(creator) and is_minor(creator)
 
 
 def _meta(video: dict, creator: dict) -> dict:
@@ -368,6 +376,11 @@ async def watch_page(video_id: str, request: Request):
     video, creator = await _shareable(db, video_id)
     if not video:
         return _not_available()
+    if _young(creator):
+        return _simple_page(title="Wano", description="Watch on Wano", image=None,
+                            url=share_url(str(video["_id"])), path=f"v/{video['_id']}",
+                            heading="Open this post in Wano", sub="Watch it on the Wano app.",
+                            cache="private, max-age=60")
     m = _meta(video, creator)
 
     if m["photo"]:
@@ -437,7 +450,7 @@ async def embed_page(video_id: str):
     await _refresh_brand()
     db = get_database()
     video, creator = await _shareable(db, video_id)
-    if not video or _is_photo(video):
+    if not video or _is_photo(video) or _young(creator):
         return _not_available()
     m = _meta(video, creator)
     body = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -499,9 +512,12 @@ async def sitemap_videos(page: int):
     creator_ids = list({v["creator_id"] for v in videos if v.get("creator_id")})
     active = set()
     if creator_ids:
-        async for u in db.users.find({"_id": {"$in": creator_ids}, "is_active": {"$ne": False}},
-                                     {"display_name": 1, "username": 1}):
-            active.add(u["_id"])
+        from app.services.home_ground import is_minor
+        async for u in db.users.find({"_id": {"$in": creator_ids}, "is_active": {"$ne": False},
+                                      "is_banned": {"$ne": True}, "deleted_at": {"$in": [None]}},
+                                     {"date_of_birth": 1}):
+            if not is_minor(u):
+                active.add(u["_id"])
     entries = []
     for v in videos:
         host, uid = _stream(v)
