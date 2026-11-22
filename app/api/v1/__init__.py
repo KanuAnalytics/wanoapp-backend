@@ -52,6 +52,8 @@ from app.api.v1.team import router as team_router  # noqa: E402
 api_router.include_router(team_router, prefix="/team", tags=["wano-team"])
 from app.api.v1.comeback import router as comeback_router  # noqa: E402
 api_router.include_router(comeback_router, prefix="/comeback", tags=["comeback"])
+from app.api.v1.growth import router as growth_router  # noqa: E402
+api_router.include_router(growth_router, prefix="/growth", tags=["growth"])
 api_router.include_router(comments_router, prefix="", tags=["comments"])
 api_router.include_router(feed_router, prefix="/feed", tags=["feed"])
 api_router.include_router(metrics_router, prefix="/metrics", tags=["metrics"])

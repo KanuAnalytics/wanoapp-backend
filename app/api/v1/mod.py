@@ -202,7 +202,7 @@ async def account_card(user_id: str, s=Depends(staff_svc.need("moderator"))):
         "id": str(oid), "username": u.get("username"), "display_name": u.get("display_name"),
         "picture": u.get("profile_picture"),
         "account_days": (datetime.utcnow() - made).days if isinstance(made, datetime) else None,
-        "teen": age is not None and age < 18, "followers": u.get("followers_count", 0),
+        "teen": age is not None and age < 18, "age": age, "followers": u.get("followers_count", 0),
         "posts": u.get("videos_count", 0), "app_version": u.get("app_version") or u.get("last_app_version"),
         "email": _mask_email(u.get("email")), "phone": _mask_phone(u.get("phone_number")),
         "state": (u.get("mod_state") or {}).get("state", "ok"),

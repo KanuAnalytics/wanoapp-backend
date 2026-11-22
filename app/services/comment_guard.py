@@ -150,11 +150,18 @@ def has_blocked_word(text: str, words: Iterable[str]) -> bool:
     return False
 
 
-async def teen_reason(db, *, user: dict, owner: Optional[dict], content: str) -> Optional[str]:
-    """Why a comment on a teen's post is held under teen_comments:v1, or None."""
+async def teen_reason(db, *, user: dict, owner: Optional[dict], content: str,
+                      unknown_teen: bool = False) -> Optional[str]:
+    """Why a comment on a teen's post is held under teen_comments:v1, or None.
+    unknown_teen ("birthday_unknown_teen" switch): an owner with no usable
+    birthday gets the 16-17 rule until they add one (staff accounts excepted)."""
     if not owner or owner.get("_id") == user.get("_id"):
         return None
     age = _age(owner)
+    if age is None and unknown_teen and owner.get("user_type") != "admin":
+        from app.services import birthday_gate
+        if not birthday_gate.usable(owner.get("date_of_birth")):
+            age = 16
     if age is None:
         return None
     me = user["_id"]
@@ -179,8 +186,11 @@ async def hold_reason(db, *, user: dict, video: dict, parent: Optional[dict], co
     if parent is not None and (parent.get("held") or parent.get("hidden") is True):
         return "parent_hidden"
     if teen:
-        owner = await db.users.find_one({"_id": creator}, {"date_of_birth": 1, "following": 1, "teen_comments": 1})
-        why = await teen_reason(db, user=user, owner=owner, content=content)
+        from app.services import birthday_gate, creator_push
+        owner = await db.users.find_one({"_id": creator}, {"date_of_birth": 1, "following": 1, "teen_comments": 1,
+                                                           "user_type": 1})
+        why = await teen_reason(db, user=user, owner=owner, content=content,
+                                unknown_teen=await creator_push.on(db, birthday_gate.UNKNOWN_TEEN))
         if why:
             return why
     if not guard:

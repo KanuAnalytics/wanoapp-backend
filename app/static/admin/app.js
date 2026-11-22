@@ -132,7 +132,7 @@ $("logout").addEventListener("click", () => logout());
 
 const PAGES = [
   ["overview", "Overview"], ["payouts", "Payouts"], ["pool", "Cash pool"], ["creators", "Creators"],
-  ["kampala", "Kampala growth"], ["moderation", "Reported posts"], ["messagereports", "Reported messages"], ["quickreports", "Reported quick posts"], ["commentreports", "Reported comments"], ["safety", "Safety record"], ["mod", "Moderation"], ["staff", "Staff"], ["team", "Wano Team"], ["whatsnew", "What's new"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["cities", "Cities"], ["categories", "Categories"], ["films", "Film submissions"], ["tvtitles", "Wano TV titles"], ["tvnumbers", "Wano TV numbers"], ["tvstrip", "Wano TV strip"], ["siteenq", "Website enquiries"], ["sitemail", "Mailing list"], ["sitedel", "Account deletion"], ["flyers", "Local flyers"], ["places", "Places"], ["failedups", "Failed uploads"], ["switches", "Feature switches"], ["updates", "Force update"], ["speed", "Speed"], ["storage", "Video storage"], ["log", "Activity log"],
+  ["kampala", "Kampala growth"], ["whatsapp", "WhatsApp"], ["moderation", "Reported posts"], ["messagereports", "Reported messages"], ["quickreports", "Reported quick posts"], ["commentreports", "Reported comments"], ["safety", "Safety record"], ["mod", "Moderation"], ["staff", "Staff"], ["team", "Wano Team"], ["whatsnew", "What's new"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["cities", "Cities"], ["categories", "Categories"], ["films", "Film submissions"], ["tvtitles", "Wano TV titles"], ["tvnumbers", "Wano TV numbers"], ["tvstrip", "Wano TV strip"], ["siteenq", "Website enquiries"], ["sitemail", "Mailing list"], ["sitedel", "Account deletion"], ["flyers", "Local flyers"], ["places", "Places"], ["failedups", "Failed uploads"], ["switches", "Feature switches"], ["updates", "Force update"], ["speed", "Speed"], ["storage", "Video storage"], ["log", "Activity log"],
 ];
 let current = "overview";
 const counts = {};
@@ -212,6 +212,7 @@ const FEATURES = {
   clear_icons: ["Clearer icons", "Icons and tab names stay readable on bright videos (a thin dark edge and a soft top fade, measured at 3:1 or better on pure white), and Messages becomes two chat bubbles instead of a paper plane. Needs app 2.3.24 or later."],
   recombee_fast: ["Faster For You (Recombee)", "The server keeps its connections to Recombee open instead of opening a new one for every call (the Recombee step was 0.6-1 s of every For You page), asks for 60 picks instead of 100, and sends view signals in the background. Works for every app version. Check Recombee health: GET /api/v1/recombee/health."],
   recombee_tune: ["Better For You picks (Recombee)", "Recombee stops pushing down good picks the viewer was never shown (rotation 0.5 to 0.1). Compare personal vs popular watch rates on the For You report a few days after turning it on. Works for every app version."],
+  recombee_detail: ["Opened-post signal (Recombee)", "Each post someone watches in the feed is also sent to Recombee as \"opened this post\", with the For You recommendation it came from, as Recombee asks. Better personal picks and a true success rate on the Recombee dashboard. Works for every app version. Staff never count."],
   recombee_eu: ["For You from Europe (Recombee)", "For You asks the new EU Recombee database (about 4x faster from our server) instead of the US one. Every write still goes to both, so turning it off goes straight back with nothing lost. If the EU database can't answer, the US one does. Check: GET /api/v1/recombee/health (answering: eu-west). Works for every app version."],
   lean_preload: ["Lighter preloading (iPhone)", "iPhones load the next 2 videos instead of 5, and read only about 10 seconds ahead in a video. About half the minutes Cloudflare billed in November were never watched. Android already loads 2. Needs app 2.3.43."],
   loop_cap: ["Stop after 3 loops", "A video plays 3 times, then pauses with the play button up (a tap plays 3 more). Each loop was downloaded and billed again: short clips were billed 1.46 full plays per view. Watch the For You report after turning it on. Needs app 2.3.43."],
@@ -252,6 +253,10 @@ const FEATURES = {
   quick_launch: ["Quicker start", "App 2.3.61. A shorter intro animation; What's new, quick posts, milestones, notices and the birthday check appear a moment after the feed instead of with it; phones with about 3 GB of memory or less load one video ahead instead of two. Google Play showed 48% slow starts on 1.5-2 GB phones (21% of installs)."],
   push_ask: ["Ask for notifications at a good moment", "App 2.3.61. No more notification prompt 4 seconds after opening the app (22% of sessions said no). The app asks after someone follows a person, posts, or opens their notifications, with a short explanation first: at most 3 times, a week apart. Phones that already allow notifications keep working as before."],
   comeback: ["Comeback reminders", "App 2.3.61 tells the server once a day it was opened. People away 3-14 days get one push in their evening, at most once a week: a live challenge they haven't seen, or new posts from people they follow. Nothing to say, nothing sent. Never staff, never in quiet hours, counts toward the day's new-post limit. Older apps never get one."],
+  wa_share: ["WhatsApp sharing", "App 2.3.62. The share button opens a short sheet with WhatsApp first (links carry ?s=wa); challenges get \"Invite on WhatsApp\". Counts shares to WhatsApp, share-page opens (a 1x1 picture browsers load, link previews don't; nothing personal kept) and Android installs from shared links. See the WhatsApp page. Turn on Open the shared post after installing too."],
+  birthday_needed: ["Ask for a birthday (accounts without one)", "App 2.3.62. People with no birthday on their account are asked for it a few seconds after opening the app, at most once a day, never in an account's first 3 days. Friendly: \"Not now\" just closes, nothing is blocked. Also: a birthday already on an account can't be changed from the app any more; support changes it on the Moderation account card (Change birthday)."],
+  birthday_required: ["Birthday required to post", "Only with Ask for a birthday on. \"Not now\" then works 3 times (on 3 different days); after that people need a birthday to post, comment and send messages (watching, liking and following still work). Older apps are never blocked. Leave off while growth comes first."],
+  birthday_unknown_teen: ["Unknown age: teen comment rules", "Posts by people with no birthday get the 16-17 comment rules (only people they follow can comment, offensive words held) until they add one. Needs Teen comment safety on. Staff accounts are not affected. Turn on a week or two after Ask for a birthday."],
 };
 
 // Challenges, visual (challenge_plus): cover, example video, sound, Discover banner.
@@ -1350,7 +1355,7 @@ const RENDER = {
       why.addEventListener("change", async () => { const s = await act(null, () => api("GET", `/mod/suggest?user_id=${c.id}&reason=${why.value}`)); if (s) sug.textContent = "Suggested next step: " + s.step.replace("_", " "); });
       cardBox.replaceChildren(el("div", { class: "card" },
         el("h3", { text: `${c.display_name || ""} @${c.username || ""}` }),
-        el("p", { class: "small muted", text: `${c.account_days ?? "?"} days old · ${num(c.followers)} followers · ${num(c.posts)} posts · app ${c.app_version || "?"} · ${c.teen ? "TEEN" : "adult"} · ${c.email || "no email"} · ${c.phone || "no phone"}` }),
+        el("p", { class: "small muted", text: `${c.account_days ?? "?"} days old · ${num(c.followers)} followers · ${num(c.posts)} posts · app ${c.app_version || "?"} · ${c.age == null ? "no birthday" : c.teen ? `TEEN (${c.age})` : `adult (${c.age})`} · ${c.email || "no email"} · ${c.phone || "no phone"}` }),
         el("p", { class: "small", text: `State: ${c.state}${c.evidence ? " (kept as evidence)" : ""} · warnings: ${c.recent} in 90 days, ${c.lifetime} ever · reports on posts: ${c.reports_on_posts} · held comments: ${c.held_comments} · failed uploads: ${c.failed_uploads}` }),
         el("div", { class: "row", style: "gap: 6px; flex-wrap: wrap;" }, why, note, sug),
         el("div", { class: "row", style: "gap: 6px; margin-top: 8px; flex-wrap: wrap;" },
@@ -1360,6 +1365,12 @@ const RENDER = {
             : el("button", { class: "btn small ghost-danger", text: "Suspend", onclick: async (e) => {
               if (!(await confirmBox("Suspend this account?", "Frozen and hidden, nothing deleted. Undo for 10 minutes.", "Suspend", true))) return;
               doAct(e.target, "/mod/actions/freeze", { user_id: c.id, reason: why.value, note: note.value }, "Suspended"); } }),
+          el("button", { class: "btn small secondary", text: "Change birthday", onclick: async (e) => {
+            const b = prompt("New birthday (YYYY-MM-DD). Only after checking it with the person:");
+            if (!b) return;
+            const r = prompt("Why? (kept in the account's history)");
+            if (!r) return;
+            if (await act(e.target, () => api("POST", `/admin/users/${c.id}/birthday`, { birthday: b.trim(), reason: r.trim() }), "Birthday changed")) showCard(c.id); } }),
           c.state === "frozen" ? el("button", { class: "btn small secondary", text: c.evidence ? "Stop keeping as evidence" : "Keep as evidence", onclick: async (e) => {
             if (await act(e.target, () => api("POST", `/mod/users/${c.id}/evidence`, { on: !c.evidence }), "Saved")) showCard(c.id); } }) : null,
           c.state === "frozen" ? el("button", { class: "btn small ghost-danger", text: "Wipe (owners, after 30 days)", onclick: async (e) => {
@@ -1427,7 +1438,20 @@ const RENDER = {
       el("div", { class: "card" }, el("h3", { text: "Lost phone?" }),
         el("button", { class: "btn ghost-danger", text: "Sign out every staff session now", onclick: async (e) => {
           if (!(await confirmBox("Sign out all staff?", "Every moderator has to enter a code again.", "Sign out all", true))) return;
-          act(e.target, () => api("POST", "/mod/sessions/end-all"), "All staff sessions ended"); } })));
+          act(e.target, () => api("POST", "/mod/sessions/end-all"), "All staff sessions ended"); } })),
+      el("div", { class: "card" }, el("h3", { text: "Staff watching in For You" }),
+        el("p", { class: "small muted", text: "Takes everything staff and admin accounts watched, liked and saved out of Recombee (US and EU), so moderating reported posts doesn't shape For You. The accounts stay. Safe to run again. New staff activity is kept out by the \"Staff activity counts nowhere\" switch." }),
+        el("div", { class: "row", style: "gap: 8px; align-items: center;" },
+          el("button", { class: "btn small secondary", text: "Clear staff history", onclick: async (e) => {
+            if (!(await confirmBox("Clear staff history from Recombee?", "Deletes past views, likes and saves of every staff and admin account from both Recombee databases. Can't be undone.", "Clear", true))) return;
+            if (await act(e.target, () => api("POST", "/recombee/clear-staff"), "Started")) RENDER.staff(main); } }),
+          (() => { const out = el("span", { class: "small muted", text: "" });
+            api("GET", "/recombee/clear-staff").then((c) => {
+              if (!c || !c.started_at) { out.textContent = "Not run yet."; return; }
+              const n = Object.values(c.deleted || {}).reduce((a, b) => a + b, 0);
+              out.textContent = `${c.running ? "Running" : "Last run"}: ${c.done_accounts}/${c.accounts} accounts, ${num(n)} removed${c.errors ? `, ${c.errors} errors` : ""}${c.finished_at ? `, finished ${when(c.finished_at)}` : ""}.`;
+            }).catch(() => {});
+            return out; })())));
   },
 
   async team(main) {
@@ -1568,6 +1592,26 @@ const RENDER = {
           el("tbody", {}, ...pv.rows.map((r) => el("tr", {}, el("td", { text: r.version }), el("td", { text: MET[r.metric] || r.metric }),
             el("td", { text: num(r.count) }), el("td", { text: s(r.p50) }), el("td", { text: s(r.p90) })))))
           : el("div", { class: "empty", text: "No timings by version yet." })));
+  },
+
+  async whatsapp(main) {
+    const r = await api("GET", "/admin/whatsapp?days=28");
+    const pct = (a, b) => (b ? `${Math.round((a / b) * 100)}%` : "–");
+    const weeks = (r.weeks || []).slice().reverse();
+    const steps = weeks.length ? el("table", {}, el("thead", {}, el("tr", {}, ...["Week of", "Sent to WhatsApp", "Shared elsewhere", "Opens from WhatsApp", "Other link opens", "Android / iPhone opens", "Installs from WhatsApp", "Installs from other links"].map((h) => el("th", { text: h })))),
+      el("tbody", {}, ...weeks.map((w) => el("tr", {}, el("td", { text: w.week }), el("td", { text: num(w.shared_wa) }), el("td", { text: num(w.shared_other) }),
+        el("td", { text: `${num(w.opens_wa)} (${pct(w.opens_wa, w.shared_wa)} of sends)` }), el("td", { text: num(w.opens_link) }),
+        el("td", { text: `${num(w.opens_android)} / ${num(w.opens_ios)}` }), el("td", { text: num(w.installs_wa) }), el("td", { text: num(w.installs_link) })))))
+      : el("div", { class: "empty", text: r.on ? "Nothing yet. Numbers start as people on app 2.3.62 share to WhatsApp." : "Turn on \"WhatsApp sharing\" in Feature switches to start counting." });
+    const top = (r.top || []).length ? el("table", {}, el("thead", {}, el("tr", {}, ...["Post", "Creator", "Sent to WhatsApp", "Opened from WhatsApp"].map((h) => el("th", { text: h })))),
+      el("tbody", {}, ...r.top.map((t) => el("tr", {}, el("td", { text: t.title || t.video_id }), el("td", { text: t.creator ? `@${t.creator}` : "–" }),
+        el("td", { text: num(t.shares) }), el("td", { text: num(t.opens) })))))
+      : el("div", { class: "empty", text: "No posts sent to WhatsApp yet." });
+    main.replaceChildren(...head("WhatsApp", "Wano's word of mouth: posts sent to WhatsApp, how many of those links get opened, and installs that follow. Last 4 weeks."),
+      el("div", { class: "card" }, el("h3", { text: "Week by week" }),
+        el("p", { class: "small muted", text: "Installs: Android only (Google Play tells the app where it came from; iPhone doesn't). iPhone installs from shared links show in App Store Connect under campaigns share_video and share_video_wa. A phone opening the same post twice in a day counts once." }), steps),
+      el("div", { class: "card" }, el("h3", { text: "Most sent to WhatsApp" }),
+        el("p", { class: "small muted", text: "What people forward: ideas for Wano Picks, the WhatsApp Channel and the next challenge." }), top));
   },
 
   async kampala(main) {

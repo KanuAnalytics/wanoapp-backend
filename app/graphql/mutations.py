@@ -197,7 +197,7 @@ class Mutation(VideoEditorMutation, CommentMutations):
     # (including admin), and were never used by the app.
 
     @strawberry.mutation
-    async def update_user(self, info, input: UpdateUserInput) -> UserType:
+    async def update_user(self, info: Info, input: UpdateUserInput) -> UserType:
         """Update user profile"""
         user_id = require_user_id(info)
         uid = parse_object_id(user_id)
@@ -215,7 +215,7 @@ class Mutation(VideoEditorMutation, CommentMutations):
         return user_from_doc(user_doc, user_id)
 
     @strawberry.mutation
-    async def create_video(self, info, input: CreateVideoInput) -> VideoType:
+    async def create_video(self, info: Info, input: CreateVideoInput) -> VideoType:
         """Create a new video"""
         user = await require_user_doc(info)
         user_oid = user["_id"]
@@ -285,7 +285,7 @@ class Mutation(VideoEditorMutation, CommentMutations):
         return video_from_doc(video_doc)
 
     @strawberry.mutation
-    async def update_video(self, info, video_id: str, input: UpdateVideoInput) -> VideoType:
+    async def update_video(self, info: Info, video_id: str, input: UpdateVideoInput) -> VideoType:
         """Update a video"""
         user_id = require_user_id(info)
         vid = parse_object_id(video_id)
@@ -324,7 +324,7 @@ class Mutation(VideoEditorMutation, CommentMutations):
         return video_from_doc(video, buffered)
 
     @strawberry.mutation
-    async def delete_video(self, info, video_id: str) -> bool:
+    async def delete_video(self, info: Info, video_id: str) -> bool:
         """Delete a video (soft delete)"""
         user_id = require_user_id(info)
         vid = parse_object_id(video_id)
@@ -347,7 +347,7 @@ class Mutation(VideoEditorMutation, CommentMutations):
         return True
 
     @strawberry.mutation
-    async def like_video(self, info, video_id: str) -> bool:
+    async def like_video(self, info: Info, video_id: str) -> bool:
         """Like a video"""
         user_id = require_user_id(info)
         vid = parse_object_id(video_id)
@@ -367,7 +367,7 @@ class Mutation(VideoEditorMutation, CommentMutations):
         return True
 
     @strawberry.mutation
-    async def unlike_video(self, info, video_id: str) -> bool:
+    async def unlike_video(self, info: Info, video_id: str) -> bool:
         """Unlike a video"""
         user_id = require_user_id(info)
         vid = parse_object_id(video_id)
@@ -382,7 +382,7 @@ class Mutation(VideoEditorMutation, CommentMutations):
         return True
 
     @strawberry.mutation
-    async def follow_user(self, info, user_id_to_follow: str) -> bool:
+    async def follow_user(self, info: Info, user_id_to_follow: str) -> bool:
         """Follow a user"""
         user_id = require_user_id(info)
         me = parse_object_id(user_id)
@@ -406,7 +406,7 @@ class Mutation(VideoEditorMutation, CommentMutations):
         return True
 
     @strawberry.mutation
-    async def unfollow_user(self, info, user_id_to_unfollow: str) -> bool:
+    async def unfollow_user(self, info: Info, user_id_to_unfollow: str) -> bool:
         """Unfollow a user"""
         user_id = require_user_id(info)
         me = parse_object_id(user_id)
@@ -425,7 +425,7 @@ class Mutation(VideoEditorMutation, CommentMutations):
         return True
 
     @strawberry.mutation
-    async def delete_comment(self, info, comment_id: str) -> bool:
+    async def delete_comment(self, info: Info, comment_id: str) -> bool:
         """Delete a comment (soft delete)"""
         user_id = require_user_id(info)
         cid = parse_object_id(comment_id)
@@ -454,7 +454,7 @@ class Mutation(VideoEditorMutation, CommentMutations):
         return True
 
     @strawberry.mutation
-    async def bookmark_video(self, info, video_id: str) -> bool:
+    async def bookmark_video(self, info: Info, video_id: str) -> bool:
         """Bookmark a video"""
         user_id = require_user_id(info)
         vid = parse_object_id(video_id)
@@ -472,7 +472,7 @@ class Mutation(VideoEditorMutation, CommentMutations):
         return True
 
     @strawberry.mutation
-    async def unbookmark_video(self, info, video_id: str) -> bool:
+    async def unbookmark_video(self, info: Info, video_id: str) -> bool:
         """Remove bookmark from a video"""
         user_id = require_user_id(info)
         vid = parse_object_id(video_id)
@@ -490,7 +490,7 @@ class Mutation(VideoEditorMutation, CommentMutations):
         return True
 
     @strawberry.mutation
-    async def flush_metrics(self, info) -> bool:
+    async def flush_metrics(self, info: Info) -> bool:
         """Manually flush metrics buffer (admin only)"""
         await require_admin(info)
         await metrics_buffer.flush_all()

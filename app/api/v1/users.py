@@ -560,7 +560,10 @@ async def patch_user_profile(
         update_doc["gender"] = updates.gender
     
     if "date_of_birth" in updates_dict:
-        update_doc["date_of_birth"] = updates.date_of_birth
+        from app.services import birthday_gate
+        dob = await birthday_gate.profile_birthday(db, user, updates.date_of_birth)
+        if dob is not None or not await birthday_gate.on(db):
+            update_doc["date_of_birth"] = dob
     
     if "tags" in updates_dict:
         update_doc["tags"] = updates.tags
@@ -1221,7 +1224,10 @@ async def update_me(
     if user_update.gender is not None:
         update_doc["gender"] = user_update.gender
     if user_update.date_of_birth is not None:
-        update_doc["date_of_birth"] = user_update.date_of_birth
+        from app.services import birthday_gate
+        dob = await birthday_gate.profile_birthday(db, user, user_update.date_of_birth)
+        if dob is not None:
+            update_doc["date_of_birth"] = dob
     if user_update.tags is not None:
         update_doc["tags"] = user_update.tags
     

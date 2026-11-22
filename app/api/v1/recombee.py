@@ -157,3 +157,21 @@ async def backfill_hashtags(current_user: str = Depends(require_admin)):
             updated += 1
 
     return {"total_processed": len(videos), "total_updated": updated, "cf_failed": cf_failed}
+
+
+@router.get("/clear-staff")
+async def clear_staff_status(current_user: str = Depends(require_admin)):
+    from app.services import recombee_cleanup
+    return await recombee_cleanup.status(get_database())
+
+
+@router.post("/clear-staff")
+async def clear_staff(current_user: str = Depends(require_admin)):
+    """Take staff accounts' past views, likes and saves out of both Recombee
+    databases, in the background (app/services/recombee_cleanup.py)."""
+    from app.services import admin_log, recombee_cleanup
+    db = get_database()
+    out = await recombee_cleanup.start(db)
+    if out.get("started"):
+        await admin_log.record(db, current_user, "recombee_clear_staff")
+    return out

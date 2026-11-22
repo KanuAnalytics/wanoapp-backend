@@ -5,6 +5,7 @@ app/graphql/queries.py
 """
 import re
 import strawberry
+from strawberry.types import Info
 from typing import List, Optional
 from app.core.database import get_database
 from app.services.metrics_service import metrics_buffer
@@ -37,7 +38,7 @@ async def _video_with_buffer(video) -> VideoType:
 @strawberry.type
 class Query:
     @strawberry.field
-    async def me(self, info) -> Optional[UserType]:
+    async def me(self, info: Info) -> Optional[UserType]:
         """Get current authenticated user"""
         user_id = current_user_id(info)
         if not user_id:
@@ -50,7 +51,7 @@ class Query:
         return user_from_doc(user, user_id)
 
     @strawberry.field
-    async def user(self, info, user_id: str) -> Optional[UserType]:
+    async def user(self, info: Info, user_id: str) -> Optional[UserType]:
         """Get a user by ID"""
         db = get_database()
         user = await db.users.find_one({"_id": parse_object_id(user_id), "is_active": True})
@@ -61,7 +62,7 @@ class Query:
     @strawberry.field
     async def users(
         self,
-        info,
+        info: Info,
         user_type: Optional[UserTypeEnum] = None,
         limit: int = 20,
         offset: int = 0
@@ -80,7 +81,7 @@ class Query:
         return [user_from_doc(u, viewer) async for u in cursor]
 
     @strawberry.field
-    async def video(self, info, video_id: str) -> Optional[VideoType]:
+    async def video(self, info: Info, video_id: str) -> Optional[VideoType]:
         """Get a video by ID"""
         db = get_database()
         query = linkable_video_filter(current_user_id(info))
@@ -96,7 +97,7 @@ class Query:
     @strawberry.field
     async def videos(
         self,
-        info,
+        info: Info,
         video_type: Optional[VideoTypeEnum] = None,
         privacy: Optional[VideoPrivacyEnum] = None,
         creator_id: Optional[str] = None,
@@ -147,7 +148,7 @@ class Query:
     @strawberry.field
     async def feed(
         self,
-        info,
+        info: Info,
         limit: int = 20,
         offset: int = 0
     ) -> List[FeedItemType]:
@@ -190,7 +191,7 @@ class Query:
     @strawberry.field
     async def video_comments(
         self,
-        info,
+        info: Info,
         video_id: str,
         limit: int = 20,
         offset: int = 0
@@ -218,7 +219,7 @@ class Query:
     @strawberry.field
     async def search_videos(
         self,
-        info,
+        info: Info,
         query: str,
         limit: int = 20,
         offset: int = 0
@@ -238,7 +239,7 @@ class Query:
         return [await _video_with_buffer(v) for v in docs]
 
     @strawberry.field
-    async def metrics_status(self, info) -> MetricsStatusType:
+    async def metrics_status(self, info: Info) -> MetricsStatusType:
         """Get current metrics buffer status (admin only)"""
         await require_admin(info)
 

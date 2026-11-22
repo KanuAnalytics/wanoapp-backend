@@ -110,6 +110,9 @@ async def lifespan(app: FastAPI):
     small_images_loop.start()  # Small WebP copies of pictures for slow connections
     yield
     # Shutdown
+    repair = getattr(app.state, "recombee_repair", None)
+    if repair is not None and not repair.done():
+        repair.cancel()                     # don't leave it running past shutdown
     await small_images_loop.stop()
     await growth_loop.stop()
     await rescue_loop.stop()

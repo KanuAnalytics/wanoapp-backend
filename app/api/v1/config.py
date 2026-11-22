@@ -73,7 +73,9 @@ APP_FEATURES = ("points", "boost", "earnings", "replies", "challenges", "sounds"
                 "safe_ban", "warnings", "staff_view", "staff_quiet", "mod_tools", "reserved_names",
                 "wano_team", "whats_new_plus", "attention_cap", "challenge_plus",
                 # Nov 2026, app 2.3.61
-                "quick_launch", "push_ask", "comeback")
+                "quick_launch", "push_ask", "comeback",
+                # Nov 2026, app 2.3.62
+                "wa_share", "birthday_needed", "birthday_required", "birthday_unknown_teen", "recombee_detail")
 
 
 @router.get("/features")

@@ -42,7 +42,7 @@ async def test_SI1_android_one_button_opens_app_or_play_store(client, db):
     fallback = unquote(href.split("S.browser_fallback_url=")[1].split(";end")[0])
     assert fallback.startswith("https://play.google.com/store/apps/details?id=com.wano.app&referrer=")
     assert unquote(fallback.split("referrer=")[1]) == "utm_source=wano_share&utm_medium=video&utm_campaign=share"
-    assert len(b) == 1 and not _runs_script(r.text) and r.headers["vary"] == "User-Agent"
+    assert len(b) == 1 and not _runs_script(r.text) and "User-Agent" in r.headers["vary"]
 
 
 async def test_SI2_iphone_app_store_first_then_open(client, db):

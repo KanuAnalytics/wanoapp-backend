@@ -20,7 +20,7 @@ import json
 import logging
 from bson.json_util import dumps
 from app.models.user import UserType
-from recombee_api_client.api_requests import SetViewPortion, AddRating, DeleteRating, AddBookmark, DeleteBookmark, SetItemValues, Batch, DeleteItem
+from recombee_api_client.api_requests import SetViewPortion, AddDetailView, AddRating, DeleteRating, AddBookmark, DeleteBookmark, SetItemValues, Batch, DeleteItem
 from app.services.recombee_service import recombee_send, recombee_signal
 from app.services import creators, for_you, moderation, recommendations, search, trending
 from app.services.recommendations import anon_id, viewer_id
@@ -806,6 +806,22 @@ async def track_video_watch(
             await recombee_signal(req)
         except Exception:
             pass
+        # recombee_detail: "opened this post", with the recommendation it came
+        # from, once per counted view (Recombee's success rate needs these).
+        if counted:
+            try:
+                from app.services import creator_push
+                if await creator_push.on(db, "recombee_detail"):
+                    dkw = {"cascade_create": True}
+                    if body.recomm_id:
+                        dkw["recomm_id"] = body.recomm_id
+                    if body.time_spent is not None:
+                        dkw["duration"] = int(max(0, min(body.time_spent, 86400)))
+                    dreq = AddDetailView(viewer, video_id, **dkw)
+                    dreq.timeout = 5000
+                    await recombee_signal(dreq)
+            except Exception:
+                pass
     try:
         await for_you.record_watch(db, viewer=viewer, video_id=video_id, portion=body.portion)
     except Exception:
@@ -832,6 +848,8 @@ async def track_video_watch(
 
 class FeedbackBody(BaseModel):
     recomm_id: Optional[str] = None
+    # Shares only (app 2.3.62): "whatsapp" from the WhatsApp button, else "other".
+    to: Optional[str] = Field(default=None, max_length=20)
 
 
 async def _visible_video_or_404(db, video_id: str, current_user: Optional[str]) -> dict:
@@ -855,6 +873,13 @@ async def share_video(
     from app.services.shares import count_share
     counted = await count_share(db, video_id, current_user, creator=video.get("creator_id"),
                                 recomm_id=(body or FeedbackBody()).recomm_id)
+    # wa_share: where it was sent (Admin > WhatsApp). Never fails the share.
+    if body and body.to:
+        try:
+            from app.services import wa_growth
+            await wa_growth.shared(db, video_id, current_user, body.to)
+        except Exception:
+            pass
     return {"shared": True, "counted": counted}
 
 

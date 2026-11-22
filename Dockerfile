@@ -19,7 +19,9 @@ WORKDIR /app
 COPY requirements.txt .
 
 # BuildKit cache mount is fine
+# Up-to-date pip and setuptools first (security fixes), then the app's packages.
 RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --no-cache-dir --upgrade "pip>=26.2" "setuptools>=84.1" && \
     pip install --no-cache-dir -r requirements.txt
 
 # Copy the rest

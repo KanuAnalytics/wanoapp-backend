@@ -34,3 +34,30 @@ async def confirm(me: str = Depends(get_current_active_user)):
 @router.post("/birthday")
 async def birthday(body: BirthdayIn, me: str = Depends(get_current_active_user)):
     return await age_check.fix(await _db(), me, body.birthday[:20])
+
+
+# ------------------------------------------------ birthday for accounts without one
+# app/services/birthday_gate.py, behind the "birthday_needed" switch.
+async def _gate_db():
+    from app.services import birthday_gate
+    db = get_database()
+    await creator_push.require(db, birthday_gate.SWITCH)
+    return db
+
+
+@router.get("/needed")
+async def needed(me: str = Depends(get_current_active_user)):
+    from app.services import birthday_gate
+    return await birthday_gate.check(await _gate_db(), me)
+
+
+@router.post("/later")
+async def later(me: str = Depends(get_current_active_user)):
+    from app.services import birthday_gate
+    return await birthday_gate.later(await _gate_db(), me)
+
+
+@router.post("/add")
+async def add(body: BirthdayIn, me: str = Depends(get_current_active_user)):
+    from app.services import birthday_gate
+    return await birthday_gate.add(await _gate_db(), me, body.birthday[:20])

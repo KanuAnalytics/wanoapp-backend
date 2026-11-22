@@ -4,6 +4,7 @@ app/graphql/mutations_folder/video_editor.py
 """
 
 import strawberry
+from strawberry.types import Info
 import httpx
 import asyncio
 from collections import defaultdict
@@ -150,7 +151,7 @@ async def call_video_service_api_background(input: CompileVideoInput, user_id: s
 @strawberry.type
 class VideoEditorMutation:
     @strawberry.mutation
-    async def compile_video(self, info, input: CompileVideoInput) -> ResponseType:
+    async def compile_video(self, info: Info, input: CompileVideoInput) -> ResponseType:
         user_id = info.context.get("user_id")
         if not user_id:
             raise Exception("Authentication required")

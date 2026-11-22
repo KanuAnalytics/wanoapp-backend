@@ -69,6 +69,10 @@ _PLAY = {"on": False}
 # open_after_install switch: the Google Play link carries the post
 # (wano_path=v/<id>) so app 2.3.59+ opens it on its first launch.
 _OPEN = {"on": False}
+# wa_share switch (app 2.3.62): pages carry a 1x1 picture that counts browser
+# opens (app/services/wa_growth.py), and a link sent with the WhatsApp button
+# (?s=wa) says so in the store links, so installs can be told apart.
+_WA = {"on": False}
 
 
 def _server_base() -> str:
@@ -87,8 +91,9 @@ async def _refresh_brand() -> bool:
             _BRAND["on"] = await creator_push.on(get_database(), "brand_links")
             _PLAY["on"] = await creator_push.on(get_database(), "share_play")
             _OPEN["on"] = await creator_push.on(get_database(), "open_after_install")
+            _WA["on"] = await creator_push.on(get_database(), "wa_share")
         except Exception:
-            _BRAND["on"] = _PLAY["on"] = _OPEN["on"] = False
+            _BRAND["on"] = _PLAY["on"] = _OPEN["on"] = _WA["on"] = False
         _BRAND["at"] = time.monotonic()
     return _BRAND["on"]
 
@@ -96,9 +101,12 @@ async def _refresh_brand() -> bool:
 async def _to_site(request: Request, path: str) -> Optional[Response]:
     """With brand_links on, a browser opening the server's own share address
     (links shared by older app versions) goes to the same page on wanoafrica.com."""
+    src = request.query_params.get("s") or ""
+    _SRC.set(src if src in ("wa",) else "")
     if not await _refresh_brand() or request.query_params.get("via") == "site":
         return None
-    return RedirectResponse(f"{SITE}/{path}", status_code=302)
+    # Keep where the link was sent from (?s=wa) on the way to the website.
+    return RedirectResponse(f"{SITE}/{path}" + (f"?s={_SRC.get()}" if _SRC.get() else ""), status_code=302)
 
 
 def share_url(video_id: str) -> str:
@@ -293,6 +301,8 @@ text-decoration:none;font-weight:600;font-size:15px;background:#26262b;color:#ff
 # The phone that opened the page (from its User-Agent), so the first button is
 # the one that works there. Set by each page route; pages still run no scripts.
 _UA: contextvars.ContextVar[str] = contextvars.ContextVar("share_ua", default="")
+# Where the link was sent from: "wa" (the app's WhatsApp button) or "".
+_SRC: contextvars.ContextVar[str] = contextvars.ContextVar("share_src", default="")
 _KIND = {"v": "video", "u": "profile", "tv": "tv"}
 
 
@@ -311,10 +321,13 @@ def _store_links(path: str):
     kind = _KIND.get(path.split("/")[0], "app") if path else "app"
     ios = _safe_https(settings.IOS_APP_STORE_URL)
     android = _safe_https(settings.ANDROID_PLAY_STORE_URL)
+    wa = _WA["on"] and _SRC.get() == "wa"
     if ios:
-        ios += ("&" if "?" in ios else "?") + f"ct=share_{kind}"
+        ios += ("&" if "?" in ios else "?") + f"ct=share_{kind}" + ("_wa" if wa else "")
     if android:
         ref = f"utm_source=wano_share&utm_medium={kind}&utm_campaign=share"
+        if wa:
+            ref += "&utm_content=wa"
         if _OPEN["on"] and re.fullmatch(r"(v|u|tv)/[0-9a-f]{24}", path or ""):
             ref += "&wano_path=" + quote(path, safe="")
         android += ("&" if "?" in android else "?") + "referrer=" + quote(ref, safe="")
@@ -351,7 +364,35 @@ def _cta(video_id: Optional[str], path: Optional[str] = None) -> str:
     if not links:
         return ""
     pitch = '<p class="get">More African videos, films and chat on Wano. Free, and light on your data.</p>'
-    return f'{pitch}<div class="cta">{"".join(links)}</div>'
+    return f'{pitch}<div class="cta">{"".join(links)}</div>{_open_pixel(path)}'
+
+
+def _open_pixel(path: str) -> str:
+    """wa_share: a 1x1 picture that counts a browser opening this page. Link
+    preview robots fetch only og:image, so they aren't counted."""
+    if not _WA["on"]:
+        return ""
+    m = re.fullmatch(r"(v|u|tv)/([0-9a-f]{24})", path or "")
+    kind, item = (m.group(1), m.group(2)) if m else ("app", "")
+    q = f"k={kind}&i={item}&s={_SRC.get() or 'link'}&p={_platform()}"
+    return f'<img src="{_e(_server_base())}/s/open.gif?{_e(q)}" width="1" height="1" alt="" style="position:absolute;opacity:0">'
+
+
+_GIF = (b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\x00\x00\x00!\xf9\x04\x01\x00\x00\x00"
+        b"\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;")
+
+
+@router.get("/s/open.gif", include_in_schema=False)
+async def open_pixel(request: Request, k: str = "", i: str = "", s: str = "", p: str = ""):
+    try:
+        from app.services import wa_growth
+        fwd = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+        who = f"{fwd or (request.client.host if request.client else '')}|{request.headers.get('user-agent', '')[:200]}"
+        await wa_growth.opened(get_database(), k[:4], i[:24], s[:8], p[:8], who)
+    except Exception:
+        pass
+    return Response(_GIF, media_type="image/gif",
+                    headers={"Cache-Control": "no-store, max-age=0", "X-Content-Type-Options": "nosniff"})
 
 
 def _smart_banner(url: Optional[str]) -> str:

@@ -884,6 +884,31 @@ async def city_report(city: str = Query("kampala", max_length=60), fresh: bool =
         raise HTTPException(status_code=404, detail="Unknown city")
 
 
+class StaffBirthdayIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    birthday: str = Field(..., max_length=20)          # YYYY-MM-DD
+    reason: str = Field(..., min_length=3, max_length=300)
+
+
+@router.post("/users/{uid}/birthday")
+async def staff_birthday(uid: str, body: StaffBirthdayIn, current_user: str = Depends(require_admin)):
+    """Wano support changes a birthday (after the one-way lock). Kept in the
+    account's dob_history and the admin log."""
+    from app.services import birthday_gate
+    db = get_database()
+    out = await birthday_gate.staff_set(db, current_user, uid[:40], body.birthday, body.reason)
+    await admin_log.record(db, current_user, "birthday", {"user": uid[:40], "reason": body.reason[:300]})
+    return out
+
+
+@router.get("/whatsapp")
+async def whatsapp_stats(days: int = 28, current_user: str = Depends(require_admin)):
+    """Admin > WhatsApp: shares to WhatsApp, link opens and installs from links,
+    by week, and the posts most sent to WhatsApp (wa_share switch)."""
+    from app.services import wa_growth
+    return await wa_growth.stats(get_database(), days)
+
+
 @router.get("/get-links")
 async def get_links_report(days: int = Query(30, ge=1, le=120), admin: str = Depends(require_admin)):
     """Taps on creator invite links (wanoafrica.com/get?by=name), per link."""

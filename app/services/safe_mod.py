@@ -321,6 +321,8 @@ async def ensure_can(db, user_id, what: str) -> None:
         return
     u = await db.users.find_one({"_id": oid, "mod_state.state": "limited"}, {"mod_state": 1})
     if not u:
+        from app.services import birthday_gate
+        await birthday_gate.ensure(db, oid)      # "birthday_needed": no birthday after 3 "Not now"s
         return
     until = (u.get("mod_state") or {}).get("until")
     if isinstance(until, datetime) and until <= _now():

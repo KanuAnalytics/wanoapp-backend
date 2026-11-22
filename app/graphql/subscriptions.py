@@ -5,6 +5,7 @@ app/graphql/subscriptions.py
 
 """
 import strawberry
+from strawberry.types import Info
 from typing import AsyncGenerator, Optional, List
 import asyncio
 from app.graphql.types import (
@@ -46,7 +47,7 @@ class NotificationType:
 @strawberry.type
 class Subscription:
     @strawberry.subscription
-    async def video_metrics(self, info, video_id: str) -> AsyncGenerator[VideoMetrics, None]:
+    async def video_metrics(self, info: Info, video_id: str) -> AsyncGenerator[VideoMetrics, None]:
         """Subscribe to video metrics updates (views, likes, comments)"""
         viewer = require_user_id(info)
         vq = visible_video_filter(viewer)
@@ -75,7 +76,7 @@ class Subscription:
             await asyncio.sleep(5)  # Update every 5 seconds
     
     @strawberry.subscription
-    async def new_comments(self, info, video_id: str) -> AsyncGenerator[CommentType, None]:
+    async def new_comments(self, info: Info, video_id: str) -> AsyncGenerator[CommentType, None]:
         """Subscribe to new comments on a video"""
         viewer = require_user_id(info)
         vid = parse_object_id(video_id)
@@ -102,7 +103,7 @@ class Subscription:
             last_check = datetime.utcnow()
     
     @strawberry.subscription
-    async def follower_count(self, info, user_id: str) -> AsyncGenerator[int, None]:
+    async def follower_count(self, info: Info, user_id: str) -> AsyncGenerator[int, None]:
         """Subscribe to follower count updates for a user"""
         require_user_id(info)
         uid = parse_object_id(user_id)
@@ -116,7 +117,7 @@ class Subscription:
             await asyncio.sleep(10)  # Check every 10 seconds
     
     @strawberry.subscription
-    async def trending_videos(self, info, country: Optional[str] = None) -> AsyncGenerator[List[VideoType], None]:
+    async def trending_videos(self, info: Info, country: Optional[str] = None) -> AsyncGenerator[List[VideoType], None]:
         """Subscribe to trending videos updates"""
         require_user_id(info)
         db = get_database()
