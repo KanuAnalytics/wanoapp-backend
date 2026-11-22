@@ -533,6 +533,11 @@ async def _purge_quick(db):
     return await quick_posts.purge(db)
 
 
+async def _comeback(db):
+    from app.services.comeback import comeback_nudges
+    return await comeback_nudges(db)
+
+
 async def _purge_messages(db):
     from app.services import messages
     return await messages.purge_messages(db)
@@ -564,7 +569,8 @@ class GrowthLoop:
                        asyncio.create_task(self._every(900, _settle_points, "settle_points")),
                        asyncio.create_task(self._every(1800, _finish_challenges, "finish_challenges")),
                        asyncio.create_task(self._every(1800, _purge_quick, "purge_quick")),
-                       asyncio.create_task(self._every(3600, _purge_messages, "purge_messages"))]
+                       asyncio.create_task(self._every(3600, _purge_messages, "purge_messages")),
+                       asyncio.create_task(self._every(1800, _comeback, "comeback_nudges"))]
 
     async def stop(self):
         for t in self._tasks:

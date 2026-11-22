@@ -249,6 +249,9 @@ const FEATURES = {
   whats_new_plus: ["What's new, visual", "Posters, stories, update notes, tips and event banners (app 2.3.60), audiences, and safe sending: staff first, then 1%, 10%, everyone. Older apps keep the plain card."],
   attention_cap: ["One attention limit", "What's new, the TV strip, flyers, quick-post rings and the review prompt share at most 3 a day per person (by their local day); the last one is kept for the first in your order. Safety notices are never limited. App 2.3.60."],
   challenge_plus: ["Challenges, visual", "A cover picture, entry grid, Join button, example video and Discover banner (app 2.3.60). Older apps keep the text version."],
+  quick_launch: ["Quicker start", "App 2.3.61. A shorter intro animation; What's new, quick posts, milestones, notices and the birthday check appear a moment after the feed instead of with it; phones with about 3 GB of memory or less load one video ahead instead of two. Google Play showed 48% slow starts on 1.5-2 GB phones (21% of installs)."],
+  push_ask: ["Ask for notifications at a good moment", "App 2.3.61. No more notification prompt 4 seconds after opening the app (22% of sessions said no). The app asks after someone follows a person, posts, or opens their notifications, with a short explanation first: at most 3 times, a week apart. Phones that already allow notifications keep working as before."],
+  comeback: ["Comeback reminders", "App 2.3.61 tells the server once a day it was opened. People away 3-14 days get one push in their evening, at most once a week: a live challenge they haven't seen, or new posts from people they follow. Nothing to say, nothing sent. Never staff, never in quiet hours, counts toward the day's new-post limit. Older apps never get one."],
 };
 
 // Challenges, visual (challenge_plus): cover, example video, sound, Discover banner.

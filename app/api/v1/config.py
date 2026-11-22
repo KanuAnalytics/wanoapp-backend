@@ -71,7 +71,9 @@ APP_FEATURES = ("points", "boost", "earnings", "replies", "challenges", "sounds"
                 "comment_guard", "challenge_fair", "teen_comments", "comment_plus", "brand_links", "reaction_country", "upload_locked", "share_play", "open_after_install", "post_limits",
                 # Nov 2026 (server first; the app parts need 2.3.60)
                 "safe_ban", "warnings", "staff_view", "staff_quiet", "mod_tools", "reserved_names",
-                "wano_team", "whats_new_plus", "attention_cap", "challenge_plus")
+                "wano_team", "whats_new_plus", "attention_cap", "challenge_plus",
+                # Nov 2026, app 2.3.61
+                "quick_launch", "push_ask", "comeback")
 
 
 @router.get("/features")
