@@ -315,6 +315,8 @@ async def post_video(
 
         # Only photo posts play a separate song; a video's song is mixed in by /stitch.
         sound = await sound_for_post(input.sound_id) if is_photo_post and input.sound_id else None
+        if is_photo_post and input.sound_id and sound is None:
+            raise HTTPException(status_code=400, detail="This sound is no longer available. Choose another sound.")
         scheduled_at, scheduled_timezone = normalize_schedule(
             input.scheduled_at, input.timezone, require_lead_time=False
         )
@@ -402,6 +404,8 @@ async def _stitch_video(input: VideoStitch, current_user: str):
     from app.services import post_limits
     await post_limits.check(get_database(), current_user)
     sound = await sound_for_post(input.audio.id, input.audio.uri) if input.audio else None
+    if input.audio and input.audio.id and sound is None:
+        raise HTTPException(status_code=400, detail="This sound is no longer available. Choose another sound.")
     scheduled_at, scheduled_timezone = normalize_schedule(
         input.scheduled_at, input.timezone, require_lead_time=False
     )
@@ -433,7 +437,7 @@ async def _create_stitch_job(input: VideoStitch, current_user: str, sound, sched
     return await create_stitch_job(
         user_id=current_user,
         clips=[clip.model_dump() for clip in input.videoUrls],
-        audio_url=input.audio.uri if input.audio else None,
+        audio_url=sound["uri"] if sound else (input.audio.uri if input.audio else None),
         keep_original_sound=input.keepOriginalSound,
         video_volume=input.videoVolume,
         music_volume=input.musicVolume,

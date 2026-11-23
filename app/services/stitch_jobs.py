@@ -80,10 +80,14 @@ async def validate_audio_uri(db, uri: str) -> None:
     parsed = urlparse(uri or "")
     if parsed.scheme != "https" or parsed.username or parsed.port:
         raise StitchValidationError("Audio must be an https URL")
-    cdn_prefix = settings.DO_SPACES_CDN_URL.rstrip("/") + "/"
-    if uri.startswith(cdn_prefix):
+    # Retired catalog audio is unavailable even if it lives on our own CDN.
+    known = await db.songs.find_one({"uri": uri, "is_active": {"$ne": False}}, {"_id": 1})
+    if known:
         return
     if await db.songs.find_one({"uri": uri}, {"_id": 1}):
+        raise StitchValidationError("This sound is no longer available")
+    cdn_prefix = settings.DO_SPACES_CDN_URL.rstrip("/") + "/"
+    if uri.startswith(cdn_prefix):
         return
     if any(s.get("uri") == uri for s in load_json_songs()):
         return

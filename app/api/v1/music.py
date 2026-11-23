@@ -10,7 +10,7 @@ import logging
 
 from app.api.deps import get_current_active_user
 from app.core.database import get_database
-from app.services.songs import find_song, list_genres, list_songs
+from app.services.songs import MOODS, find_song, list_genres, list_songs, song_out
 
 logger = logging.getLogger(__name__)
 
@@ -37,9 +37,12 @@ async def get_songs():
         songs = await list_songs()
     except Exception as e:
         logger.error(f"Unexpected error reading songs: {e}")
-        raise HTTPException(status_code=500, detail="Unexpected error reading songs")
+        raise HTTPException(status_code=503, detail="Music is temporarily unavailable. Try again.")
     genres = await list_genres()
-    return {"songs": songs, "genres": genres}
+    import hashlib
+    import json
+    version = hashlib.sha256(json.dumps([songs, genres], sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:24]
+    return {"songs": songs, "genres": genres, "moods": MOODS, "catalog_version": version}
 
 
 @router.get("/favorites")
@@ -93,6 +96,21 @@ def _visible_posts() -> dict:
     return {**_showable(), "moderation.state": {"$nin": ["held", "removed"]}}
 
 
+def _with_visible_creator(query):
+    # Filter owners before paging, counting or ranking, so hidden owners cannot
+    # consume a page or contribute popularity while their faces disappear.
+    return [
+        {"$match": query},
+        {"$lookup": {"from": "users", "localField": "creator_id", "foreignField": "_id", "as": "_sound_creator"}},
+        {"$match": {"_sound_creator.0": {"$exists": True}, "_sound_creator.is_active": {"$ne": False}}},
+    ]
+
+
+def _sound_metadata(song, *, available=True):
+    data = song_out(song)
+    return {k: data[k] for k in ("id", "title", "artist", "uri", "cover_url", "duration", "duration_sec", "genres", "moods", "ai_generated")} | {"available": available, **({"uri": None} if not available else {})}
+
+
 @router.get("/trending")
 async def trending_sounds(
     country: Optional[str] = Query(None, pattern=r"^[A-Za-z]{2}$"),
@@ -107,7 +125,7 @@ async def trending_sounds(
     if country:
         q["country"] = {"$in": [country.upper(), country.lower()]}
     rows = await db.videos.aggregate([
-        {"$match": q},
+        *_with_visible_creator(q),
         {"$sort": {"created_at": -1}},
         {"$group": {"_id": "$sound.id", "sound": {"$first": "$sound"}, "creators": {"$addToSet": "$creator_id"},
                     "posts": {"$sum": 1}, "views": {"$sum": {"$ifNull": ["$views_count", 0]}}}},
@@ -122,7 +140,7 @@ async def trending_sounds(
     covers, faces = {}, {}
     if sids:
         tops = await db.videos.aggregate([
-            {"$match": {**q, "sound.id": {"$in": sids}}},
+            *_with_visible_creator({**q, "sound.id": {"$in": sids}}),
             {"$sort": {"views_count": -1, "_id": -1}},
             {"$group": {"_id": "$sound.id", "top": {"$first": "$$ROOT"}, "creators": {"$addToSet": "$creator_id"}}},
         ], maxTimeMS=5000).to_list(len(sids))
@@ -133,9 +151,17 @@ async def trending_sounds(
             covers[t["_id"]] = {"post_id": str(t["top"]["_id"]), "thumbnail": thumbnails.best_thumbnail(t["top"])}
             faces[t["_id"]] = [{"id": str(c), "profile_picture": users[c].get("profile_picture"),
                                 "username": users[c].get("username")} for c in t["creators"][:3] if c in users]
-    return [{"sound": {k: (r.get("sound") or {}).get(k) for k in ("id", "title", "artist", "uri")},
-             "creators": r["creators"], "posts": r["posts"], "views": r["views"],
-             "cover": covers.get(r["_id"]), "faces": faces.get(r["_id"], [])} for r in rows]
+    catalog = {str(song["id"]): song async for song in db.songs.find({"id": {"$in": sids}})} if sids else {}
+    result = []
+    for row in rows:
+        catalog_song = catalog.get(row["_id"])
+        if catalog_song and catalog_song.get("is_active") is False:
+            continue
+        sound = (_sound_metadata(catalog_song) if catalog_song else
+                 {k: (row.get("sound") or {}).get(k) for k in ("id", "title", "artist", "uri")})
+        result.append({"sound": sound, "creators": row["creators"], "posts": row["posts"], "views": row["views"],
+                       "cover": covers.get(row["_id"]), "faces": faces.get(row["_id"], [])})
+    return result
 
 
 @router.get("/sounds/{sound_id}/posts")
@@ -149,25 +175,35 @@ async def sound_posts(
     from app.services import thumbnails
     db = get_database()
     sid = _song_id(sound_id)
-    docs = await db.videos.find({**_visible_posts(), "sound.id": sid}).sort(
-        [("views_count", -1), ("_id", -1)]).skip(skip).limit(limit).to_list(limit)
-    users = {u["_id"]: u async for u in db.users.find(
-        {"_id": {"$in": list({d.get("creator_id") for d in docs})}, "is_active": {"$ne": False}},
-        {"username": 1, "display_name": 1, "profile_picture": 1})}
+    page = await db.videos.aggregate([
+        *_with_visible_creator({**_visible_posts(), "sound.id": sid}),
+        {"$facet": {
+            "items": [{"$sort": {"views_count": -1, "_id": -1}}, {"$skip": skip}, {"$limit": limit}],
+            "posts": [{"$count": "value"}],
+            "creators": [{"$group": {"_id": "$creator_id"}}, {"$count": "value"}],
+        }},
+    ], maxTimeMS=5000).to_list(1)
+    page = page[0] if page else {}
+    docs = page.get("items", [])
+    catalog_song = await db.songs.find_one({"id": sid})
     sound = None
-    if docs:
-        sound = {k: (docs[0].get("sound") or {}).get(k) for k in ("id", "title", "artist", "uri")}
+    if catalog_song:
+        sound = _sound_metadata(catalog_song, available=catalog_song.get("is_active") is not False)
     else:
-        song = await find_song(sid)
-        if song:
-            sound = {"id": sid, "title": song.get("title"), "artist": song.get("artist"), "uri": song.get("uri")}
+        legacy = await find_song(sid)
+        if legacy:
+            sound = _sound_metadata(legacy)
+        elif docs:
+            # Original sounds not in the managed library keep their legacy shape.
+            sound = {k: (docs[0].get("sound") or {}).get(k) for k in ("id", "title", "artist", "uri")}
     items = []
     for d in docs:
-        u = users.get(d.get("creator_id"))
-        if not u:
-            continue
+        u = d["_sound_creator"][0]
         items.append({"id": str(d["_id"]), "thumbnail": thumbnails.best_thumbnail(d),
                       "views_count": d.get("views_count", 0), "likes_count": d.get("likes_count", 0),
                       "creator": {"id": str(u["_id"]), "username": u.get("username"),
                                   "display_name": u.get("display_name"), "profile_picture": u.get("profile_picture")}})
-    return {"sound": sound, "items": items}
+    total_posts = (page.get("posts") or [{"value": 0}])[0]["value"]
+    total_creators = (page.get("creators") or [{"value": 0}])[0]["value"]
+    return {"sound": sound, "items": items, "stats": {"posts": total_posts, "creators": total_creators},
+            "has_more": skip + len(items) < total_posts}

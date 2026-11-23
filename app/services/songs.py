@@ -22,6 +22,7 @@ songs.json is used.
 import json
 import logging
 import os
+import math
 from typing import List, Optional
 
 from app.core.database import get_database
@@ -32,21 +33,46 @@ SONGS_FILE = os.path.join(os.path.dirname(__file__), "..", "api", "v1", "json", 
 
 _json_songs: Optional[List[dict]] = None
 
+MOODS = [
+    {"id": "chill-aesthetic", "name": "Chill & Aesthetic"},
+    {"id": "diaspora-caribbean", "name": "Diaspora & Caribbean"},
+    {"id": "emotional-story", "name": "Emotional & Story"},
+    {"id": "hype-energy", "name": "Hype & Energy"},
+    {"id": "culture-roots", "name": "Culture & Roots"},
+]
+
+
+def song_moods(doc: dict) -> List[str]:
+    raw = doc.get("source_categories") or []
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for value in raw:
+        if not isinstance(value, str):
+            continue
+        for mood in MOODS:
+            if (value.strip().endswith(mood["name"].upper()) or value == mood["id"]) and mood["id"] not in out:
+                out.append(mood["id"])
+    return out
+
 
 def duration_to_seconds(duration) -> Optional[float]:
     """'2:23' -> 143.0. Anything unreadable becomes None."""
-    if duration is None:
+    if duration is None or isinstance(duration, bool):
         return None
     if isinstance(duration, (int, float)):
-        return float(duration)
+        value = float(duration)
+        return value if math.isfinite(value) and value >= 0 else None
     try:
         parts = [float(p) for p in str(duration).strip().split(":")]
     except ValueError:
         return None
     seconds = 0.0
     for part in parts:
+        if not math.isfinite(part) or part < 0:
+            return None
         seconds = seconds * 60 + part
-    return seconds
+    return seconds if math.isfinite(seconds) else None
 
 
 def load_json_songs() -> List[dict]:
@@ -84,15 +110,20 @@ def song_out(doc: dict) -> dict:
     API shape of a song. id/title/uri/duration are the fields older app
     versions read and must keep their meaning; the rest are additions.
     """
+    seconds = duration_to_seconds(doc.get("duration_sec"))
+    if seconds is None:
+        seconds = duration_to_seconds(doc.get("duration"))
     return {
         "id": str(doc.get("id")),
         "title": (doc.get("title") or "").strip(),
         "uri": doc.get("uri"),
-        "duration": doc.get("duration"),
-        "duration_sec": doc.get("duration_sec") or duration_to_seconds(doc.get("duration")),
+        "duration": doc.get("duration") if duration_to_seconds(doc.get("duration")) is not None else None,
+        "duration_sec": seconds,
         "artist": doc.get("artist") or None,
         "cover_url": doc.get("thumbnail") or None,
         "genres": song_genres(doc),
+        "moods": song_moods(doc),
+        "ai_generated": doc.get("ai_generated") is True,
     }
 
 
@@ -128,8 +159,12 @@ async def list_songs() -> List[dict]:
                 default=len(genre_rank),
             ))
             return [song_out(d) for d in docs]
+        # An intentionally empty/retired managed library is not a missing library.
+        if await db.songs.estimated_document_count() > 0:
+            return []
     except Exception:
-        logger.exception("Reading songs from the database failed; using songs.json")
+        logger.exception("Reading songs from the database failed")
+        raise
     return [song_out(s) for s in load_json_songs()]
 
 
@@ -156,7 +191,8 @@ async def find_song(song_id: Optional[str]) -> Optional[dict]:
         if await db.songs.estimated_document_count() > 0:
             return None
     except Exception:
-        logger.exception("Looking up song %s failed; using songs.json", song_id)
+        logger.exception("Looking up song %s failed", song_id)
+        raise
     return next((s for s in load_json_songs() if s["id"] == song_id), None)
 
 
@@ -183,10 +219,11 @@ async def sound_for_post(song_id: Optional[str] = None, audio_uri: Optional[str]
     """
     try:
         song = await find_song(song_id)
-        if song is None and audio_uri:
+        # An explicit id is authoritative. Never silently switch recordings.
+        if song is None and audio_uri and not song_id:
             db = get_database()
             song = await db.songs.find_one(_active_songs_query({"uri": audio_uri}))
-            if song is None:
+            if song is None and await db.songs.estimated_document_count() == 0:
                 song = next((s for s in load_json_songs() if s["uri"] == audio_uri), None)
         return post_sound(song)
     except Exception:
