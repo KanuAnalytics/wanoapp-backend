@@ -132,7 +132,7 @@ $("logout").addEventListener("click", () => logout());
 
 const PAGES = [
   ["overview", "Overview"], ["payouts", "Payouts"], ["pool", "Cash pool"], ["creators", "Creators"],
-  ["kampala", "Kampala growth"], ["whatsapp", "WhatsApp"], ["moderation", "Reported posts"], ["messagereports", "Reported messages"], ["quickreports", "Reported quick posts"], ["commentreports", "Reported comments"], ["safety", "Safety record"], ["mod", "Moderation"], ["staff", "Staff"], ["team", "Wano Team"], ["whatsnew", "What's new"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["cities", "Cities"], ["categories", "Categories"], ["films", "Film submissions"], ["tvtitles", "Wano TV titles"], ["tvnumbers", "Wano TV numbers"], ["tvstrip", "Wano TV strip"], ["siteenq", "Website enquiries"], ["sitemail", "Mailing list"], ["sitedel", "Account deletion"], ["flyers", "Local flyers"], ["places", "Places"], ["failedups", "Failed uploads"], ["switches", "Feature switches"], ["updates", "Force update"], ["speed", "Speed"], ["storage", "Video storage"], ["log", "Activity log"],
+  ["kampala", "Kampala growth"], ["whatsapp", "WhatsApp"], ["moderation", "Reported posts"], ["messagereports", "Reported messages"], ["quickreports", "Reported quick posts"], ["commentreports", "Reported comments"], ["safety", "Safety record"], ["mod", "Moderation"], ["staff", "Staff"], ["team", "Wano Team"], ["whatsnew", "What's new"], ["challenges", "Challenges"], ["picks", "Wano Picks"], ["studio", "Studio"], ["music", "Music library"], ["cities", "Cities"], ["categories", "Categories"], ["films", "Film submissions"], ["tvtitles", "Wano TV titles"], ["tvnumbers", "Wano TV numbers"], ["tvstrip", "Wano TV strip"], ["siteenq", "Website enquiries"], ["sitemail", "Mailing list"], ["sitedel", "Account deletion"], ["flyers", "Local flyers"], ["places", "Places"], ["failedups", "Failed uploads"], ["switches", "Feature switches"], ["updates", "Force update"], ["speed", "Speed"], ["storage", "Video storage"], ["log", "Activity log"],
 ];
 let current = "overview";
 const counts = {};
@@ -164,6 +164,7 @@ const ACTION_TEXT = { none: "Nothing (just the message)", quick_post: "Make a qu
   my_profile: "Their profile", settings: "Settings", categories: "Points categories", points: "Wano points",
   challenges: "Challenges (app 2.3.60+)", challenge: "One challenge (app 2.3.60+)" };
 const FEATURES = {
+  music_import: ["Music imports", "Admins can add M4A music and matching WebP covers. Existing tracks are never replaced."],
   points: ["Wano points", "Creators earn points for real views on their posts."],
   boost: ["Boost", "Creators spend points to show a post to more people. Needs Wano points."],
   earnings: ["Cash earnings", "The monthly cash pool, the creator checklist and payouts. Needs Wano points."],
@@ -2128,6 +2129,69 @@ async function moderate(btn, v, action, main) {
     action === "remove" ? "Remove" : "Restore", action === "remove");
   if (ok && await act(btn, () => api("POST", `/reports/admin/videos/${v.id}/decision`, { action }), action === "remove" ? "Removed" : "Restored")) RENDER.moderation(main);
 }
+
+// Paired-file imports use the current admin session; no secrets in manifests.
+RENDER.music = async function(main) {
+  const [library, switches] = await Promise.all([api('GET', '/music/songs'), api('GET', '/admin/features')]);
+  const selected = el('input', {type:'file', multiple:true, id:'music-import-files', accept:'.json,.m4a,.webp'});
+  const status = el('p', {id:'music-import-status', class:'muted', text:'Choose the manifest.json and all its M4A and WebP files together.'});
+  const preview = el('div', {id:'music-import-preview'});
+  const results = el('div', {id:'music-import-results'});
+  let batch = null, files = null;
+  const upload = el('button', {class:'btn', id:'music-import-start', text:'Import music and artwork', disabled:true, onclick: async () => {
+    if (!batch || !files) return;
+    if (!await confirmBox('Import this music?', `${batch.tracks.length} tracks with matching artwork will be added to Wano Music. Existing imports are skipped. Existing library entries will not be replaced.`, 'Import')) return;
+    upload.disabled = true; selected.disabled = true;
+    let created = 0, skipped = 0, failed = 0;
+    results.replaceChildren();
+    for (const [i, row] of batch.tracks.entries()) {
+      status.textContent = `Importing ${i + 1}/${batch.tracks.length}: ${row.title}`;
+      try {
+        const body = new FormData();
+        body.append('manifest', JSON.stringify(row));
+        body.append('audio', files.get(row.audio)); body.append('cover', files.get(row.cover));
+        const response = await fetch(API + '/admin/music/import', {method:'POST', headers:{Authorization:'Bearer ' + token}, body});
+        let out; try { out = await response.json(); } catch (_) { throw new Error('Upload failed (' + response.status + ')'); }
+        if (!response.ok) throw new Error(typeof out.detail === 'string' ? out.detail : 'Upload failed (' + response.status + ')');
+        if (out.created) created++; else skipped++;
+        results.append(el('div', {class:'small', text:`${out.created ? 'Added' : 'Already imported'}: ${out.title}`}));
+      } catch (e) {
+        failed++;
+        results.append(el('div', {class:'warn', text:`Failed: ${row.title} — ${e.message}`}));
+        // Stop on error. Retrying the same batch safely skips completed songs.
+        break;
+      }
+    }
+    status.textContent = `${created} added, ${skipped} already imported, ${failed} failed. ${failed ? 'Retry the same batch after resolving the error.' : 'Audio and artwork imported.'}`;
+    selected.disabled = false; upload.disabled = false;
+  }});
+  selected.addEventListener('change', async () => {
+    batch = null; files = new Map(); upload.disabled = true; preview.replaceChildren();
+    try {
+      for (const f of selected.files) {
+        if (files.has(f.name)) throw new Error('Duplicate filenames selected. Use the flat import package.');
+        files.set(f.name, f);
+      }
+      const mf = files.get('manifest.json');
+      if (!mf || mf.size > 2000000) throw new Error('Choose manifest.json together with the music and covers.');
+      const data = JSON.parse(await mf.text());
+      if (!Array.isArray(data.tracks) || !data.tracks.length || data.tracks.length > 500) throw new Error('Invalid music manifest');
+      const genres = new Set(library.genres.map(g => g.id));
+      for (const row of data.tracks) {
+        if (typeof row.title !== 'string' || !row.title.trim() || !files.has(row.audio) || !files.has(row.cover)) throw new Error('Missing title, music or cover in the selected files.');
+        if (!Array.isArray(row.genres) || !row.genres.length || row.genres.some(g => !genres.has(g))) throw new Error('A track uses an unknown genre.');
+      }
+      batch = data;
+      status.textContent = `${data.tracks.length} tracks ready, each with artwork. ${library.songs.length} songs currently in Wano.`;
+      preview.replaceChildren(el('table', {}, el('thead', {}, el('tr', {}, el('th', {text:'Title'}),el('th',{text:'Genres'}))),
+        el('tbody', {}, ...data.tracks.map(row => el('tr', {}, el('td',{text:row.title}), el('td',{text:row.genres.join(', ')}))))));
+      upload.disabled = !switches.music_import;
+    } catch (e) {status.textContent = e.message;}
+  });
+  main.replaceChildren(...head('Music library', `${library.songs.length} tracks. Imports add full audio and matching album artwork to the existing music library.`),
+    !switches.music_import ? el('div',{class:'warn',text:'Music imports is off. Turn it on in Feature switches to import.'}) : null,
+    el('div',{class:'card'}, selected, status, upload), preview, results);
+};
 
 // ------------------------------------------------------------ start
 

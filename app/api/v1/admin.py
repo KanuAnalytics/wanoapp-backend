@@ -950,3 +950,8 @@ async def film_submission_status(ref: str, body: FilmStatusBody, admin: str = De
         raise HTTPException(status_code=404, detail="Not found")
     await admin_log.record(db, admin, "film_submission_status", {"ref": row["ref"], "status": body.status, "title": row["film_title"]})
     return row
+
+
+# Music importer uses the same admin authentication as this router.
+from app.api.v1.admin_music import router as music_import_router
+router.include_router(music_import_router)
