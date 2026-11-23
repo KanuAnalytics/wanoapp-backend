@@ -94,6 +94,26 @@ class TvMaker(BaseModel):
     role: str = Field(..., description="e.g. Filmmaker, Featured in film")
 
 
+class TvPart(BaseModel):
+    """tv_parts: an episode that is a time range of the film (seconds)."""
+    number: int
+    title: str
+    start: float
+    end: float
+
+
+class TvStory(BaseModel):
+    """tv_story: Finish the Story, a challenge for this title's next episode."""
+    challenge_id: str
+    hashtag: str
+    title: str = ""
+    ends_at: Optional[datetime] = None
+    live: bool = False
+    # The fan version chosen as the next episode (a post id), once picked.
+    winner_video_id: Optional[str] = None
+    winner_name: Optional[str] = None
+
+
 class TvTitleResponse(BaseModel):
     """A movie or series as the app shows it."""
     id: str
@@ -129,6 +149,15 @@ class TvTitleResponse(BaseModel):
     loves: int = 0
     # tv_downloads: an offline copy can be saved.
     downloadable: bool = False
+    # tv_info (2.3.63): ISO codes. Old apps ignore these.
+    countries: List[str] = Field(default_factory=list)
+    languages: List[str] = Field(default_factory=list)
+    # tv_parts: watch the film as episodes (time ranges of the same file).
+    parts: List[TvPart] = Field(default_factory=list)
+    # tv_clip_it: viewers may post clips of this title.
+    clips_allowed: bool = False
+    # tv_story: Finish the Story.
+    story: Optional[TvStory] = None
 
 
 class TvGenreResponse(BaseModel):

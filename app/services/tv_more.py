@@ -264,7 +264,8 @@ async def clips(db) -> Dict[str, dict]:
     hit = _cache.get("clips")
     if hit and time.monotonic() - hit[0] < CLIPS_CACHE_SECONDS:
         return hit[1]
-    rows = await db.tv_clips.find({}).limit(MAX_CLIPS).to_list(MAX_CLIPS)
+    # Wano's own links first, then viewers' clips, newest first.
+    rows = await db.tv_clips.find({}).sort([("by_viewer", 1), ("at", -1)]).limit(MAX_CLIPS).to_list(MAX_CLIPS)
     titles = {d["_id"]: d async for d in db.tv_titles.find(
         {"_id": {"$in": list({r["title_id"] for r in rows})}, "is_active": True},
         {"title": 1, "poster": 1, "type": 1, "age_rating": 1})}

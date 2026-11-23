@@ -212,6 +212,11 @@ const FEATURES = {
   clear_icons: ["Clearer icons", "Icons and tab names stay readable on bright videos (a thin dark edge and a soft top fade, measured at 3:1 or better on pure white), and Messages becomes two chat bubbles instead of a paper plane. Needs app 2.3.24 or later."],
   recombee_fast: ["Faster For You (Recombee)", "The server keeps its connections to Recombee open instead of opening a new one for every call (the Recombee step was 0.6-1 s of every For You page), asks for 60 picks instead of 100, and sends view signals in the background. Works for every app version. Check Recombee health: GET /api/v1/recombee/health."],
   recombee_tune: ["Better For You picks (Recombee)", "Recombee stops pushing down good picks the viewer was never shown (rotation 0.5 to 0.1). Compare personal vs popular watch rates on the For You report a few days after turning it on. Works for every app version."],
+  tv_info: ["Wano TV: true facts and films from home", "App 2.3.63. Each title shows what's true: HD or SD, subtitles, minutes and roughly how much data it uses (instead of the old Dolby/4K picture), where it's from (flag) and its language. Home gets Films from Nigeria, Tanzania, Cameroon… rows and Search browses by country. Rows with under 3 titles hide; small heart counts (under 10) hide; episode times show in the viewer's own time; upcoming episodes appear in Coming soon. Fill in Countries and Languages on each title."],
+  tv_data_saver: ["Wano TV: cheap on data", "App 2.3.63. On mobile data with the app's Data saver on (the default), films start at 360p (about 8 MB a minute) instead of Auto; on Wi-Fi, Auto as before. Anyone can still pick a quality."],
+  tv_parts: ["Wano TV: episodes from one film", "App 2.3.63. Films with episodes saved on the title (Admin > Wano TV titles > Episodes from one film) can be watched as episodes or as the full film. An episode is a time range of the same film: nothing is copied or uploaded again."],
+  tv_clip_it: ["Wano TV: Clip it", "App 2.3.63. Viewers post 5-60 seconds of a film to their feed, with \"Watch the full film\". Only titles marked \"Viewers may post clips\" (check the licence), on Cloudflare, rated All or 13+. Same limits as posting, 5 clips a day."],
+  tv_story: ["Wano TV: Finish the Story", "App 2.3.63. A title linked to a challenge (on the title: Finish the Story) shows \"The next episode is yours\": fans post their version with the hashtag. Pick the winner (18+) on the title and it shows a winner banner."],
   recombee_detail: ["Opened-post signal (Recombee)", "Each post someone watches in the feed is also sent to Recombee as \"opened this post\", with the For You recommendation it came from, as Recombee asks. Better personal picks and a true success rate on the Recombee dashboard. Works for every app version. Staff never count."],
   recombee_eu: ["For You from Europe (Recombee)", "For You asks the new EU Recombee database (about 4x faster from our server) instead of the US one. Every write still goes to both, so turning it off goes straight back with nothing lost. If the EU database can't answer, the US one does. Check: GET /api/v1/recombee/health (answering: eu-west). Works for every app version."],
   lean_preload: ["Lighter preloading (iPhone)", "iPhones load the next 2 videos instead of 5, and read only about 10 seconds ahead in a video. About half the minutes Cloudflare billed in November were never watched. Android already loads 2. Needs app 2.3.43."],
@@ -1214,6 +1219,11 @@ const RENDER = {
     const playbackTable = el("div", { class: "card" }, el("h3", {text: "Playback sessions · trailers and episodes"}), el("p", {class:"small muted",text:"Sessions count actual playback. Completion and average position include signed-out devices. Only new app versions report these."}), el("table", {}, el("thead", {}, el("tr", {}, ...["Title / episode", "Starts", "Completed", "Avg reached", "Errors", "Stopped at <25 / 25–50 / 50–75 / 75–100%"].map(x => el("th",{text:x})))), el("tbody",{}, ...playback.items.map(x => el("tr", {}, el("td",{text:(r.items.find(t => t.id === x.title_id)?.title || x.title_id) + (x.trailer ? " · Trailer" : " · " + (x.episode || "Film"))}), ...[x.starts,x.completed,x.avg_pct === null ? "–" : x.avg_pct + "%",x.errors,(x.stopped_quarters || []).join(" / ")].map(v => el("td",{text:String(v)})))))));
     main.replaceChildren(...head("Wano TV numbers", "Plays count once per person per title per day (signed in or not). Started, finished and how far people get come from signed-in viewers. Plays are kept 60 days."),
       tabs, playbackTable,
+      ...((playback.recent_errors || []).length ? [el("div", { class: "card" }, el("h3", { text: "Why films didn't play" }),
+        el("p", { class: "small muted", text: "What the phone's player said (app 2.3.63 and later). The same message many times on one title means that film needs fixing." }),
+        el("table", {}, el("thead", {}, el("tr", {}, ...["Title", "Phone", "Message", "Times", "Last"].map((x) => el("th", { text: x })))),
+          el("tbody", {}, ...playback.recent_errors.map((x) => el("tr", {}, el("td", { text: r.items.find((t) => t.id === x.title_id)?.title || x.title_id }),
+            el("td", { text: x.platform || "?" }), el("td", { class: "small", text: x.detail }), el("td", { text: String(x.count) }), el("td", { class: "small", text: when(x.last) }))))))] : []),
       el("div", { class: "card" }, el("div", { class: "row space" }, el("h3", { text: `${num(r.total_plays)} plays` }), el("div", { class: "small muted", text: `${num(r.people_started)} people have ever started a title` })), bars),
       el("div", { class: "card" }, r.items.length ? el("table", {}, el("thead", {}, el("tr", {}, ...H.map((h) => el("th", { text: h })))),
         el("tbody", {}, ...r.items.map((x) => el("tr", {}, el("td", { text: x.title + (x.status !== "live" ? ` (${x.status.replace("_", " ")})` : "") }),
@@ -1789,9 +1799,13 @@ async function tvEditor(main, box, id) {
     distributor: inp((t.credits || {}).distributor || "Wano TV"),
     people: area(((t.credits || {}).people || []).map((p) => [p.name, p.role, p.username ? "@" + p.username : ""].filter(Boolean).join(" | ")).join("\n"), 4),
     video_url: inp(t.cf_uid ? "" : t.video_url, { placeholder: t.cf_uid ? "Film uploaded to Cloudflare (paste a Spaces link to replace it)" : "https://…/wano-tv/<folder>/master.m3u8" }),
+    countries: inp((t.countries || []).join(", "), { placeholder: "ng, ke (2-letter country codes)" }),
+    languages: inp((t.languages || []).join(", "), { placeholder: "en, fr, sw (2-letter language codes)" }),
+    clips_allowed: el("input", { type: "checkbox" }),
     featured: el("input", { type: "checkbox" }), popularity: inp(t.popularity || 0, { type: "number" }), coming_at: inp(t.coming_at || "", { type: "date" }), premiere_at: inp(t.premiere_at ? new Date(t.premiere_at).toISOString().slice(0,16) : "", { type: "datetime-local" }),
   };
   f.featured.checked = !!t.featured;
+  f.clips_allowed.checked = !!t.clips_allowed;
   const field = (label, node, hint) => el("label", { class: "field" }, el("span", { text: label }), node, hint ? el("div", { class: "small muted", text: hint }) : null);
   const picture = (label, input) => {
     const file = el("input", { type: "file", accept: ".jpg,.jpeg,.png,.webp" });
@@ -1815,6 +1829,9 @@ async function tvEditor(main, box, id) {
         .map((p) => ({ name: p[0], role: p[1], username: (p[2] || "").replace(/^@/, "") })) },
     video_url: f.video_url.value.trim() || (t.cf_uid ? t.video_url : ""), featured: f.featured.checked,
     popularity: Number(f.popularity.value) || 0, coming_at: f.coming_at.value || null, premiere_at: f.premiere_at.value ? f.premiere_at.value + ":00Z" : null,
+    countries: f.countries.value.split(",").map((c) => c.trim().toLowerCase()).filter(Boolean),
+    languages: f.languages.value.split(",").map((c) => c.trim().toLowerCase()).filter(Boolean),
+    clips_allowed: f.clips_allowed.checked,
   });
   const save = el("button", { class: "btn", text: t.id ? "Save" : "Create (Hidden)", onclick: async (e) => {
     const out = await act(e.target, () => t.id ? api("PUT", `/admin/tv/titles/${t.id}`, body()) : api("POST", "/admin/tv/titles", body()), "Saved");
@@ -1839,6 +1856,8 @@ async function tvEditor(main, box, id) {
     sections.push(filmCard(t, null, reload));
 
     if (t.type === "series") sections.push(episodesCard(t, reload));
+    else sections.push(partsCard(t));
+    sections.push(storyCard(t, reload));
 
     // Clips in the feed
     const vid = el("input", { type: "text", placeholder: "Post link, e.g. https://wanoafrica.com/v/…" });
@@ -1859,7 +1878,10 @@ async function tvEditor(main, box, id) {
         field("One-line description", f.description), field("Story (synopsis)", f.synopsis),
         field("Coming soon date (optional)", f.coming_at, "Shown on the Coming soon row."),
         field("Automatic series premiere (UTC)", f.premiere_at, "19:00 Tanzania = 16:00 UTC. Only ready, released episodes become playable."),
-        el("label", { class: "row", style: "gap: 8px; margin: 8px 0;" }, f.featured, el("span", { text: "Featured (top of Wano TV)" })), field("Popularity boost (0-1000)", f.popularity)),
+        el("label", { class: "row", style: "gap: 8px; margin: 8px 0;" }, f.featured, el("span", { text: "Featured (top of Wano TV)" })), field("Popularity boost (0-1000)", f.popularity),
+        field("Countries", f.countries, "Where the film is from: ng Nigeria, ke Kenya, ug Uganda, tz Tanzania, cm Cameroon, gh Ghana, za South Africa, jm Jamaica…"),
+        field("Languages", f.languages, "What's spoken: en English, fr French, sw Swahili, yo Yoruba, ha Hausa, ig Igbo, am Amharic, zu Zulu…"),
+        el("label", { class: "row", style: "gap: 8px; margin: 8px 0;" }, f.clips_allowed, el("span", { text: "Viewers may post clips (Clip it): only if the licence allows" }))),
       el("div", {}, picture("Poster (portrait)", f.poster), picture("Landscape picture", f.backdrop), picture("Trailer picture", f.thumb),
         field("Trailer link", f.trailer), field("Trailer length (seconds)", f.trailer_s),
         field("Director", f.director), field("Cast", f.cast, "Comma separated"), field("Production", f.production), field("Distributor", f.distributor),
@@ -1867,6 +1889,55 @@ async function tvEditor(main, box, id) {
         t.type === "series" ? null : field("Film on Spaces (optional)", f.video_url, "Or upload the film below, after saving."))),
     save), ...sections);
   box.scrollIntoView({ behavior: "smooth" });
+}
+
+// tv_parts: the film as episodes (time ranges of the same file).
+function partsCard(t) {
+  const fmt = (sec) => { sec = Math.round(Number(sec) || 0); const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s2 = sec % 60;
+    return (h ? h + ":" + String(m).padStart(2, "0") : m) + ":" + String(s2).padStart(2, "0"); };
+  const parse = (txt) => { const p = String(txt).trim().split(":").map(Number); if (p.some((x) => !Number.isFinite(x))) return NaN;
+    return p.reduce((a, b) => a * 60 + b, 0); };
+  const list = el("div", {});
+  const status = el("p", { class: "small muted", text: "" });
+  let rows = [];
+  const draw = (parts) => {
+    const box = (v, attrs) => { const i = el("input", { type: "text", ...attrs }); i.value = v; return i; };
+    rows = parts.map((p) => ({ title: box(p.title || "", { maxlength: 80, placeholder: "Episode title (optional)" }),
+      start: box(fmt(p.start), { style: "width: 80px;" }), end: box(fmt(p.end), { style: "width: 80px;" }) }));
+    list.replaceChildren(...rows.map((r, i) => el("div", { class: "row", style: "gap: 6px; margin: 4px 0; align-items: center;" },
+      el("span", { class: "small", text: `${i + 1}.` }), r.start, el("span", { text: "to" }), r.end, r.title,
+      el("button", { class: "btn small secondary", text: "×", onclick: () => { const c = collect(); c.splice(i, 1); draw(c); } }))));
+  };
+  const collect = () => rows.map((r) => ({ start: parse(r.start.value), end: parse(r.end.value), title: r.title.value.trim() }));
+  const load = async () => {
+    const r = await api("GET", `/admin/tv/titles/${t.id}/parts`);
+    const p = r.proposal || {};
+    if (p.state === "running") { status.textContent = "Looking for good places to cut… (a few minutes; this page checks again)"; setTimeout(load, 15000); }
+    else if (p.state === "failed") status.textContent = "Couldn't propose: " + (p.error || "unknown") + ". You can still type the episodes.";
+    else if (p.state === "done") status.textContent = (p.parts || []).length ? `Proposed from ${(p.used || []).join(", ") || "even lengths"}. Check each cut (play the film at those times), adjust, then Save.` : (p.note || "No proposal.");
+    draw(r.parts && r.parts.length ? r.parts : (p.parts || []));
+  };
+  const card = el("div", { class: "card" }, el("h3", { text: "Episodes from one film" }),
+    el("p", { class: "small muted", text: "Watch as episodes, or as the full film. Each episode is a time range of this same film (nothing is copied). Cut where the story turns; 8-15 minutes works well on phones. Nothing shows in the app until you Save (and the \"episodes from one film\" switch is on). Agree it with the filmmaker first." }),
+    status, list,
+    el("div", { class: "row", style: "gap: 8px; margin-top: 8px; flex-wrap: wrap;" },
+      el("button", { class: "btn small secondary", text: "Propose episodes", onclick: async (e) => { if (await act(e.target, () => api("POST", `/admin/tv/titles/${t.id}/parts/propose`), "Started")) load(); } }),
+      el("button", { class: "btn small secondary", text: "+ Episode", onclick: () => { const c = collect(); const last = c[c.length - 1]; c.push({ start: last ? last.end : 0, end: (last ? last.end : 0) + 600, title: "" }); draw(c); } }),
+      el("button", { class: "btn small", text: "Save episodes", onclick: async (e) => { if (await act(e.target, () => api("PUT", `/admin/tv/titles/${t.id}/parts`, { parts: collect() }), "Saved")) load(); } }),
+      el("button", { class: "btn small ghost-danger", text: "Remove episodes", onclick: async (e) => { if (await act(e.target, () => api("PUT", `/admin/tv/titles/${t.id}/parts`, { parts: [] }), "Removed")) load(); } })));
+  load().catch(() => {});
+  return card;
+}
+
+// tv_story: Finish the Story.
+function storyCard(t, reload) {
+  const st = t.story || {};
+  const ch = el("input", { type: "text", maxlength: 40, placeholder: "Challenge ID (Admin > Challenges)" }); ch.value = st.challenge_id || "";
+  const win = el("input", { type: "text", maxlength: 40, placeholder: "Winning post ID (optional, 18+ only)" }); win.value = st.winner_video_id || "";
+  return el("div", { class: "card" }, el("h3", { text: "Finish the Story" }),
+    el("p", { class: "small muted", text: "Link a challenge whose hashtag asks fans to post what happens next. The title then shows \"The next episode is yours\" while the challenge is live. When you pick a winner (must be 18+), add the post here: the title shows a winner banner. Entry rules must say Wano may use the winning video." }),
+    el("div", { class: "row", style: "gap: 8px; flex-wrap: wrap;" }, ch, win,
+      el("button", { class: "btn small", text: "Save", onclick: async (e) => { if (await act(e.target, () => api("PUT", `/admin/tv/titles/${t.id}/story`, { challenge_id: ch.value.trim() || null, winner_video_id: win.value.trim() || null }), "Saved")) reload(); } })));
 }
 
 // Film, subtitles and offline copy, for a title (ep = null) or one episode.

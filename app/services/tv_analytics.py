@@ -15,7 +15,10 @@ async def record(db, title_id, viewer, body):
         raise HTTPException(404, "Title not available")
     if trailer and not (doc.get("trailer") or {}).get("video_url"):
         raise HTTPException(404, "Trailer not available")
-    if not trailer and body.episode:
+    if not trailer and body.episode and body.episode.startswith("p"):
+        if not any(isinstance(p, dict) and f"p{p.get('number')}" == body.episode for p in doc.get("parts") or []):
+            raise HTTPException(404, "Episode not available")
+    elif not trailer and body.episode:
         ep = next((e for e in tv_release.episodes(doc) if e.get("id") == body.episode), None)
         if not ep or not tv_release.released(ep):
             raise HTTPException(404, "Episode not available")
@@ -26,6 +29,8 @@ async def record(db, title_id, viewer, body):
     key = f"{hashed}:{title_id}:{body.session}:{'trailer' if trailer else body.episode or 'film'}"
     if not await db.tv_playback_sessions.find_one({"_id": key}, {"_id": 1}) and await db.tv_playback_sessions.count_documents({"viewer": hashed, "created_at": {"$gte": now - timedelta(days=1)}}, limit=500) >= 500:
         raise HTTPException(429, "Too many playback sessions")
+    if body.kind == "error":
+        await _note_error(db, doc["_id"], body, now)
     position = min(float(body.position), float(body.duration)) if body.duration else 0
     await db.tv_playback_sessions.update_one({"_id": key}, {
         "$setOnInsert": {"title_id": doc["_id"], "viewer": hashed, "episode": body.episode, "trailer": trailer, "created_at": now},
@@ -33,6 +38,33 @@ async def record(db, title_id, viewer, body):
             "started": int(body.kind in ("play_start", "trailer_start", "progress", "complete")),
             "completed": int(body.kind == "complete"), "failed": int(body.kind == "error")}}, upsert=True)
     return {"saved": True}
+
+
+ERROR_KEEP_DAYS = 30
+
+
+async def _note_error(db, title_id, body, now) -> None:
+    """What the player said when a film didn't play (2.3.63 apps send it)."""
+    detail = " ".join(str(getattr(body, "detail", "") or "").split())[:300]
+    try:
+        await db.tv_playback_errors.insert_one({"title_id": title_id, "episode": body.episode, "trailer": bool(body.trailer),
+                                                "detail": detail or "(no message: app 2.3.62 or older)",
+                                                "platform": getattr(body, "platform", None), "position": float(body.position),
+                                                "at": now})
+        await db.tv_playback_errors.create_index("at", expireAfterSeconds=ERROR_KEEP_DAYS * 86400)
+    except Exception:
+        pass
+
+
+async def recent_errors(db, days: int = 30, limit: int = 30) -> list:
+    since = datetime.utcnow() - timedelta(days=days)
+    rows = await db.tv_playback_errors.aggregate([
+        {"$match": {"at": {"$gte": since}}},
+        {"$group": {"_id": {"title_id": "$title_id", "detail": "$detail", "platform": "$platform"},
+                    "count": {"$sum": 1}, "last": {"$max": "$at"}}},
+        {"$sort": {"count": -1}}, {"$limit": limit}]).to_list(limit)
+    return [{"title_id": str(r["_id"]["title_id"]), "detail": r["_id"]["detail"], "platform": r["_id"]["platform"],
+             "count": r["count"], "last": r["last"].isoformat() + "Z"} for r in rows]
 
 
 async def report(db, days):

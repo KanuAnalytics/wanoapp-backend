@@ -160,3 +160,16 @@ def delete_captions(uid: str, language: str) -> None:
     if not LANG.match(language or ""):
         raise CfError("Language must be a code like en or fr")
     _ok(_request("DELETE", f"/{uid}/captions/{language}"), "remove the subtitles")
+
+
+def clip(uid: str, start: float, end: float, name: str) -> str:
+    """tv_clip_it: Stream cuts a new, public video out of a film (no copy made
+    by Wano). Returns the clip's uid; it becomes ready like any upload (the
+    webhook / stuck-upload rescue mark its post ready)."""
+    body = {"clippedFromVideoUID": uid, "startTimeSeconds": int(start), "endTimeSeconds": int(end),
+            "meta": {"name": ("wano-tv-clip/" + name)[:120]}, "requireSignedURLs": False}
+    res = _ok(_request("POST", "/clip", json=body), "make the clip")
+    new = res.get("uid")
+    if not valid_uid(new):
+        raise CfError("Cloudflare didn't return the clip")
+    return new

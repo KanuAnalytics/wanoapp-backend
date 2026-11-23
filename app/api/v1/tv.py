@@ -15,7 +15,7 @@ from pydantic import ValidationError, Field
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 from app.api.deps import get_current_active_user, get_optional_active_user
 from app.core.database import get_database
-from app.models.tv import TvEpisode, TvGenreResponse, TvMaker, TvSeason, TvTitleResponse, TvWatchResponse
+from app.models.tv import TvEpisode, TvGenreResponse, TvMaker, TvSeason, TvStory, TvTitleResponse, TvWatchResponse
 from app.services import tv_release, recommendations, tv_cf, tv_more, tv_popularity, tv_stream
 
 logger = logging.getLogger(__name__)
@@ -249,6 +249,11 @@ def _title_response(doc: dict, viewer: str = "", profiles: Optional[dict] = None
     try:
         data = {**doc, "id": str(doc["_id"])}
         data.pop("_id", None)
+        data.pop("story", None)          # stored as {challenge_id, …}; filled in by _extras
+        parts = data.get("parts")
+        data["parts"] = [p for p in parts if isinstance(p, dict) and isinstance(p.get("number"), int)
+                         and isinstance(p.get("start"), (int, float)) and isinstance(p.get("end"), (int, float))
+                         and isinstance(p.get("title"), str)] if isinstance(parts, list) else []
         data = _protect(data, viewer)
         _episodes(data, viewer)
         data["makers"] = _makers(doc, profiles or {})
@@ -295,6 +300,7 @@ async def get_titles(current_user: Optional[str] = Depends(get_optional_active_u
         counts = await tv_more.love_counts(db)
         for t in titles:
             t.loves = counts.get(ObjectId(t.id), 0)
+    await _extras(db, titles, docs)
     if await tv_more.on(db, "tv_downloads"):
         by_id = {str(d["_id"]): d for d in docs}
         for t in titles:
@@ -304,6 +310,41 @@ async def get_titles(current_user: Optional[str] = Depends(get_optional_active_u
                 for e in season.episodes:
                     e.downloadable = tv_more.downloadable(_raw_episode(d, e.id))
     return titles
+
+
+async def _extras(db, titles: List[TvTitleResponse], docs: List[dict]) -> None:
+    """2.3.63 switches: episodes from one film (tv_parts), clips (tv_clip_it),
+    Finish the Story (tv_story). Off: the fields stay empty, as before."""
+    from app.services import creator_push, tv_cf, tv_parts
+    parts_on = await creator_push.on(db, "tv_parts")
+    clips_on = await creator_push.on(db, "tv_clip_it")
+    story_on = await creator_push.on(db, "tv_story")
+    by_id = {str(d["_id"]): d for d in docs}
+    stories = {}
+    if story_on:
+        ids = [ObjectId(d["story"]["challenge_id"]) for d in docs
+               if isinstance(d.get("story"), dict) and ObjectId.is_valid(str(d["story"].get("challenge_id") or ""))]
+        if ids:
+            from app.services import challenges as ch_svc
+            now = ch_svc._utcnow()
+            async for ch in db.challenges.find({"_id": {"$in": ids}}):
+                stories[str(ch["_id"])] = (ch, ch_svc.state(ch, now))
+    for t in titles:
+        d = by_id.get(t.id) or {}
+        if not parts_on or tv_parts.has_episodes(d):
+            t.parts = []
+        t.clips_allowed = bool(clips_on and d.get("clips_allowed") is True and t.type != "series"
+                               and tv_cf.valid_uid(d.get("cf_uid")) and d.get("cf_ready") is True)
+        st = d.get("story") if story_on else None
+        hit = stories.get(str((st or {}).get("challenge_id"))) if isinstance(st, dict) else None
+        if hit:
+            ch, state = hit
+            winner = st.get("winner_video_id") if ObjectId.is_valid(str(st.get("winner_video_id") or "")) else None
+            t.story = TvStory(challenge_id=str(ch["_id"]), hashtag=ch["hashtag"], title=ch.get("title") or "",
+                              ends_at=ch.get("ends_at"), live=state == "live",
+                              winner_video_id=winner, winner_name=(st.get("winner_name") or None) if winner else None)
+        else:
+            t.story = None
 
 
 def _raw_episode(doc: dict, ep_id: str) -> dict:
@@ -401,6 +442,7 @@ async def get_history(current_user: str = Depends(get_current_active_user)):
                     e.id == row["last_episode"] for season in t.seasons for e in season.episodes):
                 t.last_episode = row["last_episode"]
             out.append(t)
+    await _extras(db, out, docs)
     return out
 
 
@@ -506,10 +548,15 @@ class PlaybackEventIn(_BM):
     model_config = _CD(extra="forbid")
     session: str = Field(..., pattern=r"^[a-zA-Z0-9-]{16,64}$")
     kind: _Lit["trailer_start", "play_start", "progress", "complete", "error"]
-    episode: Optional[str] = Field(None, pattern=r"^s\d{1,3}e\d{1,4}$")
+    # s1e2 = a series episode; p3 = episode 3 of a film watched as episodes (tv_parts).
+    episode: Optional[str] = Field(None, pattern=r"^(s\d{1,3}e\d{1,4}|p\d{1,3})$")
     trailer: bool = False
     position: float = Field(0, ge=0, le=43200, allow_inf_nan=False)
     duration: float = Field(0, ge=0, le=43200, allow_inf_nan=False)
+    # 2.3.63: what went wrong when kind is "error" (the player's message), to find
+    # films that don't play on some phones.
+    detail: Optional[str] = Field(None, max_length=300)
+    platform: Optional[_Lit["ios", "android", "web"]] = None
 
 
 @router.post("/titles/{title_id}/events")
@@ -519,3 +566,17 @@ async def playback_event(title_id: str, body: PlaybackEventIn,
     from app.services import tv_analytics
     viewer = current_user or recommendations.anon_id(x_device_id)
     return await tv_analytics.record(get_database(), title_id, viewer, body)
+
+
+class ClipIn(_BM):
+    model_config = _CD(extra="forbid")
+    start: float = Field(..., ge=0, le=43200, allow_inf_nan=False)
+    length: float = Field(30, ge=1, le=120, allow_inf_nan=False)
+    caption: str = Field("", max_length=300)
+
+
+@router.post("/titles/{title_id}/clip", status_code=201)
+async def clip_it(title_id: str, body: ClipIn, current_user: str = Depends(get_current_active_user)):
+    """tv_clip_it (app 2.3.63): post a moment of a film to your feed, linked to the film."""
+    from app.services import tv_clip_it
+    return await tv_clip_it.make(get_database(), current_user, title_id[:40], body.start, body.length, body.caption)

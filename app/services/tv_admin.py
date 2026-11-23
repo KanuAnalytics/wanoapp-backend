@@ -96,6 +96,12 @@ class TitleIn(BaseModel):
     popularity: int = Field(0, ge=0, le=1000)
     coming_at: Optional[str] = None
     premiere_at: Optional[datetime] = None
+    # tv_info (2.3.63): where the film is from and what it's spoken in, so viewers
+    # across Africa can find films from home and know before they press play.
+    countries: List[str] = Field(default_factory=list, max_length=6)       # ISO codes: ng, ke, cm …
+    languages: List[str] = Field(default_factory=list, max_length=6)       # ISO codes: en, fr, sw …
+    # tv_clip_it: the licence lets viewers post clips of this title.
+    clips_allowed: StrictBool = False
 
     @field_validator("premiere_at", mode="before")
     @classmethod
@@ -105,6 +111,18 @@ class TitleIn(BaseModel):
 
     _u = field_validator("poster", "backdrop", "video_url")(_https_or_blank)
     _d = field_validator("release_date", "coming_at")(_date_or_none)
+
+    @field_validator("countries", "languages")
+    @classmethod
+    def _codes(cls, v):
+        out = []
+        for c in v:
+            c = (c or "").strip().lower()
+            if not re.fullmatch(r"[a-z]{2,3}", c):
+                raise ValueError(f"\"{c}\" isn't a 2-letter code (e.g. ng, ke, fr, sw)")
+            if c not in out:
+                out.append(c)
+        return out
 
     @field_validator("genres")
     @classmethod
@@ -313,6 +331,11 @@ async def update_title(db, title_id: str, body: TitleIn) -> dict:
     f = _fields(body)
     if "premiere_at" not in body.model_fields_set:
         f.pop("premiere_at", None)
+    # An admin page from before 2.3.63 (cached in a browser) doesn't send these:
+    # keep what the title has instead of wiping it.
+    for k in ("countries", "languages", "clips_allowed"):
+        if k not in body.model_fields_set:
+            f.pop(k, None)
     # A pasted Spaces link replaces a Cloudflare film; an untouched field keeps it.
     if f["video_url"] and f["video_url"] != doc.get("video_url"):
         unset = {"cf_uid": "", "cf_ready": "", "download_ready": "", "download_cf_uid": "", "download_asked": ""}

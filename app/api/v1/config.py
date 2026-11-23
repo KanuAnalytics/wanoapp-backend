@@ -75,7 +75,9 @@ APP_FEATURES = ("points", "boost", "earnings", "replies", "challenges", "sounds"
                 # Nov 2026, app 2.3.61
                 "quick_launch", "push_ask", "comeback",
                 # Nov 2026, app 2.3.62
-                "wa_share", "birthday_needed", "birthday_required", "birthday_unknown_teen", "recombee_detail")
+                "wa_share", "birthday_needed", "birthday_required", "birthday_unknown_teen", "recombee_detail",
+                # Nov 2026, app 2.3.63 (Wano TV)
+                "tv_info", "tv_data_saver", "tv_parts", "tv_clip_it", "tv_story")
 
 
 @router.get("/features")

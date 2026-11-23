@@ -206,4 +206,85 @@ async def playback_stats(days: int = Query(30, ge=1, le=90), admin: str = Depend
     return {"days": days, "items": [{"title_id": str(r["_id"]["title_id"]), "episode": r["_id"].get("episode"),
             "trailer": bool(r["_id"].get("trailer")), "starts": r["starts"], "completed": r["completed"],
             "errors": r["errors"], "stopped_quarters": [r["stopped_under_25"], r["stopped_25_50"], r["stopped_50_75"], r["stopped_75_100"]],
-            "avg_pct": round(r["avg_pct"] * 100) if r.get("avg_pct") is not None else None} for r in rows]}
+            "avg_pct": round(r["avg_pct"] * 100) if r.get("avg_pct") is not None else None} for r in rows],
+            "recent_errors": await tv_analytics.recent_errors(get_database(), days)}
+
+
+# ---------------------------------------------------------------- 2.3.63
+
+class PartIn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    start: float = Field(..., ge=0, le=43200)
+    end: float = Field(..., ge=0, le=43200)
+    title: str = Field("", max_length=80)
+
+
+class PartsIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    parts: list[PartIn] = Field(default_factory=list, max_length=30)
+
+
+@router.post("/titles/{title_id}/parts/propose")
+async def parts_propose(title_id: str, admin: str = Depends(require_admin)):
+    """tv_parts: look for good places to cut the film into episodes (background)."""
+    from app.services import tv_parts
+    return await tv_parts.start(get_database(), title_id[:40])
+
+
+@router.get("/titles/{title_id}/parts")
+async def parts_get(title_id: str, admin: str = Depends(require_admin)):
+    from app.services import tv_parts
+    return await tv_parts.proposal(get_database(), title_id[:40])
+
+
+@router.put("/titles/{title_id}/parts")
+async def parts_save(title_id: str, body: PartsIn, admin: str = Depends(require_admin)):
+    """Save (approve) the film's episodes; an empty list removes them."""
+    from app.services import tv_parts
+    db = get_database()
+    out = await tv_parts.save(db, title_id[:40], [p.model_dump() for p in body.parts])
+    await admin_log.record(db, admin, "tv_parts", {"title": title_id[:40], "parts": len(out["parts"])})
+    return out
+
+
+class StoryIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    challenge_id: Optional[str] = Field(None, max_length=40)
+    winner_video_id: Optional[str] = Field(None, max_length=40)
+    winner_name: Optional[str] = Field(None, max_length=60)
+
+
+@router.put("/titles/{title_id}/story")
+async def story_set(title_id: str, body: StoryIn, admin: str = Depends(require_admin)):
+    """tv_story: Finish the Story. Link a challenge (the fans' next episode), and
+    later the winning post. No challenge: removed."""
+    from bson import ObjectId
+    db = get_database()
+    if not ObjectId.is_valid(title_id[:40]):
+        raise HTTPException(400, "Invalid title ID")
+    doc = await db.tv_titles.find_one({"_id": ObjectId(title_id[:40])}, {"_id": 1})
+    if not doc:
+        raise HTTPException(404, "Title not found")
+    if not body.challenge_id:
+        await db.tv_titles.update_one({"_id": doc["_id"]}, {"$unset": {"story": ""}})
+        return {"story": None}
+    if not ObjectId.is_valid(body.challenge_id) or not await db.challenges.find_one({"_id": ObjectId(body.challenge_id)}, {"_id": 1}):
+        raise HTTPException(404, "Challenge not found")
+    story = {"challenge_id": body.challenge_id}
+    if body.winner_video_id:
+        v = await db.videos.find_one({"_id": ObjectId(body.winner_video_id)} if ObjectId.is_valid(body.winner_video_id) else {"_id": None},
+                                     {"creator_id": 1, "is_active": 1})
+        if not v or v.get("is_active") is False:
+            raise HTTPException(404, "Winning post not found")
+        from app.services import home_ground
+        creator = await db.users.find_one({"_id": v.get("creator_id")}, {"date_of_birth": 1, "display_name": 1, "username": 1})
+        # Public pages never show an under-18's work: the winner must be an adult.
+        if not creator or home_ground.age_of((creator or {}).get("date_of_birth")) is None \
+                or home_ground.age_of(creator.get("date_of_birth")) < 18:
+            raise HTTPException(400, "The winner must be 18 or over (with a birthday on their account)")
+        story.update({"winner_video_id": body.winner_video_id,
+                      "winner_name": (body.winner_name or creator.get("display_name") or creator.get("username") or "")[:60]})
+    await db.tv_titles.update_one({"_id": doc["_id"]}, {"$set": {"story": story}})
+    await admin_log.record(db, admin, "tv_story", {"title": title_id[:40], **story})
+    tv_more.clear_cache()
+    return {"story": story}
