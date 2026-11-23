@@ -107,3 +107,29 @@ async def test_RD4_admin_only(client, db, monkeypatch):
     _, ah = await make_user(db, user_type="admin")
     r = await client.get("/api/v1/recombee/clear-staff", headers=ah)
     assert r.status_code == 200 and r.json()["running"] is False
+
+
+async def test_RD5_409_on_a_write_is_not_a_failure(monkeypatch):
+    """A view portion Recombee already holds (409) isn't an error: no failure
+    counted, nothing raised, nothing in the error list."""
+    from recombee_api_client.api_requests import RecommendItemsToUser, SetViewPortion
+    from app.services import recombee_service as rs
+
+    class E(Exception):
+        status_code = 409
+
+    async def boom(client, req, fast):
+        raise E("View portion for userId=x already exists")
+    monkeypatch.setattr(rs, "_run", boom)
+    async def no_skip(req):
+        return False
+    monkeypatch.setattr(rs, "staff_skip", no_skip)
+    rs.reset_stats()
+    assert await rs.recombee_send(SetViewPortion("u", "i", 0.5)) is None
+    st = rs.stats()
+    assert st["calls"]["SetViewPortion:already"]["ok"] == 1 and "SetViewPortion" not in st["calls"]
+    assert st["last_errors"] == []
+    # A read that gets 409 is still an error.
+    import pytest as _p
+    with _p.raises(E):
+        await rs.recombee_send(RecommendItemsToUser("u", 5))

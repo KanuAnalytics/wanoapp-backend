@@ -269,3 +269,22 @@ async def test_C14_password_reset_by_whatsapp_shares_the_code_budget(client, db,
         assert r.status_code == 200, r.text
         codes.append(r.json()["message"])
     assert len(wa) == 20 and len(set(codes)) == 1
+
+
+async def test_P20_sign_in_with_a_phone_typed_the_way_people_say_it(client, db):
+    """+256772123456 stored; "0772 123 456", "772123456", "256772123456" and
+    "+256 772 123 456" all find it. A number two accounts share in different
+    countries finds neither (never the wrong one)."""
+    pw = get_password_hash("Password1")
+    await make_user(db, username="kato", phone_number="+256772123456", password_hash=pw)
+    L = "/api/v1/auth/login/json"
+    for typed in ("+256772123456", "0772 123 456", "772123456", "256772123456", "+256 772 123 456", "0772-123-456"):
+        r = await client.post(L, json={"username": typed, "password": "Password1"})
+        assert r.status_code == 200, (typed, r.text)
+    assert (await client.post(L, json={"username": "0772 123 456", "password": "nope"})).status_code == 401
+    assert (await client.post(L, json={"username": "0700 000 000", "password": "Password1"})).status_code == 401
+    # Same national number in Uganda and Kenya: ambiguous without the country code.
+    await make_user(db, username="wanjiru", phone_number="+254772123999", password_hash=pw)
+    await make_user(db, username="okello", phone_number="+256772123999", password_hash=pw)
+    assert (await client.post(L, json={"username": "0772123999", "password": "Password1"})).status_code == 401
+    assert (await client.post(L, json={"username": "+256 772 123 999", "password": "Password1"})).status_code == 200

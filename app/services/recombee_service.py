@@ -220,6 +220,11 @@ async def recombee_send(request):
     try:
         out = await _run(main, request, fast)
     except Exception as e:
+        # 409 on a write means Recombee already has it (a view portion that is
+        # no bigger than the one it holds, a rating sent twice): nothing failed.
+        if _is_write(request) and getattr(e, "status_code", None) == 409:
+            _count(_kind(request) + ":already", True, (time.perf_counter() - t) * 1000)
+            return None
         _count(_kind(request), False, (time.perf_counter() - t) * 1000, e)
         if main is recombee_client or _is_write(request):
             raise

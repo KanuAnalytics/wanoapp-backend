@@ -185,12 +185,37 @@ async def _find_user_by_identifier(db, identifier: str):
     ident = _normalize_identifier(identifier)
     if "@" not in ident:
         # Only identifiers containing "@" are lowercased above; anything
-        # else was already compared exactly.
-        return None
+        # else was already compared exactly. A phone number typed the way
+        # people say it ("0772 123 456", "+256 772 123 456") is tried once more.
+        return await _find_by_typed_phone(db, ident)
     return await db.users.find_one({"$or": [
         {"username": _ci_exact(ident)},
         {"email": _ci_exact(ident)},
     ]})
+
+
+_PHONE_TYPED = re.compile(r"^\+?\d{8,15}$")
+
+
+async def _find_by_typed_phone(db, ident: str):
+    """Sign-in with a phone number as typed. Numbers are stored as +2567...;
+    people type "0772 123 456" (with the leading 0 of their country) or add
+    spaces. Spaces and dashes are dropped; without a +, the number is matched
+    on what follows any country code, and only when exactly one account has
+    it (so a number shared by two countries never picks the wrong one)."""
+    digits = re.sub(r"[\s\-().]", "", ident or "")
+    if not _PHONE_TYPED.match(digits):
+        return None
+    if digits.startswith("+"):
+        return await db.users.find_one({"phone_number": digits})
+    whole = await db.users.find_one({"phone_number": "+" + digits})     # "256772123456" (no +)
+    if whole:
+        return whole
+    national = digits.lstrip("0")
+    if len(national) < 7:
+        return None
+    found = await db.users.find({"phone_number": {"$regex": f"^\\+\\d{{1,4}}{re.escape(national)}$"}}).limit(2).to_list(2)
+    return found[0] if len(found) == 1 else None
 
 
 async def _register_otp_failure(collection, filter_: dict, counter_field: str, wipe_fields: list[str]):
