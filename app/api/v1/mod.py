@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from typing import Literal, Optional
 
 from bson import ObjectId
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import Header, APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from app.api.deps import _ensure_token_not_revoked, get_current_active_user, get_current_user, oauth2_scheme
@@ -107,7 +107,7 @@ async def staff_me(me: str = Depends(get_current_active_user)):
                                                           "staff_totp.secret": 1})
     role = await staff_svc.effective_role(db, user) if user else None
     from app.services import creator_push
-    return {"staff": role is not None, "role": role,
+    return {"id": me, "staff": role is not None, "role": role,
             "has_code": bool(((user or {}).get("staff_totp") or {}).get("secret")),
             "tools": role is not None and await creator_push.on(db, "mod_tools"),
             "warnings": await mod_warnings.on(db)}
@@ -460,3 +460,31 @@ async def my_decisions(me: str = Depends(me_any)):
     out.pop("by", None)
     out["can_appeal"] = await db.appeals.find_one({"_id": a["_id"]}, {"_id": 1}) is None
     return {"decision": out}
+
+
+class DeviceIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    device: str = Field(..., min_length=8, max_length=100)
+
+
+class DeviceSessionIn(DeviceIn):
+    credential: str = Field(..., min_length=40, max_length=100)
+
+
+@router.post("/devices/enroll")
+async def enroll_device(body: DeviceIn, me: str = Depends(get_current_active_user),
+                        x_staff_session: Optional[str] = Header(None, max_length=100)):
+    db = await _db()
+    user = await db.users.find_one({"_id": ObjectId(me)})
+    if await staff_svc.effective_role(db, user) is None:
+        raise HTTPException(403, "Staff only")
+    return await staff_svc.enroll_device(db, user, x_staff_session or "", body.device)
+
+
+@router.post("/devices/session")
+async def device_session(body: DeviceSessionIn, me: str = Depends(get_current_active_user)):
+    db = await _db()
+    user = await db.users.find_one({"_id": ObjectId(me)})
+    if await staff_svc.effective_role(db, user) is None:
+        raise HTTPException(403, "Staff only")
+    return await staff_svc.device_session(db, user, body.credential, body.device)

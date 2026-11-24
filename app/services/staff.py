@@ -146,7 +146,7 @@ async def start_session(db, user: dict, code: str, device: str) -> dict:
     sid = secrets.token_urlsafe(32)
     await db.staff_sessions.insert_one({"_id": _hash(sid), "user": user["_id"], "device": _hash(device),
                                         "created_at": now, "last_at": now,
-                                        "ends_at": now + timedelta(hours=MAX_HOURS)})
+                                        "ends_at": now + timedelta(hours=MAX_HOURS), "method": "totp", "trust_version": user.get("staff_trust_version", 0)})
     try:
         await db.staff_sessions.create_index("ends_at", expireAfterSeconds=0)
     except Exception:
@@ -163,13 +163,19 @@ async def check_session(db, user_id: ObjectId, sid: Optional[str], device: Optio
         return False
     if s.get("ends_at") <= now or s.get("last_at") < now - IDLE or s.get("revoked"):
         return False
+    current = await db.users.find_one({"_id": user_id}, {"staff_trust_version": 1})
+    if not current or s.get("trust_version", 0) != current.get("staff_trust_version", 0):
+        return False
     await db.staff_sessions.update_one({"_id": s["_id"]}, {"$set": {"last_at": now}})
     return True
 
 
 async def end_all(db, user_id: Optional[ObjectId] = None) -> int:
     q = {"user": user_id} if user_id is not None else {}
+    users = {"_id": user_id} if user_id is not None else {"$or": [{"user_type": "admin"}, {"staff_role": {"$exists": True}}]}
+    await db.users.update_many(users, {"$inc": {"staff_trust_version": 1}})
     r = await db.staff_sessions.update_many({**q, "revoked": {"$ne": True}}, {"$set": {"revoked": True}})
+    await db.staff_trusted_devices.update_many(q, {"$set": {"revoked": True}})
     return r.modified_count
 
 
@@ -248,3 +254,45 @@ def forget() -> None:
 
 async def quiet(db, user_id) -> bool:
     return str(user_id) in await quiet_ids(db)
+
+
+# A random credential stays in biometric-protected device storage, never the
+# authenticator seed. Only its digest is stored here. This is device trust,
+# not a claim that the server can inspect or verify a face/fingerprint.
+TRUST_DAYS = 30
+
+
+async def enroll_device(db, user: dict, sid: str, device: str) -> dict:
+    if not await check_session(db, user["_id"], sid, device):
+        raise HTTPException(401, "Enter your authenticator code first")
+    session = await db.staff_sessions.find_one({"_id": _hash(sid)})
+    now = datetime.utcnow()
+    if session.get("method") != "totp" or session["created_at"] < now - timedelta(minutes=5):
+        raise HTTPException(401, "Enter a fresh authenticator code to trust this phone")
+    secret = (user.get("staff_totp") or {}).get("secret")
+    if not secret:
+        raise HTTPException(409, "Set up your staff code first")
+    token = secrets.token_urlsafe(32)
+    await db.staff_trusted_devices.update_one(
+        {"_id": f"{user["_id"]}:{_hash(device)}"},
+        {"$set": {"user": user["_id"], "device": _hash(device), "token": _hash(token), "totp_version": _hash(secret),
+                   "created_at": now, "trust_version": session.get("trust_version", 0),
+                   "ends_at": now + timedelta(days=TRUST_DAYS), "revoked": False}}, upsert=True)
+    from app.services import admin_log
+    await admin_log.record(db, str(user["_id"]), "staff_device_trusted")
+    return {"credential": token, "days": TRUST_DAYS}
+
+
+async def device_session(db, user: dict, token: str, device: str) -> dict:
+    now = datetime.utcnow()
+    secret = (user.get("staff_totp") or {}).get("secret")
+    trusted = await db.staff_trusted_devices.find_one({"user": user["_id"], "device": _hash(device),
+        "token": _hash(token), "revoked": False, "ends_at": {"$gt": now},
+        "trust_version": user.get("staff_trust_version", 0),
+        "totp_version": _hash(secret) if secret else None})
+    if not trusted or not secret:
+        raise HTTPException(401, "Phone trust expired or revoked. Use your authenticator code.")
+    sid = secrets.token_urlsafe(32)
+    await db.staff_sessions.insert_one({"_id": _hash(sid), "user": user["_id"], "device": _hash(device),
+        "created_at": now, "last_at": now, "ends_at": now + timedelta(hours=MAX_HOURS), "method": "biometric", "trust_version": user.get("staff_trust_version", 0)})
+    return {"session": sid, "idle_minutes": int(IDLE.total_seconds() // 60), "max_hours": MAX_HOURS}
