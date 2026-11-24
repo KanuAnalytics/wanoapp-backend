@@ -955,3 +955,39 @@ async def film_submission_status(ref: str, body: FilmStatusBody, admin: str = De
 # Music importer uses the same admin authentication as this router.
 from app.api.v1.admin_music import router as music_import_router
 router.include_router(music_import_router)
+
+
+@router.get("/video-lookup")
+async def video_lookup(stream_uid: str = Query(..., pattern=r"^[a-f0-9]{32}$"),
+                       admin: str = Depends(require_admin)):
+    """Resolve a storage UID even after the post's playback links were replaced.
+
+    Upload attempts expire after 30 days. Deletion metadata on the post is
+    retained with the post; old deletions may only have the upload attempt.
+    Never return media URLs, email addresses, phone numbers or credentials.
+    """
+    from app.services.video_posts import stream_uid_reference_query
+    db = get_database()
+    attempt = await db.upload_attempts.find_one({"_id": stream_uid})
+    query = stream_uid_reference_query(stream_uid)
+    query = {"$or": [query, {"deletion.stream_uid": stream_uid}]}
+    posts = await db.videos.find(query, {"creator_id": 1, "is_active": 1, "created_at": 1,
+                                        "deletion": 1}).limit(20).to_list(20)
+    ids = {p.get("creator_id") for p in posts} | {attempt.get("user") if attempt else None}
+    ids.discard(None)
+    accounts = []
+    for uid in ids:
+        u = await db.users.find_one({"_id": uid}, {"username": 1, "display_name": 1, "is_active": 1})
+        accounts.append({"id": str(uid), "username": u.get("username") if u else None,
+                         "display_name": u.get("display_name") if u else None,
+                         "active": u.get("is_active") is not False if u else None,
+                         "matched_by": (["upload_history"] if attempt and attempt.get("user") == uid else []) +
+                                       (["post_record"] if any(p.get("creator_id") == uid for p in posts) else [])})
+    return {"stream_uid": stream_uid, "accounts": accounts,
+            "upload": {"at": attempt.get("at"), "posted_at": attempt.get("posted_at"),
+                       "platform": attempt.get("platform")} if attempt else None,
+            "posts": [{"id": str(p["_id"]), "creator_id": str(p.get("creator_id")),
+                       "active": p.get("is_active") is not False,
+                       "deleted_at": (p.get("deletion") or {}).get("at"),
+                       "deleted_by": str(p["deletion"]["by"]) if (p.get("deletion") or {}).get("by") else None,
+                       "reason": (p.get("deletion") or {}).get("reason")} for p in posts]}

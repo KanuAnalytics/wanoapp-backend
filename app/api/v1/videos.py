@@ -22,7 +22,7 @@ from bson.json_util import dumps
 from app.models.user import UserType
 from recombee_api_client.api_requests import SetViewPortion, AddDetailView, AddRating, DeleteRating, AddBookmark, DeleteBookmark, SetItemValues, Batch, DeleteItem
 from app.services.recombee_service import recombee_send, recombee_signal
-from app.services import creators, for_you, moderation, recommendations, search, trending
+from app.services import creators, for_you, moderation, recommendations, search, trending, safe_mod
 from app.services.recommendations import anon_id, viewer_id
 from app.services.video_deletion import soft_delete_video
 from app.services.stitch_jobs import MAX_CLIPS, StitchValidationError, create_stitch_job
@@ -982,7 +982,8 @@ async def update_video(
 @router.delete("/{video_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_video(
     video_id: str,
-    current_user: str = Depends(get_current_active_user)
+    current_user: str = Depends(get_current_active_user),
+    reason: Optional[Literal[tuple(safe_mod.REASONS)]] = Query(None),
 ):
     """Soft delete a video. Only creator or admin can delete.
 
@@ -1027,7 +1028,9 @@ async def delete_video(
 
     # Already-deleted videos are a no-op inside soft_delete_video. A scheduled
     # post is cancelled there too, so the publisher never makes it live.
-    await soft_delete_video(db, video)
+    await soft_delete_video(db, video, actor_id=current_user,
+                            reason=reason if isinstance(reason, str) else None,
+                            source="phone_admin" if is_admin and not is_creator else "creator")
 
     return {"message": "Video deleted successfully"}  # Optional for 204
 

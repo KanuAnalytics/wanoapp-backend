@@ -141,7 +141,7 @@ async def delete_spaces_file_if_unused(
     return True
 
 
-async def soft_delete_video(db, video: dict) -> bool:
+async def soft_delete_video(db, video: dict, *, actor_id=None, reason=None, source="internal") -> bool:
     """Hide a video and delete its media. No-op if it's already deleted.
 
     Returns True if the video was deleted by this call. An already-deleted
@@ -175,9 +175,14 @@ async def soft_delete_video(db, video: dict) -> bool:
 
     # Soft delete, and swap in the placeholder stream so stale references
     # (feeds, bookmarks, likes) never resolve to a dead link.
-    await db.videos.update_one(
-        {"_id": video_id},
+    deleted_at = datetime.utcnow()
+    result = await db.videos.update_one(
+        {"_id": video_id, **({"deletion.at": {"$exists": False}} if was_scheduled
+                             else {"is_active": {"$ne": False}})},
         {"$set": {
+            "deletion": {"at": deleted_at, "by": ObjectId(actor_id) if actor_id else None,
+                         "reason": reason or "not_supplied", "source": source,
+                         "stream_uid": stream_uid, "creator_id": video.get("creator_id")},
             "is_active": False,
             "updated_at": datetime.utcnow(),
             "remoteUrl": DELETED_VIDEO_PLACEHOLDER_URL,
@@ -185,6 +190,14 @@ async def soft_delete_video(db, video: dict) -> bool:
             "stream_uid": DELETED_VIDEO_PLACEHOLDER_UID,
         }},
     )
+    if not result.modified_count:
+        return False
+    if actor_id:
+        from app.services import admin_log
+        await admin_log.record(db, str(actor_id), "phone_post_delete", {
+            "post": str(video_id), "user": str(video.get("creator_id")),
+            "stream_uid": stream_uid, "reason": reason or "not_supplied",
+            "source": source})
     # A scheduled post was never counted on the user.
     if not was_scheduled:
         await db.users.update_one(

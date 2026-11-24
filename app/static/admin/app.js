@@ -1666,6 +1666,25 @@ const RENDER = {
   },
 
   async storage(main) {
+    const lookup = el("input", { type: "text", maxlength: 32, placeholder: "Cloudflare video ID (32 characters)", "aria-label": "Cloudflare video ID" });
+    const result = el("div", {});
+    const find = el("button", { class: "btn", text: "Find uploader", onclick: async (e) => {
+      const uid = lookup.value.trim().toLowerCase();
+      if (!/^[a-f0-9]{32}$/.test(uid)) { toast("Enter the 32-character Cloudflare video ID"); return; }
+      const r = await act(e.target, () => api("GET", `/admin/video-lookup?stream_uid=${encodeURIComponent(uid)}`));
+      if (!r) return;
+      result.replaceChildren(
+        el("p", { text: r.upload ? `Upload: ${when(r.upload.at)} · ${r.upload.platform || "unknown platform"}${r.upload.posted_at ? " · reached posting" : ""}` : "No retained upload history (history expires after 30 days)." }),
+        ...r.accounts.map((u) => el("div", { class: "card" },
+          el("strong", { text: `@${u.username || "unknown"} · ${u.display_name || ""}` }),
+          el("p", { text: `Account ID: ${u.id} · ${u.active === null ? "account unavailable" : u.active ? "active" : "inactive"}` }),
+          el("p", { text: `Matched by: ${u.matched_by.join(", ")}` }))),
+        ...r.posts.map((p) => el("p", { text: `Post ${p.id} · ${p.active ? "active" : "inactive"}${p.deleted_at ? ` · deleted ${when(p.deleted_at)} · by ${p.deleted_by || "unknown"} · reason: ${p.reason}` : ""}` })),
+        ...(!r.accounts.length ? [el("p", { text: "No matching uploader found in retained records." })] : []));
+    } });
+    const lookupCard = el("div", { class: "card" }, el("h3", { text: "Find a video's uploader" }),
+      el("p", { text: "Read-only lookup across upload history and post records, including deleted posts. No video playback." }),
+      el("div", { class: "row" }, lookup, find), result);
     const draw = async (r) => {
       const items = r.items || [];
       const mins = (sec) => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
@@ -1683,7 +1702,7 @@ const RENDER = {
           el("td", { text: x.state || "" }), el("td", { class: "small", text: x.name || "" }),
           el("td", {}, x.thumbnail ? el("a", { href: x.thumbnail, target: "_blank", rel: "noopener", text: "picture" }) : null)))))
         : el("div", { class: "empty", text: r.scanned_at ? "Nothing to clean up." : "Not checked yet." });
-      main.replaceChildren(...head("Video storage", "Cloudflare charges for every stored minute every month. These are videos in Cloudflare that no post, draft or upload in progress uses, at least 7 days old. Look through them, then delete."),
+      main.replaceChildren(lookupCard, ...head("Video storage", "Cloudflare charges for every stored minute every month. These are videos in Cloudflare that no post, draft or upload in progress uses, at least 7 days old. Look through them, then delete."),
         el("div", { class: "card" },
           r.scanned_at ? el("div", { text: `${num(r.videos)} videos (${num(r.minutes)} minutes) in Cloudflare · ${num(r.unused)} unused (${num(r.unused_minutes)} minutes)` }) : null,
           r.scanned_at ? el("div", { class: "small muted", text: `Checked ${String(r.scanned_at).slice(0, 16).replace("T", " ")} UTC` }) : null,
@@ -1712,6 +1731,7 @@ const RENDER = {
         case "original_again": return "Cleared a post's not-original mark";
         case "challenge_create": return `Created #${d.hashtag}`;
         case "challenge_end": return `Ended #${d.hashtag}`;
+        case "phone_post_delete": return `Deleted post ${d.post} · creator ${d.user} · reason: ${d.reason === "not_supplied" ? "not supplied by app" : d.reason}`;
         case "moderation_restore": return "Restored a reported post";
         case "moderation_remove": return "Removed a reported post";
         case "flyer_create": return `Made a flyer: ${d.business}`;
