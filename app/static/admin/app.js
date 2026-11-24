@@ -1361,6 +1361,7 @@ const RENDER = {
       const c = await act(null, () => api("GET", `/mod/users/${encodeURIComponent(uid)}/card`));
       if (!c) return;
       const why = reasonSel(), note = el("input", { type: "text", maxlength: 500, placeholder: "Note (staff only)" });
+      const message = el("textarea", { rows: 5, maxlength: 600, placeholder: "Optional message the person will receive (otherwise the standard rule explanation)", "aria-label": "Warning message to recipient" });
       const hours = el("select", {}, ...reasons.limit_hours.map((h) => el("option", { value: h, text: h === 24 ? "24 hours" : h === 72 ? "3 days" : "7 days" })));
       const sug = el("span", { class: "small muted" });
       why.addEventListener("change", async () => { const s = await act(null, () => api("GET", `/mod/suggest?user_id=${c.id}&reason=${why.value}`)); if (s) sug.textContent = "Suggested next step: " + s.step.replace("_", " "); });
@@ -1369,8 +1370,9 @@ const RENDER = {
         el("p", { class: "small muted", text: `${c.account_days ?? "?"} days old · ${num(c.followers)} followers · ${num(c.posts)} posts · app ${c.app_version || "?"} · ${c.age == null ? "no birthday" : c.teen ? `TEEN (${c.age})` : `adult (${c.age})`} · ${c.email || "no email"} · ${c.phone || "no phone"}` }),
         el("p", { class: "small", text: `State: ${c.state}${c.evidence ? " (kept as evidence)" : ""} · warnings: ${c.recent} in 90 days, ${c.lifetime} ever · reports on posts: ${c.reports_on_posts} · held comments: ${c.held_comments} · failed uploads: ${c.failed_uploads}` }),
         el("div", { class: "row", style: "gap: 6px; flex-wrap: wrap;" }, why, note, sug),
+        el("label", { text: "Warning message (visible to recipient)" }), message,
         el("div", { class: "row", style: "gap: 6px; margin-top: 8px; flex-wrap: wrap;" },
-          el("button", { class: "btn small secondary", text: "Warn", onclick: (e) => doAct(e.target, "/mod/actions/warn", { user_id: c.id, reason: why.value, note: note.value }, "Warned") }),
+          el("button", { class: "btn small secondary", text: "Warn", onclick: (e) => doAct(e.target, "/mod/actions/warn", { user_id: c.id, reason: why.value, note: note.value, ...(message.value.trim() ? { message: message.value.trim() } : {}) }, "Warned") }),
           hours, el("button", { class: "btn small secondary", text: "Limit", onclick: (e) => doAct(e.target, "/mod/actions/limit", { user_id: c.id, reason: why.value, hours: Number(hours.value), note: note.value }, "Limited") }),
           c.state === "frozen" ? el("button", { class: "btn small", text: "Lift suspension", onclick: (e) => doAct(e.target, "/mod/actions/unfreeze", { user_id: c.id, reason: why.value, note: note.value }, "Suspension lifted") })
             : el("button", { class: "btn small ghost-danger", text: "Suspend", onclick: async (e) => {

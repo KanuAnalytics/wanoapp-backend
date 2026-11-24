@@ -122,13 +122,18 @@ async def _copy(db, post_id=None, comment_id=None) -> Optional[dict]:
 
 
 async def warn(db, staff, user_id, reason: str, post_id=None, comment_id=None, note: str = "",
-               key: Optional[str] = None) -> dict:
+               key: Optional[str] = None, message: Optional[str] = None) -> dict:
     if (prev := await safe_mod.replay(db, staff, key)):
         return prev
     if reason == "child_safety":
         raise HTTPException(400, "Child safety cases are never warned: suspend (silently) instead")
     if reason not in TEMPLATES:
         raise HTTPException(400, "Pick a rule")
+    if message is not None:
+        from app.services.messages import clean_text
+        message = clean_text(message).strip()
+        if not message or len(message) > 600:
+            raise HTTPException(400, "Warning message must be 1 to 600 characters")
     user = await safe_mod._target_user(db, staff, user_id)
     pid = safe_mod._oid(post_id, "post id") if post_id else None
     cid = safe_mod._oid(comment_id, "comment id") if comment_id else None
@@ -140,7 +145,7 @@ async def warn(db, staff, user_id, reason: str, post_id=None, comment_id=None, n
     teen = _is_teen(user)
     doc = {"user": user["_id"], "action": a["_id"], "rule": reason, "teen": teen,
            "title": TEEN_TITLE if teen else TITLE,
-           "text": (TEEN_TEMPLATES if teen else TEMPLATES)[reason],
+           "text": message or (TEEN_TEMPLATES if teen else TEMPLATES)[reason],
            "copy": await _copy(db, pid, cid), "at": _now(),
            "visible_after": a["undo_until"] + timedelta(minutes=random.randint(0, NOTICE_JITTER_MINUTES))}
     await db.warnings.insert_one(doc)

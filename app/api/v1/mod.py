@@ -68,6 +68,7 @@ class CommentIn(_In):
 
 
 class WarnIn(_In):
+    message: Optional[str] = Field(None, min_length=1, max_length=600)
     user_id: str = Field(..., max_length=40)
     reason: Reason
     post_id: Optional[str] = Field(None, max_length=40)
@@ -141,7 +142,7 @@ async def hide_comment(body: CommentIn, s=Depends(staff_svc.need("moderator"))):
 @router.post("/actions/warn")
 async def warn(body: WarnIn, s=Depends(staff_svc.need("moderator"))):
     return await mod_warnings.warn(await _wdb(), s, body.user_id, body.reason, body.post_id, body.comment_id,
-                                   body.note, body.key)
+                                   body.note, body.key, message=body.message)
 
 
 @router.post("/actions/safeguard")
