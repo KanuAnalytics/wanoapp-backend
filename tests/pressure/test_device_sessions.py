@@ -302,3 +302,12 @@ async def test_ordinary_legacy_logout_does_not_eject_other_phone_sharing_token(c
     r = await client.delete(ROOT + "/current", headers=legacy)
     assert r.status_code == 200 and r.json()["server_revoked"] is False
     assert (await client.get(PROFILE, headers=legacy)).status_code == 200
+
+
+async def test_graphql_fails_closed_if_session_validator_cannot_import(client, db, monkeypatch):
+    import sys
+    from app.graphql.schema import _authenticated_user_id
+    uid, _ = await make_user(db)
+    a = await signin(db, uid, "a")
+    monkeypatch.setitem(sys.modules, "app.services.device_sessions", None)
+    assert await _authenticated_user_id(a["Authorization"][7:]) is None

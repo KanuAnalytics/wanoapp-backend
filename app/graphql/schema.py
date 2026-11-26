@@ -59,7 +59,7 @@ async def _authenticated_user_id(token: str) -> Optional[str]:
     except HTTPException:
         return None
     except ImportError:
-        pass
+        return None
     return str(oid)
 
 
