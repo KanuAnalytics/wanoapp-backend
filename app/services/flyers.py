@@ -279,10 +279,10 @@ def _encode_motion(data):
     with tempfile.TemporaryDirectory() as tmp:
         src, dest = Path(tmp) / "input.mp4", Path(tmp) / "strip.webp"
         src.write_bytes(data)
-        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-protocol_whitelist", "file",
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-threads", "1", "-filter_threads", "1", "-protocol_whitelist", "file",
                         "-f", "mov", "-i", str(src), "-map", "0:v:0", "-an", "-sn", "-dn",
                         "-vf", "fps=12,scale=600:200:force_original_aspect_ratio=decrease,pad=600:200:(ow-iw)/2:(oh-ih)/2",
-                        "-t", "10", "-c:v", "libwebp_anim", "-quality", "74", "-loop", "1", str(dest)],
+                        "-t", "10", "-c:v", "libwebp_anim", "-threads", "1", "-quality", "74", "-loop", "1", str(dest)],
                        check=True, timeout=30, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return dest.read_bytes()
 

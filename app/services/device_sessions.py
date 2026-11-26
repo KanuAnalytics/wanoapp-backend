@@ -150,7 +150,7 @@ async def revoke(row):
             live = await db.device_sessions.find_one({"user_id": row["user_id"],
                 "_id": {"$ne": row["_id"]}, "revoked_at": {"$exists": False}, "push_tokens": token})
             if not live:
-                await db.users.update_one({"_id": row["user_id"]}, {"$pull": {"expo_push_tokens": token}})
+                await db.users.update_one({"_id": row["user_id"]}, {"$pull": {"expo_push_tokens": token, "badge_capable_tokens": token}})
 
 
 async def attach_push(token, push_token):

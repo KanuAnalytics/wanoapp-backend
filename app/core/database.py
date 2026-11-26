@@ -271,6 +271,7 @@ async def create_indexes():
         # Comment indexes
 
         # Notification indexes
+        (d.notifications, [("recipient_id", 1), ("read_at", 1), ("date", -1)], {}),
         (d.notifications, [("recipient_id", 1), ("date", -1)], {}),
         (d.notifications, [("type", 1), ("user_id", 1), ("post_id", 1)], {}),
         (d.notifications, [("comment_id", 1)], {}),

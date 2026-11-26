@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from app.api.deps import get_current_active_user, oauth2_scheme
 from app.core.database import get_database
 from app.services import device_sessions as sessions
+from pydantic import BaseModel, Field
 
 async def no_store(response: Response):
     response.headers["Cache-Control"] = "no-store"
@@ -54,12 +55,21 @@ async def logout(row=Depends(current)):
     return {"signed_out": True, "server_revoked": True}
 
 
+class PreservePush(BaseModel):
+    current_push_token: str | None = Field(default=None, max_length=4096)
+
+
 @router.post("/revoke-others")
-async def revoke_others(row=Depends(current)):
+async def revoke_others(body: PreservePush | None = None, row=Depends(current)):
     db = get_database()
     replacement = None
     preserved = row
+    keep_push = row.get("push_tokens", [])
     if row.get("legacy"):
+        # Shared legacy tokens may also share the registry row. Retaining its
+        # whole push list would still notify phones whose access was revoked.
+        current_push = body.current_push_token if body else None
+        keep_push = [current_push] if current_push and current_push in keep_push else []
         # Old builds could share identical JWTs. Keeping that token alive
         # would keep its copies alive too: rotate this caller first.
         from app.core.security import create_access_token
@@ -67,13 +77,14 @@ async def revoke_others(row=Depends(current)):
         replacement = create_access_token({"sub": str(row["user_id"]),
             "sid": secrets.token_urlsafe(32), "sg": row.get("generation", 0)})
         preserved = {**row, "_id": sessions.fingerprint(replacement), "id": ObjectId(),
-                     "legacy": False, "created_at": sessions.now()}
+                     "legacy": False, "created_at": sessions.now(), "push_tokens": keep_push}
         await db.device_sessions.insert_one(preserved)
     # One atomic account change also rejects unknown legacy tokens. Preserve
     # the initiating token explicitly; it need not change in local storage.
     await db.users.update_one({"_id": row["user_id"]}, {"$inc": {"sessions_generation": 1},
                              "$set": {"sessions_preserved": preserved["_id"],
-                                      "expo_push_tokens": row.get("push_tokens", [])}})
+                                      "expo_push_tokens": keep_push},
+                             "$pull": {"badge_capable_tokens": {"$nin": keep_push}}})
     # Generation is the revocation barrier. Do not then loop and revoke rows:
     # a fresh login after the barrier must survive, even on another worker.
     return {"signed_out": True, "access_token": replacement}

@@ -588,8 +588,9 @@ async def _push(db, conv_id, sender: dict, to: dict, text: str, is_post: bool, r
             title = name
             body = "Shared a post with you" if is_post and not text else (text[:140] or "New message")
         data = {"type": "message", "conversation_id": str(conv_id)}
+        from app.services.notification_badges import send_user_push
         for t in tokens:
-            await g._send_one(t, body, data, title)
+            await send_user_push(uid, t, body, data, title)
     except Exception:
         logger.exception("message push failed")
 

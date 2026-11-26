@@ -17,9 +17,12 @@ def send_push_message(
     extra: Optional[dict] = None,
     title: Optional[str] = None,
     image_url: Optional[str] = None,
+    badge: Optional[int] = None,
 ) -> None:
     """Send an Expo push notification."""
     payload: dict = {"to": token, "body": message}
+    if isinstance(badge, int) and not isinstance(badge, bool) and badge >= 0:
+        payload["badge"] = min(badge, 9999)
     if title:
         payload["title"] = title
     if extra:

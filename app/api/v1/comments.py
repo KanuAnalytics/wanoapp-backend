@@ -184,7 +184,7 @@ from app.core.database import get_database
 from app.api.deps import get_current_active_user, get_optional_active_user, require_admin
 from pydantic import BaseModel, Field
 from app.models.comment import CommentCreate, CommentUpdate, CommentResponse
-from app.services.expo import send_push_message
+from app.services.notification_badges import send_user_push
 from app.services import comment_guard, recommendations, trending
 from app.services.recombee_service import recombee_send
 
@@ -391,7 +391,8 @@ async def create_comment(
             recipient_tokens = (recipient or {}).get("expo_push_tokens") or []
             for token in recipient_tokens:
                 background_tasks.add_task(
-                    send_push_message,
+                    send_user_push,
+                    str(creator_id),
                     token,
                     comment_preview,
                     {"video_id": comment.video_id, "commenter_id": str(current_user)},
@@ -409,7 +410,8 @@ async def create_comment(
                 parent_tokens = (parent_user or {}).get("expo_push_tokens") or []
                 for token in parent_tokens:
                     background_tasks.add_task(
-                        send_push_message,
+                        send_user_push,
+                        str(parent_user_id),
                         token,
                         comment_preview,
                         {"video_id": comment.video_id, "commenter_id": str(current_user), "parent_comment_id": str(parent_comment["_id"])},
@@ -741,10 +743,13 @@ async def like_comment(
     db = get_database()
     comment_oid = _object_id(comment_id, "comment ID")
 
-    comment = await db.comments.find_one(
-        {"_id": comment_oid, "is_active": True},
-        {"liked_by": 1, "likes_count": 1},
-    )
+    # Being able to guess an ID must not let someone interact with content
+    # hidden by moderation, a private/deleted post, or a block. Staff may
+    # inspect hidden comments, but must not add engagement to them either.
+    eligible = {"_id": comment_oid, "is_active": True,
+                "mod_hidden": {"$ne": True}, "hidden": {"$ne": True},
+                "held": {"$exists": False}}
+    comment = await db.comments.find_one(eligible)
 
     if not comment:
         raise HTTPException(
@@ -753,30 +758,42 @@ async def like_comment(
         )
 
     user_id = ObjectId(current_user)
+    video = await db.videos.find_one({"_id": comment.get("video_id"), "is_active": {"$ne": False}})
+    viewer = await comment_guard.viewer_doc(db, current_user)
+    if (not video or
+            (video.get("privacy") == "private" and str(video.get("creator_id")) != current_user) or
+            comment_guard.blocked_between(viewer, comment.get("user_id")) or
+            comment_guard.blocked_between(viewer, video.get("creator_id"))):
+        raise HTTPException(status_code=404, detail="Comment not found")
+    if comment.get("parent_id"):
+        parent = await db.comments.find_one({**eligible, "_id": comment["parent_id"]})
+        if not parent or comment_guard.blocked_between(viewer, parent.get("user_id")):
+            raise HTTPException(status_code=404, detail="Comment not found")
 
     # Each write is conditional on the current state, so a repeated or racing
     # request can never count the same user twice or drive the count negative.
     if user_id in comment.get("liked_by", []):
         await db.comments.update_one(
-            {"_id": comment_oid, "liked_by": user_id},
+            {**eligible, "liked_by": user_id},
             {
                 "$pull": {"liked_by": user_id},
                 "$inc": {"likes_count": -1}
             }
         )
-        liked = False
     else:
         await db.comments.update_one(
-            {"_id": comment_oid, "is_active": True, "liked_by": {"$ne": user_id}},
+            {**eligible, "liked_by": {"$ne": user_id}},
             {
                 "$addToSet": {"liked_by": user_id},
                 "$inc": {"likes_count": 1}
             }
         )
-        liked = True
 
-    fresh = await db.comments.find_one({"_id": comment_oid}, {"likes_count": 1}) or {}
-    return {"liked": liked, "likes_count": max(int(fresh.get("likes_count", 0) or 0), 0)}
+    fresh = await db.comments.find_one(eligible, {"likes_count": 1, "liked_by": 1})
+    if not fresh:
+        raise HTTPException(status_code=404, detail="Comment not found")
+    return {"liked": user_id in fresh.get("liked_by", []),
+            "likes_count": max(int(fresh.get("likes_count", 0) or 0), 0)}
 
 
 # ------------------------------------------------------------------ reports

@@ -12,7 +12,7 @@ from app.models.video import Video, VideoType, VideoPrivacy
 from app.core.database import get_database
 from app.core.config import settings
 from app.api.deps import get_current_active_user, get_optional_active_user, get_verified_user
-from app.services.expo import send_push_message
+from app.services.notification_badges import send_user_push
 from app.services.metrics_service import metrics_buffer
 from pydantic import BaseModel, ConfigDict, HttpUrl, Field, StrictBool, model_validator
 import re
@@ -611,7 +611,8 @@ async def _send_milestone_push(db, video: dict, video_id: str, background_tasks:
     description_preview = description[:30] + ("..." if len(description) > 30 else "")
     for token in recipient_tokens:
         background_tasks.add_task(
-            send_push_message,
+            send_user_push,
+            str(video["creator_id"]),
             token,
             description_preview,
             {"video_id": video_id},
@@ -1112,7 +1113,8 @@ async def like_video(
 
         for token in recipient_tokens:
             background_tasks.add_task(
-                send_push_message,
+                send_user_push,
+                str(creator_id),
                 token,
                 description_preview,
                 {"video_id": video_id, "liker_id": str(current_user)},
@@ -1230,7 +1232,8 @@ async def bookmark_video(
             thumbnail_url = (video.get("urls") or {}).get("thumbnail")
             for token in recipient_tokens:
                 background_tasks.add_task(
-                    send_push_message,
+                    send_user_push,
+                    str(creator_id),
                     token,
                     description_preview,
                     {"video_id": video_id, "saver_id": str(current_user)},

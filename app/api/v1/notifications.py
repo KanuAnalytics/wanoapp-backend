@@ -6,7 +6,7 @@ app/api/v1/notifications.py
 import asyncio
 import json
 import logging
-from fastapi import APIRouter, BackgroundTasks, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, status, Response
 from bson import ObjectId
 from bson.json_util import dumps
 from app.core.database import get_database
@@ -14,7 +14,7 @@ from app.api.deps import get_current_active_user, require_admin
 from app.services.expo import send_push_batch
 from fastapi import Depends, Query
 from typing import List, Optional
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +118,32 @@ async def set_notification_prefs(body: NotificationPrefs, current_user: str = De
     return _prefs_out(user)
 
 
+class ReadNotifications(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ids: List[str] = Field(max_length=100)
+
+    @field_validator("ids")
+    @classmethod
+    def valid_ids(cls, values):
+        if any(not ObjectId.is_valid(v) for v in values):
+            raise ValueError("Invalid notification ID")
+        return values
+
+
+@router.get("/unread")
+async def unread_notifications(response: Response, current_user: str = Depends(get_current_active_user)):
+    from app.services.notification_badges import summary
+    response.headers["Cache-Control"] = "no-store"
+    return await summary(get_database(), current_user)
+
+
+@router.post("/read")
+async def read_notifications(body: ReadNotifications, response: Response, current_user: str = Depends(get_current_active_user)):
+    from app.services.notification_badges import read
+    response.headers["Cache-Control"] = "no-store"
+    return await read(get_database(), current_user, body.ids)
+
+
 @router.get("/")
 async def get_notifications(
     skip: int = Query(0, ge=0),
@@ -127,7 +153,8 @@ async def get_notifications(
 ):
     """Get notifications for the current user (fresh user/post info via lookup)"""
     db = get_database()
-
+    from app.services.notification_badges import baseline
+    since = await baseline(db, current_user)
     match = {"recipient_id": ObjectId(current_user)}
     if type:
         match["type"] = type
@@ -167,6 +194,7 @@ async def get_notifications(
         {"$unwind": {"path": "$parent_comment", "preserveNullAndEmptyArrays": True}},
         {"$project": {
             "_id": {"$toString": "$_id"},
+            "is_read": {"$or": [{"$lt": ["$date", since]}, {"$ne": [{"$ifNull": ["$read_at", None]}, None]}]},
             "type": 1,
             "date": {"$dateToString": {"format": "%Y-%m-%dT%H:%M:%S.%LZ", "date": "$date"}},
             "user": {

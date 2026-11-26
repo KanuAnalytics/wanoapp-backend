@@ -311,3 +311,17 @@ async def test_graphql_fails_closed_if_session_validator_cannot_import(client, d
     a = await signin(db, uid, "a")
     monkeypatch.setitem(sys.modules, "app.services.device_sessions", None)
     assert await _authenticated_user_id(a["Authorization"][7:]) is None
+
+
+async def test_legacy_revoke_others_does_not_keep_other_phones_push_tokens(client, db):
+    uid, legacy = await make_user(db)
+    for push in ("ExpoPushToken[this]", "ExpoPushToken[other]"):
+        await client.post("/api/v1/users/me/push-token", headers=legacy,
+            json={"expo_push_token": push, "badge_version": 1})
+    r = await client.post(ROOT + "/revoke-others", headers=legacy,
+        json={"current_push_token": "ExpoPushToken[this]"})
+    assert r.status_code == 200, r.text
+    user = await db.users.find_one({"_id": ObjectId(uid)})
+    assert user["expo_push_tokens"] == ["ExpoPushToken[this]"]
+    assert user["badge_capable_tokens"] == ["ExpoPushToken[this]"]
+    assert (await client.get(PROFILE, headers=legacy)).status_code == 401

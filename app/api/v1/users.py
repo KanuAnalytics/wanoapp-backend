@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field, EmailStr, HttpUrl, ValidationError, valid
 from app.models.video import VideoUrls
 import logging
 from app.services.metrics_service import metrics_buffer
-from app.services.expo import send_push_message
+from app.services.notification_badges import send_user_push
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +165,7 @@ class RelationshipType(str, Enum):
 
 class PushTokenRequest(BaseModel):
     expo_push_token: str = Field(..., min_length=1)
+    badge_version: int = Field(default=0, ge=0, le=1)
 
 class UserCreate(BaseModel):
     username: str
@@ -636,12 +637,14 @@ async def add_push_token(
     await attach_push(access_token, token)
     await db.users.update_many(
         {"_id": {"$ne": ObjectId(current_user)}, "expo_push_tokens": token},
-        {"$pull": {"expo_push_tokens": token}},
+        {"$pull": {"expo_push_tokens": token, "badge_capable_tokens": token}},
     )
     await db.users.update_one(
         {"_id": ObjectId(current_user)},
         {"$addToSet": {"expo_push_tokens": token}, "$set": {"updated_at": datetime.utcnow()}},
     )
+    await db.users.update_one({"_id": ObjectId(current_user)},
+        {"$addToSet" if payload.badge_version == 1 else "$pull": {"badge_capable_tokens": token}})
 
     return {"message": "Push token added"}
 
@@ -667,7 +670,7 @@ async def remove_push_token(
         return {"message": "Push token removed"}
     await db.users.update_one(
         {"_id": ObjectId(current_user)},
-        {"$pull": {"expo_push_tokens": token}, "$set": {"updated_at": datetime.utcnow()}},
+        {"$pull": {"expo_push_tokens": token, "badge_capable_tokens": token}, "$set": {"updated_at": datetime.utcnow()}},
     )
 
     return {"message": "Push token removed"}
@@ -1999,7 +2002,8 @@ async def follow_user(
         recipient_tokens = target_user.get("expo_push_tokens") or []
         for token in recipient_tokens:
             background_tasks.add_task(
-                send_push_message,
+                send_user_push,
+                str(target_oid),
                 token,
                 "Tap to view their profile",
                 {"follower_id": str(current_user)},

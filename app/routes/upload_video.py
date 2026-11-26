@@ -22,7 +22,7 @@ from app.core.config import Settings
 from app.core.database import get_database
 from app.models.upload_video import CheckStatusReq
 from recombee_api_client.api_requests import SetItemValues
-from app.services.expo import send_push_message
+from app.services.notification_badges import send_user_push
 from app.services.recombee_service import recombee_send
 from app.services.sqs_publisher import push_video_processing_job
 from app.services.stitch_jobs import handle_stream_video_failed, handle_stream_video_ready
@@ -560,7 +560,8 @@ async def mark_stream_ready(uid: str, background_tasks=None):
             )
             for token in tokens:
                 _later(background_tasks, 
-                    send_push_message,
+                    send_user_push,
+                    str(video["creator_id"]),
                     token,
                     comment_preview,
                     {"video_id": str(video["_id"]), "commenter_id": FIRST_VIDEO_WELCOME_COMMENTER_ID},
@@ -570,7 +571,8 @@ async def mark_stream_ready(uid: str, background_tasks=None):
 
     for token in tokens:
         _later(background_tasks, 
-            send_push_message,
+            send_user_push,
+            str(video["creator_id"]),
             token,
             "Your video has been successfully uploaded!",
             {"screen": "profile_v2"},

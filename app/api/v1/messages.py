@@ -75,8 +75,14 @@ async def list_conversations(folder: Literal["inbox", "requests"] = "inbox", cur
 
 
 @router.get("/unread")
-async def unread(me: str = Depends(get_current_active_user)):
-    return await svc.unread(await _db(), me)
+async def unread(badges: bool = False, me: str = Depends(get_current_active_user)):
+    db = await _db()
+    dm = await svc.unread(db, me)
+    if not badges:
+        return dm
+    from app.services.notification_badges import summary
+    counts = await summary(db, me, dm=dm)
+    return {**dm, "activity": counts["activity"], "total": counts["total"]}
 
 
 @router.get("/conversations/{cid}/messages")
