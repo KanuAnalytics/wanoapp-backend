@@ -56,12 +56,9 @@ jobs:
           LATEST_IMAGE_ID=$(docker images --filter="reference=${{ env.IMAGE_NAME }}:*" --format "{{.ID}}" | head -n 1)
           docker images --filter="reference=${{ env.IMAGE_NAME }}:*" --format "{{.ID}}" | grep -v "$LATEST_IMAGE_ID" | xargs --no-run-if-empty docker rmi -f || true
 
-      - name: Remove dangling images & build cache
-        run: |
-          docker image prune -f
-          docker builder prune -f
-          docker system prune -a --volumes -f
-
+      # Do not prune Docker resources across this shared server. In particular,
+      # an unused named/anonymous volume can still contain recoverable app data.
+      # Cleanup above is limited to this application's containers and images.
       - name: Slack Notification (rich)
         uses: act10ns/slack@v2
         with:
