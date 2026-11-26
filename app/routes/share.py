@@ -229,6 +229,8 @@ def _young(creator: Optional[dict]) -> bool:
 
 
 def _meta(video: dict, creator: dict) -> dict:
+    from app.services.public_site import public_handle, handle_url
+
     vid = str(video["_id"])
     name = _clean(creator.get("display_name") or creator.get("username"), 60) or "Wano"
     desc_src = video.get("description") or ""
@@ -244,8 +246,10 @@ def _meta(video: dict, creator: dict) -> dict:
         thumb = _stream_thumbnail(host, uid)
     # The picture link previews show: with a play button when share_play is on.
     preview = f"{_server_base()}/og/{vid}.jpg" if (_PLAY["on"] and not photo and thumb) else thumb
+    handle = public_handle(creator.get("username"))
     return {
         "id": vid, "title": title, "description": description, "creator": name,
+        "creator_url": handle_url(handle) if handle else None,
         "photo": photo, "images": images, "thumbnail": thumb, "preview": preview,
         "player": None if photo else _player_url(host, uid),
         "unlisted": video.get("privacy") == "unlisted",
@@ -467,8 +471,10 @@ async def watch_page(video_id: str, request: Request):
         data = {
             "@context": "https://schema.org", "@type": "VideoObject",
             "name": m["title"], "description": m["description"],
-            "thumbnailUrl": [m["thumbnail"]], "embedUrl": m["embed"], "url": m["url"],
-            "author": {"@type": "Person", "name": m["creator"]},
+            "thumbnailUrl": [m["thumbnail"]], "embedUrl": m["embed"], "url": m["canon"],
+            "mainEntityOfPage": m["canon"],
+            "author": {"@type": "Person", "name": m["creator"],
+                       **({"url": m["creator_url"]} if m["creator_url"] else {})},
         }
         if m["uploaded"]:
             data["uploadDate"] = m["uploaded"]

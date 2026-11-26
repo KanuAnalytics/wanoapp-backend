@@ -60,6 +60,29 @@ async def test_customer_subdomain_player(client, db):
     assert f'src="https://customer-abc.cloudflarestream.com/{UID}/iframe"' in r.text
 
 
+async def test_video_schema_matches_watch_canonical_and_identifies_public_author(client, db, monkeypatch):
+    from app.routes import share
+    monkeypatch.setitem(share._BRAND, "on", True)
+    monkeypatch.setitem(share._BRAND, "at", __import__("time").monotonic())
+    creator, _ = await make_user(db, username="AmaCreator", display_name="Ama Creator")
+    _, vid = await _post(db, creator=creator)
+    response = await client.get(f"/v/{vid}?via=site")
+    data = json.loads(re.search(r'<script type="application/ld\+json">(.*?)</script>', response.text, re.S).group(1))
+    canonical = f"https://wanoafrica.com/pages/feed/{vid}"
+    assert data["url"] == data["mainEntityOfPage"] == canonical
+    assert f'rel="canonical" href="{canonical}"' in response.text
+    assert data["author"]["url"] == "https://wanoafrica.com/@AmaCreator"
+
+
+async def test_video_schema_does_not_turn_login_email_into_public_author_url(client, db):
+    creator, _ = await make_user(db, username="creator@example.com", display_name="Ama Creator")
+    _, vid = await _post(db, creator=creator)
+    response = await client.get(f"/v/{vid}?via=site")
+    data = json.loads(re.search(r'<script type="application/ld\+json">(.*?)</script>', response.text, re.S).group(1))
+    assert "url" not in data["author"]
+    assert "creator@example.com" not in response.text
+
+
 async def test_photo_post_shows_images_no_player(client, db):
     imgs = ["https://cdn.example.com/a.jpg", "https://cdn.example.com/b.jpg"]
     _, vid = await _post(db, media_type="photo", images=imgs, remoteUrl_CF=None, urls={"thumbnail": imgs[0]})
