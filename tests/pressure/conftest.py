@@ -70,6 +70,18 @@ async def db(monkeypatch, calls):
         from app.main import ensure_indexes
         await ensure_indexes(mdb)
     else:
+        # PyMongo >=4.11 passes sort=None to bulk updates. mongomock 4.3.0
+        # predates that optional argument. Preserve its original semantics;
+        # actual sorted writes must still fail here and be tested on Mongo.
+        import inspect
+        from mongomock.collection import BulkOperationBuilder
+        original = BulkOperationBuilder.add_update
+        if "sort" not in inspect.signature(original).parameters:
+            def compatible_update(self, *args, sort=None, **kwargs):
+                if sort is not None:
+                    raise NotImplementedError("Sorted bulk writes require real MongoDB tests")
+                return original(self, *args, **kwargs)
+            monkeypatch.setattr(BulkOperationBuilder, "add_update", compatible_update)
         mdb = AsyncMongoMockClient()["wano_pressure"]
         monkeypatch.setattr(database_mod.db, "db", mdb)
 
@@ -92,7 +104,9 @@ async def db(monkeypatch, calls):
     import app.services.recombee_service as rs
     monkeypatch.setattr(rs, "recombee_send", _noop_async, raising=False)
     for mod_name in ("app.services.video_deletion", "app.api.v1.videos", "app.api.v1.comments",
-                     "app.api.v1.users", "app.api.v1.feed", "app.api.v1.recombee"):
+                     "app.api.v1.users", "app.api.v1.feed", "app.api.v1.recombee", "app.services.video_posts",
+                     "app.services.recommendations", "app.services.for_you", "app.services.scheduled_publisher",
+                     "app.services.moderation"):
         mod = __import__(mod_name, fromlist=["x"])
         if hasattr(mod, "recombee_send"):
             monkeypatch.setattr(mod, "recombee_send", _noop_async)

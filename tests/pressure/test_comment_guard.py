@@ -64,7 +64,10 @@ async def test_CG2_link_is_held_author_sees_it_nobody_else_counts_unchanged(clie
     assert (await _list(client, vid)).json() == []                  # nor signed out
 
 
-async def test_CG3_flood_is_held_after_five_a_minute(client, db):
+async def test_CG3_flood_is_held_after_five_a_minute(client, db, monkeypatch):
+    from app.services import comment_guard
+    fixed = comment_guard._now().replace(second=10, microsecond=0)
+    monkeypatch.setattr(comment_guard, "_now", lambda: fixed)
     await _on(db)
     owner, _ = await make_user(db)
     bot, bh = await make_user(db)
