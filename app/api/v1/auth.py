@@ -7,7 +7,8 @@ app/api/v1/auth.py
 from profanity_check import predict, predict_prob
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Literal
-from fastapi import APIRouter, Depends, Header, HTTPException, status, Query, Request
+from bson import ObjectId
+from fastapi import APIRouter, Depends, Header, HTTPException, status, Query, Request, BackgroundTasks
 from app.services import recommendations
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
@@ -407,7 +408,7 @@ def _username_problem(username: str) -> str:
     return f"{msg} Try {tip}" if USERNAME_RE.match(tip) else msg
 
 @router.post("/register", response_model=RegisterResponse)
-async def register(request: RegisterRequest, x_device_id: Optional[str] = Header(None, alias="X-Device-Id")):
+async def register(request: RegisterRequest, http_request: Request, x_device_id: Optional[str] = Header(None, alias="X-Device-Id")):
     """Register a new user and return access token"""
     db = get_database()
 
@@ -594,11 +595,8 @@ async def register(request: RegisterRequest, x_device_id: Optional[str] = Header
     await recommendations.set_user_profile({**user_doc, "_id": user_id})
 
     # Create access token
-    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user_id}, 
-        expires_delta=access_token_expires
-    )
+    from app.services.device_sessions import mint
+    access_token = await mint({"_id": ObjectId(user_id)}, http_request)
     
     return RegisterResponse(
         access_token=access_token,
@@ -849,7 +847,7 @@ async def verify_registration_otp(request: VerifyRegistrationOtpRequest):
     return {"verified": True, "channel": channel}
 
 @router.post("/login/json", response_model=Token)
-async def login_json(login_data: LoginRequest, http_request: Request):
+async def login_json(login_data: LoginRequest, http_request: Request, background_tasks: BackgroundTasks):
     """Login endpoint - accepts JSON"""
     db = get_database()
 
@@ -885,18 +883,16 @@ async def login_json(login_data: LoginRequest, http_request: Request):
         raise invalid
 
     _clear_login_failures(throttle_key)
-    return await _signed_in(user, http_request)
+    return await _signed_in(user, http_request, background_tasks)
 
 
-async def _signed_in(user: dict, http_request: Request) -> dict:
+async def _signed_in(user: dict, http_request: Request, background_tasks=None) -> dict:
     """What a successful sign-in returns (password or code)."""
     await recommendations.merge_device_into_user(http_request.headers.get("X-Device-Id"), str(user["_id"]))
 
     # Create access token
-    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": str(user["_id"])}, expires_delta=access_token_expires
-    )
+    from app.services.device_sessions import mint
+    access_token = await mint(user, http_request, background_tasks)
 
     return {
         "access_token": access_token,
@@ -1338,7 +1334,7 @@ async def request_login_code(request: LoginCodeRequest, http_request: Request):
 
 
 @router.post("/login-code/verify", response_model=Token)
-async def verify_login_code(request: LoginCodeVerify, http_request: Request):
+async def verify_login_code(request: LoginCodeVerify, http_request: Request, background_tasks: BackgroundTasks):
     db = get_database()
     if not await _feature_on(db, "code_login"):
         raise _code_login_off()
@@ -1376,4 +1372,4 @@ async def verify_login_code(request: LoginCodeVerify, http_request: Request):
     if used.modified_count != 1:
         raise bad
     _clear_login_failures(throttle_key)
-    return await _signed_in(user, http_request)
+    return await _signed_in(user, http_request, background_tasks)

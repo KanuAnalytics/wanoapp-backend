@@ -54,6 +54,8 @@ async def _authenticated_user_id(token: str) -> Optional[str]:
     try:
         from app.api.deps import _ensure_token_not_revoked
         _ensure_token_not_revoked(user, token)
+        from app.services.device_sessions import validate
+        await validate(token, payload)
     except HTTPException:
         return None
     except ImportError:

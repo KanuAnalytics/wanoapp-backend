@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 from typing import Optional
-from fastapi import Depends, HTTPException, status, Query
+from fastapi import Depends, HTTPException, status, Query, Request
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from app.core.config import settings
@@ -15,7 +15,7 @@ oauth2_scheme_optional = OAuth2PasswordBearer(
     auto_error=False,
 )
 
-async def get_current_user(token: str = Depends(oauth2_scheme)):
+async def get_current_user(token: str = Depends(oauth2_scheme), request: Request = None):
     """Get current authenticated user"""
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -31,6 +31,8 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
     except JWTError:
         raise credentials_exception
     
+    from app.services.device_sessions import validate
+    await validate(token, payload, request)
     return user_id
 
 
@@ -80,12 +82,15 @@ def _ensure_token_not_revoked(user: dict, token: Optional[str]) -> None:
 async def get_current_active_user(
     current_user: str = Depends(get_current_user),
     token: str = Depends(oauth2_scheme),
+    request: Request = None,
 ):
     """Verify user is active"""
     db = get_database()
-    user = await db.users.find_one({"_id": ObjectId(current_user), "is_active": True})
+    user = getattr(request.state, "device_session_user", None) if request is not None else None
+    if user is None:
+        user = await db.users.find_one({"_id": ObjectId(current_user), "is_active": True})
     
-    if not user:
+    if not user or user.get("is_active") is not True:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Inactive user"

@@ -19,6 +19,18 @@ from app.core.database import get_database
 from app.services.metrics_service import metrics_buffer
 from app.services import trending
 
+
+async def _check_live_session(info):
+    """A websocket may outlive sign-out; check before each subsequent batch."""
+    conn = info.context.get("request")
+    if conn is None:
+        require_user_id(info)
+        return
+    auth = conn.headers.get("Authorization", "")
+    from app.graphql.schema import _authenticated_user_id
+    if not auth.startswith("Bearer ") or not await _authenticated_user_id(auth[7:].strip()):
+        raise Exception("Authentication required")
+
 # Define the return types for subscriptions
 @strawberry.type
 class VideoMetrics:
@@ -55,6 +67,7 @@ class Subscription:
         db = get_database()
         
         while True:
+            await _check_live_session(info)
             # Get current database counts
             video = await db.videos.find_one(vq)
             if video:
@@ -89,6 +102,7 @@ class Subscription:
         
         while True:
             await asyncio.sleep(3)  # Check every 3 seconds
+            await _check_live_session(info)
             
             # Find new comments since last check
             cursor = db.comments.find({
@@ -110,6 +124,7 @@ class Subscription:
         db = get_database()
         
         while True:
+            await _check_live_session(info)
             user = await db.users.find_one({"_id": uid})
             if user:
                 yield user.get("followers_count", 0)
@@ -123,6 +138,7 @@ class Subscription:
         db = get_database()
         
         while True:
+            await _check_live_session(info)
             # Momentum-ranked over the last 48 hours (app/services/trending.py);
             # `country` comes first, then the rest of Wano.
             top = await trending.top(db, country=country, limit=10)

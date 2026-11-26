@@ -57,6 +57,13 @@ async def create_indexes():
     """Create database indexes for better performance"""
     d = db.db
     specs = [
+        # Session tombstones deliberately have no TTL: access tokens issued
+        # before device controls did not expire and must never be resurrected.
+        (d.device_sessions, [("user_id", 1), ("id", -1)], {}),
+        (d.device_sessions, [("user_id", 1), ("device_key", 1)], {}),
+        (d.device_sessions, [("push_tokens", 1)], {}),
+        (d.security_login_alerts, [("user_id", 1), ("at", -1)], {}),
+        (d.security_login_alerts, [("at", 1)], {"expireAfterSeconds": 90 * 24 * 3600}),
         # Video indexes
         # Matches the v1 feed's sort, which pairs created_at with an _id tiebreaker;
         # the created_at-only index above can't supply that order on its own.

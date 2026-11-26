@@ -38,6 +38,8 @@ from app.api.v1.creator_push import router as creator_push_router
 
 # Include all routers
 api_router.include_router(auth_router, prefix="/auth", tags=["authentication"])
+from app.api.v1.device_sessions import router as device_sessions_router
+api_router.include_router(device_sessions_router, prefix="/auth/sessions", tags=["device sessions"])
 api_router.include_router(users_router, prefix="/users", tags=["users"])
 # Before videos_router, so "/videos/scheduled" isn't matched by "/videos/{video_id}".
 api_router.include_router(scheduled_posts_router, prefix="/videos", tags=["scheduled posts"])

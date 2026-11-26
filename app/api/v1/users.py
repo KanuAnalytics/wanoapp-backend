@@ -20,7 +20,7 @@ from app.core.disposable_email import ensure_not_disposable_email
 from app.services.video_deletion import delete_spaces_file_if_unused, soft_delete_video
 from app.services.scheduled_publisher import PUBLISHING, SCHEDULED
 from app.core.security import get_password_hash, create_verification_token
-from app.api.deps import get_current_active_user, get_current_user, oauth2_scheme_optional
+from app.api.deps import get_current_active_user, get_current_user, oauth2_scheme_optional, oauth2_scheme
 from app.api.v1.auth import predict_prob, BANNED_WORDS
 from pydantic import BaseModel, Field, EmailStr, HttpUrl, ValidationError, validator
 from app.models.video import VideoUrls
@@ -624,6 +624,7 @@ async def patch_user_profile(
 async def add_push_token(
     payload: PushTokenRequest,
     current_user: str = Depends(get_current_active_user),
+    access_token: str = Depends(oauth2_scheme),
 ):
     """Add a device Expo push token to the current user (deduped)."""
     db = get_database()
@@ -631,6 +632,8 @@ async def add_push_token(
     if not token:
         raise HTTPException(status_code=400, detail="Invalid push token")
 
+    from app.services.device_sessions import attach_push
+    await attach_push(access_token, token)
     await db.users.update_many(
         {"_id": {"$ne": ObjectId(current_user)}, "expo_push_tokens": token},
         {"$pull": {"expo_push_tokens": token}},
@@ -646,6 +649,7 @@ async def add_push_token(
 async def remove_push_token(
     payload: PushTokenRequest,
     current_user: str = Depends(get_current_active_user),
+    access_token: str = Depends(oauth2_scheme),
 ):
     """Remove a device Expo push token from the current user."""
     db = get_database()
@@ -653,6 +657,14 @@ async def remove_push_token(
     if not token:
         raise HTTPException(status_code=400, detail="Invalid push token")
 
+    from app.services.device_sessions import fingerprint
+    key = fingerprint(access_token)
+    # A delayed old logout must not remove push from a newer sign-in.
+    owner = await db.device_sessions.find_one({"user_id": ObjectId(current_user),
+        "_id": {"$ne": key}, "revoked_at": {"$exists": False}, "push_tokens": token})
+    await db.device_sessions.update_one({"_id": key}, {"$pull": {"push_tokens": token}})
+    if owner:
+        return {"message": "Push token removed"}
     await db.users.update_one(
         {"_id": ObjectId(current_user)},
         {"$pull": {"expo_push_tokens": token}, "$set": {"updated_at": datetime.utcnow()}},
